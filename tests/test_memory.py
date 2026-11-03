@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import json
 import socket
 import sqlite3
@@ -60,7 +61,8 @@ class MemoryLifecycleTests(unittest.TestCase):
         v3=Database(legacy,migrations=self.db._migrations[:3]); v3.initialize()
         v3.create_workspace("Legacy",WorkspaceKind.PERSONAL,"legacy","legacy-ws")
         Database(legacy).initialize()
-        with sqlite3.connect(legacy) as c: self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0],4)
+        with closing(sqlite3.connect(legacy)) as c, c:
+            self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0],4)
 
     def test_v3_to_v4_migration_rolls_back_on_failure(self):
         legacy=self.root/"rollback.sqlite3"
@@ -68,7 +70,7 @@ class MemoryLifecycleTests(unittest.TestCase):
         failing=Database(legacy,migrations=DEFAULT_MIGRATIONS[:3]+(
             Migration(4,("CREATE TABLE migration_probe(value TEXT)","INVALID SQL")),))
         with self.assertRaises(sqlite3.OperationalError): failing.initialize()
-        with sqlite3.connect(legacy) as c:
+        with closing(sqlite3.connect(legacy)) as c, c:
             self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0],3)
             self.assertIsNone(c.execute("SELECT name FROM sqlite_master WHERE name='migration_probe'").fetchone())
 
