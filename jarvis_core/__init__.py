@@ -1,5 +1,16 @@
-"""Local persistence foundation for Jarvis 2.0."""
+"""Local-first persistence foundation for Jarvis 2.0."""
 
+from .memory import (
+    Candidate,
+    DecisionContext,
+    DecisionContextIssuer,
+    Evidence,
+    InvalidDecision,
+    LifecycleConflict,
+    Memory,
+    MemoryRevision,
+    MemoryService,
+)
 from .storage import (
     AccessDenied,
     ApprovedRoot,
@@ -17,9 +28,18 @@ from .storage import (
 __all__ = [
     "AccessDenied",
     "ApprovedRoot",
+    "Candidate",
     "Database",
+    "DecisionContext",
+    "DecisionContextIssuer",
+    "Evidence",
+    "InvalidDecision",
     "InvalidPath",
     "LastWorkspaceManager",
+    "LifecycleConflict",
+    "Memory",
+    "MemoryRevision",
+    "MemoryService",
     "Migration",
     "Permission",
     "Persistence",
