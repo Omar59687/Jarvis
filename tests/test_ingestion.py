@@ -147,7 +147,8 @@ class FolderIngestionTests(unittest.TestCase):
         # path with identical bytes is present in the same incomplete scan.
         old_path.rename(self.root_path / ".temporarily-unavailable")
         (self.root_path / "new.txt").write_text("identical content", encoding="utf-8")
-        scan_files = ingestion._scan_posix
+        scanner_name = "_scan_windows" if os.name == "nt" else "_scan_posix"
+        scan_files = getattr(ingestion, scanner_name)
 
         def partial_scan(path: Path, limits: SyncLimits):
             scan = scan_files(path, limits)
@@ -155,7 +156,7 @@ class FolderIngestionTests(unittest.TestCase):
             scan.errors.append(("old.txt", "file_read_error"))
             return scan
 
-        with patch.object(ingestion, "_scan_posix", side_effect=partial_scan):
+        with patch.object(ingestion, scanner_name, side_effect=partial_scan):
             report = self.syncer.sync("alice", self.workspace.id, self.root.id)
 
         self.assertEqual(report.status, "partial")
