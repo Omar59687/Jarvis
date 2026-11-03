@@ -36,4 +36,4 @@ For each milestone:
 
 ## Current state and next task
 
-M01-A storage and permissions, M01-B approved-folder ingestion, and M01-C bilingual lexical retrieval are merged into `main` at the task's specified starting point. M01-D memory approval and reversible deletion is implemented on `feature/m01-d-memory-lifecycle` and is being prepared for draft review. The next step is review of M01-D; M01-E has no approved scope and must wait for explicit user approval.
+M01-A storage and permissions, M01-B approved-folder ingestion, and M01-C bilingual lexical retrieval are merged into `main` at the task's specified starting point. M01-D memory approval and reversible deletion is implemented on `feature/m01-d-memory-lifecycle`; draft PR #5 is open for review. The next step is review of M01-D; M01-E has no approved scope and must wait for explicit user approval.
