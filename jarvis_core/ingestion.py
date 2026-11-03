@@ -469,19 +469,23 @@ class FolderSynchronizer:
                             matched_new.add(path)
                             remaining_old.pop(row["relative_path"], None)
 
-                pair_unique(
-                    missing,
-                    set(new_paths),
-                    lambda row: row["file_identity"],
-                    lambda snapshot: snapshot.identity,
-                )
-                unmatched_old = [row for row in missing if row["relative_path"] in remaining_old]
-                pair_unique(
-                    unmatched_old,
-                    set(new_paths) - matched_new,
-                    lambda row: row["content_sha256"],
-                    lambda snapshot: snapshot.digest,
-                )
+                # A partial scan cannot distinguish a rename from a file that
+                # was temporarily unreadable. Leave missing records untouched;
+                # readable new paths are processed as additions below.
+                if scan.complete:
+                    pair_unique(
+                        missing,
+                        set(new_paths),
+                        lambda row: row["file_identity"],
+                        lambda snapshot: snapshot.identity,
+                    )
+                    unmatched_old = [row for row in missing if row["relative_path"] in remaining_old]
+                    pair_unique(
+                        unmatched_old,
+                        set(new_paths) - matched_new,
+                        lambda row: row["content_sha256"],
+                        lambda snapshot: snapshot.digest,
+                    )
 
                 for old, snapshot in rename_pairs:
                     connection.execute(

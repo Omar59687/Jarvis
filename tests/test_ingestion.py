@@ -135,6 +135,41 @@ class FolderIngestionTests(unittest.TestCase):
         good = next(item for item in self.documents() if item["relative_path"] == "good.txt")
         self.assertIsNone(good["deleted_at"])
 
+    def test_partial_scan_does_not_infer_rename_from_unavailable_file(self) -> None:
+        import jarvis_core.ingestion as ingestion
+
+        old_path = self.root_path / "old.txt"
+        old_path.write_text("identical content", encoding="utf-8")
+        self.syncer.sync("alice", self.workspace.id, self.root.id)
+        original = self.documents()[0]
+
+        # Simulate a file disappearing from enumeration while another readable
+        # path with identical bytes is present in the same incomplete scan.
+        old_path.rename(self.root_path / ".temporarily-unavailable")
+        (self.root_path / "new.txt").write_text("identical content", encoding="utf-8")
+        scan_files = ingestion._scan_posix
+
+        def partial_scan(path: Path, limits: SyncLimits):
+            scan = scan_files(path, limits)
+            scan.complete = False
+            scan.errors.append(("old.txt", "file_read_error"))
+            return scan
+
+        with patch.object(ingestion, "_scan_posix", side_effect=partial_scan):
+            report = self.syncer.sync("alice", self.workspace.id, self.root.id)
+
+        self.assertEqual(report.status, "partial")
+        self.assertEqual((report.renamed, report.added, report.deleted), (0, 1, 0))
+        documents = self.documents()
+        preserved = next(item for item in documents if item["id"] == original["id"])
+        self.assertEqual(preserved, original)
+        self.assertIsNone(preserved["deleted_at"])
+        added = next(item for item in documents if item["relative_path"] == "new.txt")
+        self.assertNotEqual(added["id"], original["id"])
+        event_types = [event["event_type"] for event in self.events()]
+        self.assertNotIn("renamed", event_types)
+        self.assertIn("added", event_types)
+
     def test_secret_hidden_and_unsupported_files_are_not_indexed(self) -> None:
         (self.root_path / ".env").write_text("x=y", encoding="utf-8")
         (self.root_path / "credentials.txt").write_text("private", encoding="utf-8")
@@ -219,6 +254,26 @@ class FolderIngestionTests(unittest.TestCase):
             return result
 
         with patch.object(ingestion, "_scan_posix", side_effect=scan_then_replace):
+            with self.assertRaises(AccessDenied):
+                self.syncer.sync("alice", self.workspace.id, self.root.id)
+        self.assertEqual(self.documents(), [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows root identity check is platform-specific")
+    def test_windows_root_replacement_between_scan_and_commit_is_rejected(self) -> None:
+        import jarvis_core.ingestion as ingestion
+
+        (self.root_path / "note.txt").write_text("original root", encoding="utf-8")
+        scan = ingestion._scan_windows
+
+        def scan_then_replace(path: Path, limits: SyncLimits):
+            result = scan(path, limits)
+            moved = self.base / "original-approved"
+            path.rename(moved)
+            path.mkdir()
+            (path / "replacement.txt").write_text("replacement root", encoding="utf-8")
+            return result
+
+        with patch.object(ingestion, "_scan_windows", side_effect=scan_then_replace):
             with self.assertRaises(AccessDenied):
                 self.syncer.sync("alice", self.workspace.id, self.root.id)
         self.assertEqual(self.documents(), [])
