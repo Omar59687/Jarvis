@@ -166,6 +166,15 @@ class FolderIngestionTests(unittest.TestCase):
         codes = {event["error_code"] for event in self.events() if event["event_type"] == "error"}
         self.assertIn("file_limit", codes)
 
+    def test_directory_entry_limit_is_enforced(self) -> None:
+        (self.root_path / "one.txt").write_text("one", encoding="utf-8")
+        (self.root_path / "two.txt").write_text("two", encoding="utf-8")
+        limits = SyncLimits(max_depth=8, max_files=10, max_directory_entries=1, max_file_bytes=20, max_total_bytes=40)
+        report = FolderSynchronizer(self.database, limits).sync("alice", self.workspace.id, self.root.id)
+        self.assertEqual(report.status, "partial")
+        codes = {event["error_code"] for event in self.events() if event["event_type"] == "error"}
+        self.assertIn("entry_limit", codes)
+
     def test_backup_restore_preserves_ingested_provenance(self) -> None:
         (self.root_path / "note.txt").write_text("restorable text", encoding="utf-8")
         self.syncer.sync("alice", self.workspace.id, self.root.id)

@@ -72,4 +72,4 @@ Tests use only generated files in temporary directories. No home directory, user
 
 ## Validation snapshot
 
-On Linux x86_64 with Python 3.12.14 and SQLite 3.53.1, the repository suite completed with 34 tests passing and one Windows-only junction test skipped. The exercised commands were `python -m py_compile jarvis_core/*.py tests/*.py`, `python -m jarvis_core.ingestion --help`, and `python -m unittest discover -s tests -v`. The Windows junction test and Windows race behavior still require a Windows runner.
+On Linux x86_64 with Python 3.12.14 and SQLite 3.53.1, the repository suite completed with 35 tests total: 34 passed and one Windows-only junction test skipped. The exercised commands were `python -m py_compile jarvis_core/*.py tests/*.py`, `python -m jarvis_core.ingestion --help`, and `python -m unittest discover -s tests -v`. The Windows junction test and Windows race behavior still require a Windows runner.
