@@ -19,7 +19,7 @@ from typing import Iterator, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 REQUIRED_BACKUP_COLUMNS = {
     "workspaces": {"id", "name", "kind", "created_at"},
     "workspace_permissions": {
@@ -272,6 +272,96 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
             """,
         ),
     ),
+    Migration(
+        version=3,
+        statements=(
+            """
+            CREATE VIRTUAL TABLE document_search USING fts5(
+                document_id UNINDEXED,
+                workspace_id UNINDEXED,
+                root_id UNINDEXED,
+                relative_path UNINDEXED,
+                extracted_text,
+                tokenize = 'unicode61 remove_diacritics 2'
+            )
+            """,
+            """
+            INSERT INTO document_search
+                (document_id, workspace_id, root_id, relative_path, extracted_text)
+            SELECT d.id, d.workspace_id, d.root_id, d.relative_path, d.extracted_text
+            FROM ingested_documents AS d
+            JOIN approved_roots AS r ON r.id = d.root_id
+            WHERE d.deleted_at IS NULL AND r.revoked_at IS NULL
+            """,
+            """
+            CREATE TRIGGER ingested_documents_search_insert
+            AFTER INSERT ON ingested_documents
+            WHEN NEW.deleted_at IS NULL AND EXISTS (
+                SELECT 1 FROM approved_roots
+                WHERE id = NEW.root_id AND workspace_id = NEW.workspace_id
+                  AND revoked_at IS NULL
+            )
+            BEGIN
+                INSERT INTO document_search
+                    (document_id, workspace_id, root_id, relative_path, extracted_text)
+                VALUES
+                    (NEW.id, NEW.workspace_id, NEW.root_id, NEW.relative_path,
+                     NEW.extracted_text);
+            END
+            """,
+            """
+            CREATE TRIGGER ingested_documents_search_update
+            AFTER UPDATE OF id, workspace_id, root_id, relative_path,
+                            extracted_text, deleted_at ON ingested_documents
+            WHEN OLD.id IS NOT NEW.id
+              OR OLD.workspace_id IS NOT NEW.workspace_id
+              OR OLD.root_id IS NOT NEW.root_id
+              OR OLD.relative_path IS NOT NEW.relative_path
+              OR OLD.extracted_text IS NOT NEW.extracted_text
+              OR OLD.deleted_at IS NOT NEW.deleted_at
+            BEGIN
+                DELETE FROM document_search WHERE document_id = OLD.id;
+                INSERT INTO document_search
+                    (document_id, workspace_id, root_id, relative_path, extracted_text)
+                SELECT NEW.id, NEW.workspace_id, NEW.root_id, NEW.relative_path,
+                       NEW.extracted_text
+                WHERE NEW.deleted_at IS NULL AND EXISTS (
+                    SELECT 1 FROM approved_roots
+                    WHERE id = NEW.root_id AND workspace_id = NEW.workspace_id
+                      AND revoked_at IS NULL
+                );
+            END
+            """,
+            """
+            CREATE TRIGGER ingested_documents_search_delete
+            AFTER DELETE ON ingested_documents
+            BEGIN
+                DELETE FROM document_search WHERE document_id = OLD.id;
+            END
+            """,
+            """
+            CREATE TRIGGER approved_roots_search_status
+            AFTER UPDATE OF revoked_at ON approved_roots
+            WHEN OLD.revoked_at IS NOT NEW.revoked_at
+            BEGIN
+                DELETE FROM document_search WHERE root_id = NEW.id;
+                INSERT INTO document_search
+                    (document_id, workspace_id, root_id, relative_path, extracted_text)
+                SELECT d.id, d.workspace_id, d.root_id, d.relative_path, d.extracted_text
+                FROM ingested_documents AS d
+                WHERE d.root_id = NEW.id AND d.deleted_at IS NULL
+                  AND NEW.revoked_at IS NULL;
+            END
+            """,
+            """
+            CREATE TRIGGER approved_roots_search_delete
+            BEFORE DELETE ON approved_roots
+            BEGIN
+                DELETE FROM document_search WHERE root_id = OLD.id;
+            END
+            """,
+        ),
+    ),
 )
 
 
@@ -399,8 +489,18 @@ class Database:
                     migration = self._migrations[version]
                     if migration.version != version + 1:
                         raise RuntimeError("missing database migration")
-                    for statement in migration.statements:
-                        connection.execute(statement)
+                    try:
+                        for statement in migration.statements:
+                            connection.execute(statement)
+                    except sqlite3.OperationalError as exc:
+                        if migration.version >= 3 and (
+                            "fts5" in str(exc).lower()
+                            or "no such module" in str(exc).lower()
+                        ):
+                            raise RuntimeError(
+                                "Jarvis schema v3 requires SQLite built with FTS5 support"
+                            ) from exc
+                        raise
                     version = migration.version
                     connection.execute(f"PRAGMA user_version = {version}")
                 self._commit(connection)
@@ -944,6 +1044,15 @@ class Database:
                 if not required_columns <= columns:
                     raise sqlite3.DatabaseError(
                         f"backup is missing required schema for table {table}"
+                    )
+            if source_version >= 3:
+                search_table = source.execute(
+                    "SELECT sql FROM sqlite_master WHERE type = ? AND name = ?",
+                    ("table", "document_search"),
+                ).fetchone()
+                if search_table is None or "using fts5" not in str(search_table[0]).lower():
+                    raise sqlite3.DatabaseError(
+                        "backup is missing the required FTS5 search index"
                     )
             if source.execute("PRAGMA foreign_key_check").fetchone() is not None:
                 raise sqlite3.DatabaseError("backup contains foreign key violations")

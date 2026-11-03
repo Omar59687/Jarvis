@@ -36,4 +36,4 @@ For each milestone:
 
 ## Current state and next task
 
-Only repository foundation documentation is being prepared. No milestone is implemented. The proposed next task is **M01-A — SQLite storage and permissions**. Do not start M01-A until the user explicitly approves.
+M01-A storage and permissions and M01-B approved-folder ingestion are merged into `main`. M01-C bilingual lexical retrieval is being reviewed on its feature branch. Do not begin M01-D or later work until the user explicitly approves the next slice.
