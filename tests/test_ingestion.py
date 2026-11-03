@@ -365,16 +365,33 @@ class FolderIngestionTests(unittest.TestCase):
         (outside / "secret.txt").write_text("outside", encoding="utf-8")
         self.windows_stat(self.root_path)
         junction = self.root_path / "junction"
+        command_processor = os.environ.get("COMSPEC", "cmd.exe")
+        command = (
+            f'"{command_processor}" /d /c mklink /J "{junction}" "{outside}"'
+        )
         result = subprocess.run(
-            ["cmd", "/c", f'mklink /J "{junction}" "{outside}"'],
+            command,
             capture_output=True,
             text=True,
+            check=False,
         )
-        if result.returncode:
-            self.skipTest("junction creation requires unavailable Windows permissions")
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"cmd mklink /J failed ({result.returncode})\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}",
+        )
+        self.assertTrue(junction.is_junction(), "mklink succeeded but did not create a junction")
+
         report = self.syncer.sync("alice", self.workspace.id, self.root.id)
         self.assertEqual(report.discovered, 0)
         self.assertEqual(self.documents(), [])
+        skipped = [
+            (event["relative_path"], event["error_code"])
+            for event in self.events()
+            if event["event_type"] == "skipped"
+        ]
+        self.assertIn(("junction", "reparse_skipped"), skipped)
 
     def test_revocation_disables_automatic_sync_and_blocks_ingestion(self) -> None:
         (self.root_path / "note.txt").write_text("content", encoding="utf-8")
