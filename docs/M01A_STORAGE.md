@@ -11,9 +11,9 @@ Callers can provide an explicit database path for tests or controlled deployment
 
 ## Schema and migrations
 
-The initial schema is version 1, recorded with SQLite PRAGMA user_version. Initialization is idempotent and applies all pending schema changes inside one BEGIN IMMEDIATE transaction. Migration statements use sqlite3 execute calls, not executescript, so a failed statement rolls back DDL and the version update together. A database created by a newer application is rejected rather than downgraded.
+M01-A introduced schema version 1, recorded with SQLite PRAGMA user_version. M01-B advances the current schema to version 2 with document, synchronization, and scheduling tables. Initialization is idempotent and applies all pending schema changes inside one BEGIN IMMEDIATE transaction. Migration statements use sqlite3 execute calls, not executescript, so a failed statement rolls back DDL and the version update together. A database created by a newer application is rejected rather than downgraded.
 
-The current schema contains workspaces, explicit per-principal workspace permissions, approved folder roots, and audit events. It intentionally does not create memory, evidence, sync-job, model, or vector tables; those belong to later slices.
+The current schema contains workspaces, explicit per-principal workspace permissions, approved folder roots, audit events, ingested documents, synchronization runs and events, root identity records, and bounded automatic-sync preferences. It intentionally does not create memory approval, semantic retrieval, model, or vector tables; those belong to later slices.
 
 ## Permission behavior
 
@@ -35,9 +35,9 @@ Backups are not encrypted by this slice. Deleting data from the live database do
 
 - This is application-level authorization. Actor IDs must come from an authenticated trusted host; they must not be accepted as authority from an untrusted client request.
 - A local user who can read or modify the database file can bypass Python-level checks. OS account protection and future application packaging are part of the security boundary.
-- No file indexing is implemented here. A future scanner must revalidate paths at open time and guard against time-of-check/time-of-use races, hard links, Windows reparse points, and junction changes. Canonical path checks alone do not make arbitrary concurrent filesystem mutation safe.
-- Python versions before 3.12 do not expose Path.is_junction. The implementation uses strict path resolution for containment; on Windows this normally resolves junction targets, but explicit junction identification and handle-based no-follow traversal require platform-specific review.
-- This slice registers and revokes roots; it never walks or reads user-selected folders.
+- M01-B adds bounded local file ingestion. POSIX traversal uses directory descriptors and no-follow opens; Windows rejects detected reparse points and checks identities, but Python's standard library does not provide the handle-relative directory enumeration needed to eliminate hostile concurrent path races. See [M01-B Ingestion](M01B_INGESTION.md).
+- Windows root registration rejects a root recognized as a junction when the Python runtime exposes `Path.is_junction`. M01-B also rejects detected reparse points while scanning; handle-based traversal and hostile concurrent path races remain platform-specific limitations documented in [M01-B Ingestion](M01B_INGESTION.md).
+- Root registration does not imply consent to any particular content policy. M01-B reads only supported text files in active approved roots and excludes common secret-like names using a heuristic.
 - No database encryption, multi-user authentication service, or explicit Windows ACL management is included.
 - No external packages or network calls are used by the persistence package.
 
