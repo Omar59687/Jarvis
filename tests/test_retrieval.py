@@ -267,7 +267,7 @@ class BilingualRetrievalTests(unittest.TestCase):
         results = SearchIndex(upgraded).search("owner", workspace.id, "upgraded")
         self.assertEqual([item.relative_path for item in results], ["existing.txt"])
         with upgraded._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
 
     def test_backup_restore_and_offline_search(self) -> None:
         self.add_file("backup.txt", "offline backup retrieval")

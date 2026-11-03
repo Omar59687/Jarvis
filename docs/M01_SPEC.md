@@ -1,7 +1,7 @@
 # M01 — Second Brain Foundation Specification
 
-**Status:** acceptance criteria proposed; not implemented.  
-**Next proposed task:** M01-A — SQLite storage and permissions. M01-A requires explicit user approval before work begins.
+**Status:** M01-A, M01-B and M01-C are implemented and merged in the stated `main` baseline. M01-D memory lifecycle is implemented on a draft review branch. These criteria remain the broader M01 acceptance baseline; see the milestone implementation documents for shipped details.  
+**Next task:** review M01-D. No M01-E scope is approved.
 
 ## 1. Goal
 
@@ -42,7 +42,7 @@ M01 does not require an LLM, embeddings, voice, MCP, browser automation, REA, co
 - **Audit event:** append-oriented record of approval, access, sync, restore, deletion, or purge.
 - **Tombstone:** reversible deletion state and restoration metadata.
 
-Exact schema is an M01-A design deliverable, not prescribed here.
+Exact schema is defined by the versioned migrations and milestone implementation documents.
 
 ## 4. Acceptance criteria
 
@@ -106,18 +106,16 @@ Exact schema is an M01-A design deliverable, not prescribed here.
 3. A documented backup can be restored into an isolated test location.
 4. The review package reports tested scenarios and known limitations; no test or security property is claimed without execution evidence.
 
-## 5. M01-A work breakdown
+## 5. M01 implementation sequence and status
 
-M01-A should define and implement only the persistence foundation:
+M01-A through M01-D are delivered as separate slices in the stated implementation baseline:
 
-- Select SQLite runtime/build and verify its capabilities.
-- Propose schema and migration mechanism for workspaces, permissions, memories, evidence, sources, pending approvals, tombstones, and audit events.
-- Implement data access that requires explicit workspace context.
-- Define permission checks for read/write/restore/purge.
-- Add focused tests for migration and isolation after the user approves implementation.
-- Document database location, backup, restore, and purge semantics.
+- **M01-A:** SQLite storage, workspace permissions, approved roots, migrations and backup/restore.
+- **M01-B:** bounded approved-folder ingestion and synchronization.
+- **M01-C:** workspace-scoped SQLite FTS5 document search with lexical limitations documented.
+- **M01-D:** pending memory candidates, snapshot-bound approval, evidence provenance, revisions, reversible deletion and explicit purge.
 
-Folder watching/import, UI, AI, and connectors should remain separate follow-up tasks so storage authorization can be reviewed before integrations depend on it.
+Models, semantic retrieval, UI, voice and connectors remain separate follow-up work.
 
 ## 6. M01 exit gate
 

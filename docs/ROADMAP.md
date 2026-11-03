@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Roadmap
 
-**Status:** proposed sequencing. Each milestone requires explicit acceptance review before the next milestone begins.
+**Status:** M01-A/B/C are merged in the stated `main` baseline; M01-D is under draft PR review. Later sequencing remains proposed. Each milestone requires explicit acceptance review before the next milestone begins.
 
 ## Phase gates
 
@@ -36,4 +36,4 @@ For each milestone:
 
 ## Current state and next task
 
-M01-A storage and permissions and M01-B approved-folder ingestion are merged into `main`. M01-C bilingual lexical retrieval is being reviewed on its feature branch. Do not begin M01-D or later work until the user explicitly approves the next slice.
+M01-A storage and permissions, M01-B approved-folder ingestion, and M01-C bilingual lexical retrieval are merged into `main` at the task's specified starting point. M01-D memory approval and reversible deletion is implemented on `feature/m01-d-memory-lifecycle`; draft PR #5 is open for review. The next step is review of M01-D; M01-E has no approved scope and must wait for explicit user approval.

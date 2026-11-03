@@ -11,9 +11,15 @@ Callers can provide an explicit database path for tests or controlled deployment
 
 ## Schema and migrations
 
-M01-A introduced schema version 1, recorded with SQLite PRAGMA user_version. M01-B advances the current schema to version 2 with document, synchronization, and scheduling tables. Initialization is idempotent and applies all pending schema changes inside one BEGIN IMMEDIATE transaction. Migration statements use sqlite3 execute calls, not executescript, so a failed statement rolls back DDL and the version update together. A database created by a newer application is rejected rather than downgraded.
+M01-A introduced schema version 1, M01-B advances to v2 for document synchronization, and M01-C advances to v3 for the FTS5 document index. M01-D advances to schema v4 for pending candidates, approved memories, evidence snapshots, revisions and one-time decision receipts. The current schema in the M01-D branch is v4. Initialization is idempotent and applies all pending schema changes inside one BEGIN IMMEDIATE transaction. Migration statements use sqlite3 execute calls, not executescript, so a failed statement rolls back DDL and the version update together. A database created by a newer application is rejected rather than downgraded.
 
-The current schema contains workspaces, explicit per-principal workspace permissions, approved folder roots, audit events, ingested documents, synchronization runs and events, root identity records, and bounded automatic-sync preferences. It intentionally does not create memory approval, semantic retrieval, model, or vector tables; those belong to later slices.
+The schema contains workspaces, explicit per-principal workspace permissions, approved folder roots, audit events, ingested documents, synchronization runs/events and preferences, the separate document FTS5 index, and M01-D memory lifecycle tables. It contains no semantic/vector, model or cloud tables.
+
+## M01-D memory lifecycle tables
+
+Schema v4 stores `memory_candidates` separately from active `memories`. Candidates are pending until an authorized approval/rejection transition; content and candidate evidence snapshots are cleared when resolved. Approved `memory_evidence` rows preserve document ID, root ID, relative path, source content hash and observation time. Revisions snapshot approved content and the evidence set. Workspace IDs are present in lifecycle records and checked by `MemoryService` for every operation.
+
+The document FTS5 index does not include memories. Soft deletion excludes a memory from ordinary reads while keeping evidence and revisions for restore. Explicit purge is limited to deleted memories, requires workspace-management permission plus a distinct signed context, and cascades active evidence/revisions. Earlier SQLite backups may still contain the purged record.
 
 ## Permission behavior
 

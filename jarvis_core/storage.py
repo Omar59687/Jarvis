@@ -19,7 +19,7 @@ from typing import Iterator, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 REQUIRED_BACKUP_COLUMNS = {
     "workspaces": {"id", "name", "kind", "created_at"},
     "workspace_permissions": {
@@ -360,6 +360,104 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
                 DELETE FROM document_search WHERE root_id = OLD.id;
             END
             """,
+        ),
+    ),
+    Migration(
+        version=4,
+        statements=(
+            """CREATE TABLE memory_candidates (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                proposed_by TEXT NOT NULL,
+                request_key TEXT,
+                provenance_kind TEXT NOT NULL CHECK(provenance_kind IN ('evidence','user_authored')),
+                content TEXT,
+                content_sha256 TEXT NOT NULL,
+                evidence_sha256 TEXT NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+                state TEXT NOT NULL CHECK(state IN ('pending','approved','rejected')),
+                approved_memory_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                decided_at TEXT,
+                UNIQUE(id, workspace_id),
+                UNIQUE(workspace_id, proposed_by, request_key),
+                CHECK((state = 'pending' AND content IS NOT NULL) OR
+                      (state != 'pending' AND content IS NULL))
+            )""",
+            "CREATE INDEX memory_candidates_pending ON memory_candidates(workspace_id,state,created_at,id)",
+            """CREATE TABLE memory_candidate_evidence (
+                candidate_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                root_id TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                source_sha256 TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                PRIMARY KEY(candidate_id, document_id),
+                FOREIGN KEY(candidate_id,workspace_id) REFERENCES memory_candidates(id,workspace_id) ON DELETE CASCADE
+            )""",
+            """CREATE TABLE memories (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                source_candidate_id TEXT NOT NULL UNIQUE,
+                content TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL,
+                provenance_kind TEXT NOT NULL CHECK(provenance_kind IN ('evidence','user_authored')),
+                created_by TEXT NOT NULL,
+                approved_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+                state_version INTEGER NOT NULL DEFAULT 1 CHECK(state_version > 0),
+                deleted_at TEXT,
+                UNIQUE(id,workspace_id),
+                FOREIGN KEY(source_candidate_id,workspace_id) REFERENCES memory_candidates(id,workspace_id)
+            )""",
+            "CREATE INDEX memories_active ON memories(workspace_id,deleted_at,updated_at,id)",
+            """CREATE TABLE memory_evidence (
+                memory_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                root_id TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                source_sha256 TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                PRIMARY KEY(memory_id,document_id),
+                FOREIGN KEY(memory_id,workspace_id) REFERENCES memories(id,workspace_id) ON DELETE CASCADE
+            )""",
+            """CREATE TABLE memory_revisions (
+                memory_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL,
+                provenance_kind TEXT NOT NULL CHECK(provenance_kind IN ('evidence','user_authored')),
+                edited_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(memory_id,revision),
+                FOREIGN KEY(memory_id,workspace_id) REFERENCES memories(id,workspace_id) ON DELETE CASCADE
+            )""",
+            """CREATE TABLE memory_revision_evidence (
+                memory_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                document_id TEXT NOT NULL,
+                root_id TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                source_sha256 TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                PRIMARY KEY(memory_id,revision,document_id),
+                FOREIGN KEY(memory_id,revision) REFERENCES memory_revisions(memory_id,revision) ON DELETE CASCADE
+            )""",
+            """CREATE TABLE memory_decision_receipts (
+                decision_id TEXT PRIMARY KEY,
+                action TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                resource_id TEXT NOT NULL,
+                context_sha256 TEXT NOT NULL,
+                consumed_at TEXT NOT NULL
+            )""",
         ),
     ),
 )
@@ -1054,6 +1152,20 @@ class Database:
                     raise sqlite3.DatabaseError(
                         "backup is missing the required FTS5 search index"
                     )
+            if source_version >= 4:
+                v4_tables = {
+                    "memory_candidates": {"id", "workspace_id", "content", "state", "content_sha256", "evidence_sha256"},
+                    "memory_candidate_evidence": {"candidate_id", "workspace_id", "document_id", "root_id", "relative_path", "source_sha256"},
+                    "memories": {"id", "workspace_id", "content", "deleted_at", "source_candidate_id"},
+                    "memory_evidence": {"memory_id", "workspace_id", "document_id", "root_id", "relative_path", "source_sha256"},
+                    "memory_revisions": {"memory_id", "workspace_id", "revision", "content_sha256"},
+                    "memory_revision_evidence": {"memory_id", "revision", "document_id", "root_id", "relative_path", "source_sha256"},
+                    "memory_decision_receipts": {"decision_id", "context_sha256"},
+                }
+                for table, required_columns in v4_tables.items():
+                    columns = {row[1] for row in source.execute(f"PRAGMA table_info({table})").fetchall()}
+                    if not required_columns <= columns:
+                        raise sqlite3.DatabaseError(f"backup is missing required schema for table {table}")
             if source.execute("PRAGMA foreign_key_check").fetchone() is not None:
                 raise sqlite3.DatabaseError("backup contains foreign key violations")
             source.backup(target)

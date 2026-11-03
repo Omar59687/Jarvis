@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Proposed Architecture
 
-**Status:** proposal for review. The repository currently has no application implementation.
+**Status:** the logical product architecture below remains proposed. The merged baseline implements local SQLite storage/permissions, approved-folder ingestion and document FTS5 retrieval. M01-D memory lifecycle is on a draft review branch; no desktop, dashboard, model, voice or external integration is implemented.
 
 ## 1. Architecture goals
 
@@ -51,7 +51,9 @@ The browser dashboard can use the same UI and API. If it runs in an ordinary bro
 
 ## 5. Memory lifecycle
 
-**Proposed lifecycle:** capture candidate → attach evidence/provenance → user review → approve and persist → retrieve with evidence → soft delete → restore or explicitly purge.
+**M01-D implementation:** a pending candidate is bound to its content digest, evidence digest, workspace and revision. Approval requires a short-lived signed `DecisionContext` issued by a trusted host and validated in the storage service. Approved memories preserve workspace and evidence snapshots, revisions, and soft-delete state. Purge is a separate manager-authorized, signed operation that cascades active evidence and revision rows.
+
+The signing context verifies that a trusted host issued a decision for the exact reviewed snapshot. It does not independently authenticate the actor or prove a human clicked. An eventual UI/host must authenticate the user, render the snapshot, and guard access to the signing key. The database remains application-level authorization, not a security boundary against a user who can edit the file.
 
 - A candidate is not permanent memory.
 - The approval record records the candidate, evidence links, workspace, and decision time.

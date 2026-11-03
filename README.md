@@ -2,9 +2,9 @@
 
 **A local-first personal AI second brain**
 
-Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing, and retrieving information across personal and project workspaces. M01-A and M01-B are merged in `main`; M01-C lexical retrieval is being prepared on a feature branch.
+Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing, and retrieving information across personal and project workspaces. M01-A, M01-B and M01-C are merged in `main`; M01-D memory approval and reversible deletion is in review.
 
-> **Project status:** local SQLite storage and approved-folder ingestion are in `main`; M01-C workspace-scoped bilingual lexical search is under review. M01-C remains unmerged until its tests and Windows compatibility are verified. No semantic-search, AI, cloud, GUI, or voice capability is claimed.
+> **Project status:** local SQLite storage, approved-folder ingestion and workspace-scoped bilingual lexical search are merged. M01-D adds a reviewable local memory lifecycle on a draft branch. No semantic search, AI, cloud, GUI or voice capability is claimed.
 
 ## Product goals
 
@@ -24,7 +24,7 @@ Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing,
 
 | Milestone | State |
 |---|---|
-| M01 — Second Brain Foundation | M01-A/B merged; M01-C on review branch |
+| M01 — Second Brain Foundation | M01-A/B/C merged; M01-D in review |
 | M02 — AI Intelligence Engine | Planned |
 | M03 — Desktop, Dashboard and Voice | Planned |
 | M04 — Integration Platform | Planned |
@@ -47,7 +47,7 @@ Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing,
 
 ## Repository status
 
-The current `main` revision contains the M01-A SQLite storage and permissions foundation and M01-B approved-folder ingestion. M01-C is under review on its own feature branch. See the milestone-specific documents for implemented behavior and verification evidence.
+The stated `main` baseline contains M01-A SQLite storage and permissions, M01-B approved-folder ingestion, and M01-C FTS5 lexical retrieval. M01-D memory approval and reversible deletion is under review on `feature/m01-d-memory-lifecycle`. See milestone documents for behavior and verification evidence.
 
 ## Development principles
 
@@ -59,4 +59,4 @@ The current `main` revision contains the M01-A SQLite storage and permissions fo
 
 ## Review status
 
-M01-C is the current review slice. M01-D or later work must wait for explicit approval after M01-C review. See [M01_SPEC.md](docs/M01_SPEC.md) and [M01-C Retrieval](docs/M01C_RETRIEVAL.md).
+M01-D is the current review slice. Do not begin M01-E or merge M01-D without explicit approval. See [M01-D Memory Lifecycle](docs/M01D_MEMORY_LIFECYCLE.md).
