@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import socket
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -53,6 +54,12 @@ class FolderIngestionTests(unittest.TestCase):
                 "SELECT * FROM sync_events ORDER BY id"
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def windows_stat(self, path: Path):
+        info = os.stat(path, follow_symlinks=False)
+        if not info.st_dev or not info.st_ino:
+            self.skipTest("filesystem does not expose a stable Windows file identity")
+        return info
 
     def test_initial_sync_is_idempotent_and_round_trips_arabic_english(self) -> None:
         expected = "مرحبا بالعالم — Jarvis notes"
@@ -264,6 +271,7 @@ class FolderIngestionTests(unittest.TestCase):
         import jarvis_core.ingestion as ingestion
 
         (self.root_path / "note.txt").write_text("original root", encoding="utf-8")
+        self.windows_stat(self.root_path)
         scan = ingestion._scan_windows
 
         def scan_then_replace(path: Path, limits: SyncLimits):
@@ -279,14 +287,86 @@ class FolderIngestionTests(unittest.TestCase):
                 self.syncer.sync("alice", self.workspace.id, self.root.id)
         self.assertEqual(self.documents(), [])
 
+    @unittest.skipUnless(os.name == "nt", "Windows file metadata behavior is platform-specific")
+    def test_windows_regular_text_file_is_ingested(self) -> None:
+        path = self.root_path / "ordinary.txt"
+        path.write_text("ordinary Windows text", encoding="utf-8")
+        self.windows_stat(self.root_path)
+        if self.windows_stat(path).st_nlink != 1:
+            self.skipTest("filesystem does not report a single-link regular file")
+        report = self.syncer.sync("alice", self.workspace.id, self.root.id)
+        self.assertEqual((report.status, report.discovered, report.added), ("completed", 1, 1))
+        self.assertEqual(self.documents()[0]["extracted_text"], "ordinary Windows text")
+
+    @unittest.skipUnless(os.name == "nt", "Windows file metadata behavior is platform-specific")
+    def test_windows_file_identity_uses_path_and_handle_file_ids(self) -> None:
+        import jarvis_core.ingestion as ingestion
+
+        path = self.root_path / "identity.txt"
+        path.write_text("identity check", encoding="utf-8")
+        self.windows_stat(self.root_path)
+        path_info = self.windows_stat(path)
+        with path.open("rb") as handle:
+            handle_info = os.fstat(handle.fileno())
+        if not path_info.st_dev or not path_info.st_ino:
+            self.skipTest("filesystem does not expose a stable Windows file identity")
+        self.assertEqual((path_info.st_dev, path_info.st_ino), (handle_info.st_dev, handle_info.st_ino))
+        self.assertEqual(path_info.st_nlink, 1)
+        self.assertEqual(handle_info.st_nlink, 1)
+        self.assertEqual(ingestion._identity(path_info), f"{path_info.st_dev}:{path_info.st_ino}")
+
+        self.syncer.sync("alice", self.workspace.id, self.root.id)
+        self.assertEqual(self.documents()[0]["file_identity"], f"{handle_info.st_dev}:{handle_info.st_ino}")
+
+    @unittest.skipUnless(os.name == "nt", "Windows hard-link behavior is platform-specific")
+    def test_windows_hard_links_are_skipped_when_supported(self) -> None:
+        original = self.root_path / "original.txt"
+        linked = self.root_path / "linked.txt"
+        original.write_text("shared file data", encoding="utf-8")
+        self.windows_stat(self.root_path)
+        if self.windows_stat(original).st_nlink != 1:
+            self.skipTest("filesystem does not report a single-link regular file")
+        try:
+            os.link(original, linked)
+        except OSError as exc:
+            self.skipTest(f"Windows hard-link creation unavailable: {exc}")
+        self.assertGreaterEqual(os.stat(original, follow_symlinks=False).st_nlink, 2)
+        with original.open("rb") as handle:
+            self.assertGreaterEqual(os.fstat(handle.fileno()).st_nlink, 2)
+
+        report = self.syncer.sync("alice", self.workspace.id, self.root.id)
+        self.assertEqual(report.status, "partial")
+        self.assertEqual(report.discovered, 0)
+        self.assertEqual(self.documents(), [])
+        self.assertTrue(any(event["error_code"] == "hard_link_skipped" for event in self.events()))
+
+    @unittest.skipUnless(os.name == "nt", "Windows symlink behavior is platform-specific")
+    def test_windows_symlink_file_and_directory_are_not_followed(self) -> None:
+        outside = self.base / "outside"
+        outside.mkdir()
+        secret = outside / "secret.txt"
+        secret.write_text("outside secret", encoding="utf-8")
+        self.windows_stat(self.root_path)
+        try:
+            (self.root_path / "linked.txt").symlink_to(secret)
+            (self.root_path / "linked-dir").symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"Windows symlink creation unavailable: {exc}")
+
+        report = self.syncer.sync("alice", self.workspace.id, self.root.id)
+        self.assertEqual(report.status, "partial")
+        self.assertEqual(report.discovered, 0)
+        self.assertEqual(self.documents(), [])
+
     @unittest.skipUnless(os.name == "nt", "Windows junction behavior is platform-specific")
     def test_windows_junction_is_not_followed(self) -> None:
         outside = self.base / "outside"
         outside.mkdir()
         (outside / "secret.txt").write_text("outside", encoding="utf-8")
+        self.windows_stat(self.root_path)
         junction = self.root_path / "junction"
-        result = __import__("subprocess").run(
-            ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+        result = subprocess.run(
+            ["cmd", "/c", f'mklink /J "{junction}" "{outside}"'],
             capture_output=True,
             text=True,
         )

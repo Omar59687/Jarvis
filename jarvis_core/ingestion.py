@@ -75,8 +75,11 @@ _ALLOWED_SUFFIXES = {".md", ".txt"}
 
 
 def _identity(info: os.stat_result) -> str:
-    # ctime helps distinguish a recycled inode from a true rename while still
-    # remaining stable across ordinary same-volume renames on supported POSIX FSes.
+    # Windows ctime is deprecated and can differ between path and handle stat
+    # results. There, use the volume/file ID pair; POSIX also uses ctime to
+    # distinguish a recycled inode from a genuine rename.
+    if os.name == "nt":
+        return f"{info.st_dev}:{info.st_ino}"
     return f"{info.st_dev}:{info.st_ino}:{info.st_ctime_ns}"
 
 
@@ -279,12 +282,18 @@ def _scan_posix(root: Path, limits: SyncLimits) -> _Scan:
 
 
 def _scan_windows(root: Path, limits: SyncLimits) -> _Scan:
-    """Best-effort Windows fallback using reparse checks and fd identity checks."""
+    """Windows fallback using fresh path metadata and opened-handle checks.
+
+    DirEntry.stat() returns zero for st_dev, st_ino, and st_nlink on Windows;
+    use os.stat() for those fields instead.
+    """
     result = _Scan()
     try:
         root_info = root.stat(follow_symlinks=False)
         if root.is_symlink() or getattr(root, "is_junction", lambda: False)() or _is_reparse(root_info):
             raise OSError("root is a reparse point")
+        if not root_info.st_dev or not root_info.st_ino:
+            raise OSError("approved root file identity is unavailable")
         result.root_identity = (str(root_info.st_dev), str(root_info.st_ino))
     except OSError:
         result.complete = False
@@ -310,22 +319,42 @@ def _scan_windows(root: Path, limits: SyncLimits) -> _Scan:
                 continue
             path = folder / entry.name
             try:
-                info = entry.stat(follow_symlinks=False)
+                entry_info = entry.stat(follow_symlinks=False)
             except OSError:
                 result.complete = False
                 result.errors.append((rel, "stat_error"))
                 continue
-            if entry.is_symlink() or _is_reparse(info) or getattr(path, "is_junction", lambda: False)():
+            if entry.is_symlink() or _is_reparse(entry_info) or getattr(path, "is_junction", lambda: False)():
                 result.complete = False
                 result.skipped.append((rel, "reparse_skipped"))
                 continue
-            if stat.S_ISDIR(info.st_mode):
+            if stat.S_ISDIR(entry_info.st_mode):
                 if _safe_name(entry.name):
                     walk(path, rel, depth + 1)
                 else:
                     result.skipped.append((rel, "excluded_name"))
                 continue
-            if not stat.S_ISREG(info.st_mode) or not _safe_name(entry.name) or Path(entry.name).suffix.lower() not in _ALLOWED_SUFFIXES:
+            if not _safe_name(entry.name) or Path(entry.name).suffix.lower() not in _ALLOWED_SUFFIXES:
+                continue
+            try:
+                # DirEntry.stat() supplies zero link count and file identity on
+                # Windows. os.stat() performs a fresh no-follow query instead.
+                info = os.stat(path, follow_symlinks=False)
+            except OSError:
+                result.complete = False
+                result.errors.append((rel, "stat_error"))
+                continue
+            if _is_reparse(info) or stat.S_ISLNK(info.st_mode) or getattr(path, "is_junction", lambda: False)():
+                result.complete = False
+                result.skipped.append((rel, "reparse_skipped"))
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                result.complete = False
+                result.errors.append((rel, "file_type_changed"))
+                continue
+            if not info.st_dev or not info.st_ino:
+                result.complete = False
+                result.errors.append((rel, "file_identity_unavailable"))
                 continue
             if info.st_nlink != 1:
                 result.complete = False
@@ -344,8 +373,16 @@ def _scan_windows(root: Path, limits: SyncLimits) -> _Scan:
                     before = os.fstat(handle.fileno())
                     if _identity(before) != _identity(info) or not stat.S_ISREG(before.st_mode):
                         raise OSError("file changed during open")
+                    if before.st_nlink != 1:
+                        result.complete = False
+                        result.skipped.append((rel, "hard_link_skipped"))
+                        continue
                     raw = handle.read(limits.max_file_bytes + 1)
                     after = os.fstat(handle.fileno())
+                if after.st_nlink != 1:
+                    result.complete = False
+                    result.skipped.append((rel, "hard_link_skipped"))
+                    continue
                 if (len(raw) > limits.max_file_bytes or _identity(before) != _identity(after) or
                         before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns):
                     result.complete = False

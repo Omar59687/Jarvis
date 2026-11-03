@@ -56,7 +56,9 @@ reports = synchronizer.run_due(actor_id, max_roots=1)
 
 On POSIX systems, traversal opens each directory and file relative to an already-open directory descriptor with no-follow flags, compares pre-open and opened identities, rejects hard-linked files and mounted-volume crossings, and checks file identity, size, modification time, and change time before and after a bounded read. The root is reopened and identity-checked before database changes commit. Symlinks and non-regular files are never read.
 
-On Windows, the implementation rejects detected symlinks and junction/reparse points, checks the opened file identity and attributes against the enumerated entry, and rechecks the root identity before commit. Python's standard library does not currently provide a portable handle-relative directory enumeration API for this implementation. A hostile process with write access to an approved directory could race path-based Windows enumeration/open operations. The checks reduce this risk but cannot eliminate it. For that reason, only approve folders whose contents are controlled by the user; stronger hostile-local-process protection requires a Windows handle-based native implementation and dedicated Windows testing.
+On Windows, [`DirEntry.stat()` returns zero for `st_dev`, `st_ino`, and `st_nlink`](https://docs.python.org/3.12/library/os.html#os.DirEntry.stat), so ingestion uses fresh `os.stat(path, follow_symlinks=False)` metadata and corroborates file identity and link count with `os.fstat()` on the opened handle. It rejects detected symlinks and junction/reparse points and skips files whose reported hard-link count is not exactly one. Windows file identity uses the volume and file IDs, not `st_ctime_ns`: Windows `st_ctime` is deprecated as a creation-time field and may differ between path and handle results. Roots or files without a stable nonzero identity are rejected or skipped. The scanner rechecks root identity before commit.
+
+Python's standard library does not currently provide a portable handle-relative directory enumeration API for this implementation. A hostile process with write access to an approved directory could race path-based Windows enumeration/open operations. The checks reduce this risk but cannot eliminate it. For that reason, only approve folders whose contents are controlled by the user; stronger hostile-local-process protection requires a Windows handle-based native implementation and dedicated Windows testing.
 
 The database permission layer assumes `actor_id` comes from a trusted application host. It is not an authentication system. The CLI is intended for a local trusted operator; do not expose actor IDs to an untrusted caller. SQLite itself is local persistence, not encrypted storage. OS account protections and backup handling remain important.
 
@@ -72,14 +74,14 @@ Tests use only generated files in temporary directories. No home directory, user
 
 ## Validation snapshot
 
-On Linux x86_64 with Python 3.12.14 and SQLite 3.53.1, the repository suite completed with 37 tests total: 35 passed and two Windows-only tests skipped. The exercised commands were `python -m py_compile jarvis_core/*.py tests/*.py`, `python -m jarvis_core.ingestion --help`, and `python -m unittest discover -s tests -v`. Windows-specific behavior still requires a Windows runner.
+On Linux x86_64 with Python 3.12.14 and SQLite 3.53.1, the repository suite completed with 41 tests total: 35 passed and six Windows-only tests skipped. The exercised commands were `python -m py_compile jarvis_core/*.py tests/*.py`, `python -m jarvis_core.ingestion --help`, and `python -m unittest discover -s tests -v`. Windows-specific behavior still requires a Windows runner.
 
 ## Windows verification checklist
 
 Run from a clean checkout of this branch with Python 3.12. Use only the suite's temporary synthetic directories.
 
 - [ ] Run `py -3.12 -m py_compile jarvis_core/*.py tests/*.py` and `py -3.12 -m jarvis_core.ingestion --help`.
-- [ ] Run `py -3.12 -m unittest discover -s tests -p test_ingestion.py -v`; confirm the junction and root-replacement tests execute rather than skip. Confirm linked files/directories and junction contents are not ingested.
+- [ ] Run `py -3.12 -m unittest discover -s tests -p test_ingestion.py -v`; confirm normal files ingest, path/handle file IDs agree, and the junction, symlink, hard-link (where supported), and root-replacement tests execute rather than skip. Confirm linked or hard-linked contents are not ingested.
 - [ ] Enable Windows Developer Mode or use an environment where symlink creation is allowed; run `py -3.12 -m unittest discover -s tests -p test_storage.py -v` and confirm the symlink tests execute rather than skip.
 - [ ] Confirm the root-replacement test raises `AccessDenied` and commits no document rows when the root is replaced between scan and persistence.
 - [ ] Run the complete `py -3.12 -m unittest discover -s tests -v`; verify fresh initialization creates schema version 2, the v1-to-v2 upgrade preserves existing workspace data, and all M01-A tests pass.
