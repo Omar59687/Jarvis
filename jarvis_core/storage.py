@@ -20,6 +20,34 @@ from uuid import uuid4
 
 
 SCHEMA_VERSION = 1
+REQUIRED_BACKUP_COLUMNS = {
+    "workspaces": {"id", "name", "kind", "created_at"},
+    "workspace_permissions": {
+        "workspace_id",
+        "principal_id",
+        "permission",
+        "granted_at",
+        "granted_by",
+    },
+    "approved_roots": {
+        "id",
+        "workspace_id",
+        "canonical_path",
+        "created_by",
+        "created_at",
+        "revoked_at",
+    },
+    "audit_events": {
+        "id",
+        "workspace_id",
+        "actor_id",
+        "event_type",
+        "resource_type",
+        "resource_id",
+        "metadata_json",
+        "created_at",
+    },
+}
 
 
 class WorkspaceKind(str, Enum):
@@ -493,13 +521,13 @@ class Database:
                 changed = cursor.rowcount == 1
                 if changed:
                     self._insert_audit(
-                        connection,
-                        workspace_id,
-                        actor_id,
-                        "permission.granted",
-                        "permission",
-                        principal_id,
-                        {"permission": permission_value.value},
+                        connection=connection,
+                        workspace_id=workspace_id,
+                        actor_id=actor_id,
+                        event_type="permission.granted",
+                        resource_type="permission",
+                        resource_id=principal_id,
+                        metadata={"permission": permission_value.value},
                     )
                 self._commit(connection)
                 return changed
@@ -815,8 +843,21 @@ class Database:
             if integrity != "ok":
                 raise sqlite3.DatabaseError(f"backup integrity check failed: {integrity}")
             source_version = int(source.execute("PRAGMA user_version").fetchone()[0])
-            if source_version > SCHEMA_VERSION:
-                raise RuntimeError("backup schema is newer than this application supports")
+            if source_version < 1 or source_version > SCHEMA_VERSION:
+                raise sqlite3.DatabaseError(
+                    f"unsupported backup schema version: {source_version}"
+                )
+            for table, required_columns in REQUIRED_BACKUP_COLUMNS.items():
+                columns = {
+                    row[1]
+                    for row in source.execute(f"PRAGMA table_info({table})").fetchall()
+                }
+                if not required_columns <= columns:
+                    raise sqlite3.DatabaseError(
+                        f"backup is missing required schema for table {table}"
+                    )
+            if source.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise sqlite3.DatabaseError("backup contains foreign key violations")
             source.backup(target)
         except Exception:
             target.close()

@@ -27,7 +27,7 @@ Audit events record permission and approved-root changes. Root paths and source 
 
 Use Database.backup_to(destination, actor_id) to produce a consistent SQLite online backup. The actor must manage every workspace in the database. Store backups in a protected location; a backup contains the full database.
 
-To restore, close all application connections, then call Database.restore_from_backup(backup_path, destination). Restore checks SQLite integrity and schema version, writes to a temporary sibling file, and replaces the destination. Keep an independent copy of the current database before replacing it. On Windows, an open database handle may prevent replacement; stop the application and retry.
+To restore, close all application connections, then call Database.restore_from_backup(backup_path, destination). Restore checks SQLite integrity, supported schema version, required table columns, and foreign-key consistency before writing to a temporary sibling file and replacing the destination. Invalid backups are rejected before the destination is touched. Keep an independent copy of the current database before replacing it. On Windows, an open database handle may prevent replacement; stop the application and retry.
 
 Backups are not encrypted by this slice. Deleting data from the live database does not delete older copies of backups. Retention and secure-purge policy remain for a later decision.
 

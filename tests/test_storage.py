@@ -171,6 +171,18 @@ print(workspace.name)
             )
         )
         self.assertFalse(self.db.check_access("bob", "project-1", Permission.READ))
+        permission_events = [
+            event
+            for event in self.db.audit_events("alice", "project-1")
+            if event["event_type"] in {"permission.granted", "permission.revoked"}
+        ]
+        self.assertEqual(
+            [(event["event_type"], event["metadata"]) for event in permission_events],
+            [
+                ("permission.granted", {"permission": "read"}),
+                ("permission.revoked", {"permission": "read"}),
+            ],
+        )
 
     def test_approved_root_register_revoke_and_audit_persistence(self) -> None:
         root_path = self.directory / "approved"
@@ -279,6 +291,44 @@ print(workspace.name)
             restored.audit_events("alice", "project-1")[-1]["event_type"],
             "permission.granted",
         )
+
+    def _create_existing_destination(self) -> tuple[Path, Database]:
+        destination = self.directory / "existing.sqlite3"
+        existing = Database(destination)
+        existing.initialize()
+        existing.create_workspace(
+            "Must remain", WorkspaceKind.PERSONAL, "existing-owner", "existing-1"
+        )
+        return destination, existing
+
+    def test_invalid_backup_does_not_replace_existing_destination(self) -> None:
+        destination, existing = self._create_existing_destination()
+        original_bytes = destination.read_bytes()
+        invalid_backup = self.directory / "invalid-backup.sqlite3"
+        invalid_backup.write_bytes(b"not a Jarvis SQLite backup")
+        with self.assertRaises(sqlite3.DatabaseError):
+            Database.restore_from_backup(invalid_backup, destination)
+        self.assertEqual(destination.read_bytes(), original_bytes)
+        self.assertEqual(
+            existing.get_workspace("existing-owner", "existing-1").name, "Must remain"
+        )
+        self.assertFalse(Path(str(destination) + ".restore-tmp").exists())
+
+    def test_corrupt_backup_does_not_replace_existing_destination(self) -> None:
+        destination, existing = self._create_existing_destination()
+        original_bytes = destination.read_bytes()
+        valid_backup = self.db.backup_to(
+            self.directory / "valid-before-corruption.sqlite3", actor_id="alice"
+        )
+        corrupt_backup = self.directory / "corrupt-backup.sqlite3"
+        corrupt_backup.write_bytes(valid_backup.read_bytes()[:100])
+        with self.assertRaises(sqlite3.DatabaseError):
+            Database.restore_from_backup(corrupt_backup, destination)
+        self.assertEqual(destination.read_bytes(), original_bytes)
+        self.assertEqual(
+            existing.get_workspace("existing-owner", "existing-1").name, "Must remain"
+        )
+        self.assertFalse(Path(str(destination) + ".restore-tmp").exists())
 
     def test_core_storage_operations_do_not_use_network(self) -> None:
         with patch.object(socket, "socket", side_effect=AssertionError("network attempted")):
