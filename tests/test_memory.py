@@ -89,6 +89,9 @@ class MemoryLifecycleTests(unittest.TestCase):
         self.service.reject("alice","ws-a",cand.id,self._context(cand,"reject_candidate"))
         self.assertEqual(self.service.list_memories("alice","ws-a"),[])
         with self.assertRaises(LifecycleConflict): self.service.inspect_candidate("alice","ws-a",cand.id)
+        resolved=self.service.list_candidates("alice","ws-a",state="rejected")[0]
+        self.assertIsNone(resolved.content)
+        self.assertEqual(resolved.evidence,())
         with self.db._connection() as c:
             row=c.execute("SELECT content,state FROM memory_candidates WHERE id=?",(cand.id,)).fetchone()
             self.assertEqual(tuple(row),(None,"rejected"))
@@ -137,6 +140,31 @@ class MemoryLifecycleTests(unittest.TestCase):
         with self.db._connection() as c:
             audit=" ".join(r[0] for r in c.execute("SELECT metadata_json FROM audit_events WHERE resource_id=?",(memory.id,)))
         self.assertNotIn("private phrase",audit)
+
+    def test_deleted_memory_history_requires_recovery_permission(self):
+        self.db.grant_permission("alice", "ws-a", "reader", Permission.READ)
+        cand=self._propose("deleted private revision")
+        memory=self.service.approve("alice","ws-a",cand.id,self._context(cand))
+        resolved=self.service.list_candidates("reader", "ws-a", state="approved")[0]
+        self.assertIsNone(resolved.content)
+        self.assertEqual(resolved.evidence,())
+        current=self.service.edit("alice","ws-a",memory.id,expected_revision=1,content="replacement text")
+        self.service.soft_delete("alice","ws-a",current.id,expected_state_version=current.state_version)
+
+        with self.assertRaises(LifecycleConflict):
+            self.service.list_revisions("reader", "ws-a", memory.id)
+        with self.assertRaises(AccessDenied):
+            self.service.list_deleted_revisions("reader", "ws-a", memory.id)
+        with self.assertRaises(AccessDenied):
+            self.service.list_deleted("reader", "ws-a")
+        with self.assertRaises(LifecycleConflict):
+            self.service.get("reader", "ws-a", memory.id)
+        self.assertEqual(self.service.list_memories("reader", "ws-a"), [])
+
+        deleted=self.service.list_deleted("alice", "ws-a")[0]
+        self.assertEqual(deleted.id, memory.id)
+        history=self.service.list_deleted_revisions("alice", "ws-a", memory.id)
+        self.assertEqual([r.content for r in history], ["deleted private revision", "replacement text"])
 
     def test_soft_delete_restore_and_purge_confirmation(self):
         cand=self._propose()

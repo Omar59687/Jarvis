@@ -431,17 +431,45 @@ class MemoryService:
                 result=self._memory(c,self._load_memory(c,workspace_id,memory_id)); self.db._commit(c); return result
             except Exception: self.db._rollback(c); raise
 
+    @staticmethod
+    def _revision_history(connection: sqlite3.Connection, workspace_id: str,
+                          memory_id: str) -> list[MemoryRevision]:
+        rows=connection.execute(
+            "SELECT * FROM memory_revisions WHERE memory_id=? AND workspace_id=? ORDER BY revision",
+            (memory_id,workspace_id),
+        ).fetchall()
+        result=[]
+        for row in rows:
+            evidence_rows=connection.execute(
+                "SELECT document_id,root_id,relative_path,source_sha256,observed_at "
+                "FROM memory_revision_evidence WHERE memory_id=? AND revision=? ORDER BY document_id",
+                (row["memory_id"],row["revision"]),
+            ).fetchall()
+            evidence=tuple(Evidence(*tuple(item)) for item in evidence_rows)
+            result.append(MemoryRevision(row["memory_id"],row["revision"],row["content"],
+                row["content_sha256"],row["edited_by"],row["created_at"],evidence))
+        return result
+
     def list_revisions(self, actor_id: str, workspace_id: str, memory_id: str) -> list[MemoryRevision]:
+        """List history for active memories only; deleted content uses recovery access."""
         self.db.initialize()
         with self.db._connection() as c:
-            self.db._require_access(c,actor_id,workspace_id,Permission.READ); self._load_memory(c,workspace_id,memory_id)
-            rows=c.execute("SELECT * FROM memory_revisions WHERE memory_id=? AND workspace_id=? ORDER BY revision",(memory_id,workspace_id)).fetchall()
-            result=[]
-            for r in rows:
-                ev_rows=c.execute("SELECT document_id,root_id,relative_path,source_sha256,observed_at FROM memory_revision_evidence WHERE memory_id=? AND revision=? ORDER BY document_id",(r["memory_id"],r["revision"])).fetchall()
-                ev=tuple(Evidence(*tuple(e)) for e in ev_rows)
-                result.append(MemoryRevision(r["memory_id"],r["revision"],r["content"],r["content_sha256"],r["edited_by"],r["created_at"],ev))
-            return result
+            self.db._require_access(c,actor_id,workspace_id,Permission.READ)
+            memory=self._load_memory(c,workspace_id,memory_id)
+            if memory["deleted_at"] is not None:
+                raise LifecycleConflict("memory is deleted; use authorized recovery history")
+            return self._revision_history(c,workspace_id,memory_id)
+
+    def list_deleted_revisions(self, actor_id: str, workspace_id: str,
+                               memory_id: str) -> list[MemoryRevision]:
+        """Read deleted-memory history only with write access for recovery."""
+        self.db.initialize()
+        with self.db._connection() as c:
+            self.db._require_access(c,actor_id,workspace_id,Permission.WRITE)
+            memory=self._load_memory(c,workspace_id,memory_id)
+            if memory["deleted_at"] is None:
+                raise LifecycleConflict("memory is not deleted")
+            return self._revision_history(c,workspace_id,memory_id)
 
     def soft_delete(self, actor_id: str, workspace_id: str, memory_id: str, *, expected_state_version: int) -> Memory:
         return self._set_deleted(actor_id,workspace_id,memory_id,expected_state_version,True)
