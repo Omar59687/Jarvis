@@ -119,16 +119,25 @@ workspace = db.get_workspace("alice", sys.argv[2])
 print(workspace.name)
 """
         environment = os.environ.copy()
+
         existing = environment.get("PYTHONPATH", "")
-        environment["PYTHONPATH"] = str(ROOT) + (os.pathsep + existing if existing else "")
+        environment["PYTHONPATH"] = str(ROOT) + (
+            os.pathsep + existing if existing else ""
+        )
+
+        environment["PYTHONIOENCODING"] = "utf-8"
+
         result = subprocess.run(
             [sys.executable, "-c", script, str(self.db_path), self.workspace.id],
             cwd=ROOT,
             env=environment,
             capture_output=True,
             text=True,
-            check=True,
+            encoding="utf-8",
+            check=False,
         )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "مشروع Jarvis — Project")
 
     def test_workspace_listing_and_access_are_isolated(self) -> None:
