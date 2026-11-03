@@ -64,7 +64,7 @@ The database permission layer assumes `actor_id` comes from a trusted applicatio
 
 ## Migration and recovery
 
-The database migration advances `PRAGMA user_version` from 1 (M01-A) to 2. Migrations are applied transactionally by `Database.initialize()` and can be called repeatedly. A failed migration rolls back the schema changes and version update.
+M01-B advances the database schema from version 1 (M01-A) to version 2. M01-C adds schema version 3 for FTS5 lexical retrieval; see M01C_RETRIEVAL.md. Migrations are applied transactionally by Database.initialize() and can be called repeatedly. A failed migration rolls back the schema changes and version update.
 
 The database location is provided by `default_database_path()` and documented in [M01-A Storage](M01A_STORAGE.md). Before upgrades or restore operations, close the Jarvis process and create a verified backup using the storage API. Restore uses a temporary sibling database, runs SQLite integrity and schema checks, and replaces the destination only after validation succeeds. Keep backups private: document text is stored in clear text inside SQLite.
 

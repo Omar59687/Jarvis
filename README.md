@@ -1,10 +1,10 @@
 # Jarvis 2.0
 
-**A local-first personal AI second brain — project foundation**
+**A local-first personal AI second brain**
 
-Jarvis 2.0 is planned as a modular personal assistant that helps capture, organize, retrieve, and act on information across personal and project workspaces. Its design combines local storage and local models with optional cloud model routing, explicit permissions, and evidence-linked memory.
+Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing, and retrieving information across personal and project workspaces. M01-A and M01-B are merged in `main`; M01-C lexical retrieval is being prepared on a feature branch.
 
-> **Project status:** foundation and architecture documentation only. No application code, runtime, model, or third-party dependency has been added. Requirements marked **Confirmed** come from the project brief; architecture choices marked **Proposed** still require implementation evidence and review.
+> **Project status:** local SQLite storage and approved-folder ingestion are in `main`; M01-C workspace-scoped bilingual lexical search is under review. M01-C remains unmerged until its tests and Windows compatibility are verified. No semantic-search, AI, cloud, GUI, or voice capability is claimed.
 
 ## Product goals
 
@@ -24,7 +24,7 @@ Jarvis 2.0 is planned as a modular personal assistant that helps capture, organi
 
 | Milestone | State |
 |---|---|
-| M01 — Second Brain Foundation | Specified; not implemented |
+| M01 — Second Brain Foundation | M01-A/B merged; M01-C on review branch |
 | M02 — AI Intelligence Engine | Planned |
 | M03 — Desktop, Dashboard and Voice | Planned |
 | M04 — Integration Platform | Planned |
@@ -41,11 +41,13 @@ Jarvis 2.0 is planned as a modular personal assistant that helps capture, organi
 - [Decisions](docs/DECISIONS.md) — confirmed constraints and provisional architecture decisions.
 - [Open-source stack audit](docs/OPEN_SOURCE_STACK.md) — component comparison, licenses, risks, and adoption status.
 - [M01 specification](docs/M01_SPEC.md) — acceptance criteria for the first milestone.
+- [M01-B ingestion](docs/M01B_INGESTION.md) — approved-folder synchronization.
+- [M01-C retrieval](docs/M01C_RETRIEVAL.md) — lexical search behavior and limitations.
 - [Agent and contributor instructions](AGENTS.md).
 
 ## Repository status
 
-The repository was inspected before this documentation change. At that point, `main` contained only a one-character README and no application code, tests, or existing architecture decisions. The documents therefore establish a starting point; they do not describe implemented behavior.
+The current `main` revision contains the M01-A SQLite storage and permissions foundation and M01-B approved-folder ingestion. M01-C is under review on its own feature branch. See the milestone-specific documents for implemented behavior and verification evidence.
 
 ## Development principles
 
@@ -55,6 +57,6 @@ The repository was inspected before this documentation change. At that point, `m
 4. Require explicit consent for permanent memories, cross-workspace retrieval, sensitive integrations, and consequential external actions.
 5. Separate proposals from verified implementation. Do not report tests, integrations, or security properties that have not been checked.
 
-## Next task
+## Review status
 
-The proposed next task is **M01-A: SQLite storage and permissions**. It is not authorized by this documentation change and should begin only after explicit approval. See [M01_SPEC.md](docs/M01_SPEC.md).
+M01-C is the current review slice. M01-D or later work must wait for explicit approval after M01-C review. See [M01_SPEC.md](docs/M01_SPEC.md) and [M01-C Retrieval](docs/M01C_RETRIEVAL.md).
