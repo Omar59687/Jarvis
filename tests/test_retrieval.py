@@ -197,6 +197,7 @@ class BilingualRetrievalTests(unittest.TestCase):
                 "DELETE FROM document_search WHERE workspace_id = ?",
                 (self.workspace.id,),
             )
+            connection.commit()
         self.assertEqual(self.search_index.search("alice", self.workspace.id, "rebuildable"), [])
         self.assertEqual(self.search_index.rebuild("alice", self.workspace.id), 1)
         self.assertEqual(
