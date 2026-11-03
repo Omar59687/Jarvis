@@ -8,7 +8,7 @@ Search excludes soft-deleted documents and documents whose approved root has bee
 
 ## Schema and index lifecycle
 
-M01-C advances SQLite schema version 2 to version 3. The transaction creates an FTS5 table, indexes eligible existing documents, and installs triggers for document insert/update/delete and root revocation/deletion. Changed text and renamed paths are reflected by existing M01-B writes through these triggers. Soft deletion removes text from the active search index.
+M01-C advances SQLite schema version 2 to version 3. The transaction creates an FTS5 table, indexes eligible existing documents, and installs triggers for document insert/update/delete and root revocation/deletion. Changed text and renamed paths are reflected by existing M01-B writes through these triggers. The document update trigger only runs for search-relevant fields and skips updates whose indexed values did not change, so routine last-seen timestamps do not rewrite FTS entries. Soft deletion removes text from the active search index.
 
 SearchIndex.rebuild(actor_id, workspace_id) rebuilds only that authorized workspace's active source documents and requires write permission. Repeated rebuilds are idempotent. A schema v3 SQLite backup contains the FTS5 table. A schema v2 backup remains restorable and Database.initialize() upgrades it before search.
 

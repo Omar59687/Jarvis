@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 import socket
 import tempfile
@@ -52,12 +53,56 @@ class BilingualRetrievalTests(unittest.TestCase):
         english = "Jarvis local knowledge and memory"
         self.add_file("arabic.md", arabic)
         self.add_file("english.txt", english)
-        ar = self.search_index.search("alice", self.workspace.id, "الذاكرة")
+        ar = self.search_index.search("alice", self.workspace.id, "والذاكرة")
         en = self.search_index.search("alice", self.workspace.id, "knowledge")
         self.assertEqual([item.relative_path for item in ar], ["arabic.md"])
         self.assertEqual([item.relative_path for item in en], ["english.txt"])
-        self.assertIn("الذاكرة", ar[0].excerpt)
+        self.assertIn("والذاكرة", ar[0].excerpt)
         self.assertIn("knowledge", en[0].excerpt)
+
+    def test_arabic_conjunction_prefix_is_not_stripped_or_stemmed(self) -> None:
+        self.add_file("arabic-prefix.md", "ملاحظات المعرفة والذاكرة المحلية")
+        with_prefix = self.search_index.search(
+            "alice", self.workspace.id, "والذاكرة"
+        )
+        without_prefix = self.search_index.search(
+            "alice", self.workspace.id, "الذاكرة"
+        )
+        self.assertEqual([item.relative_path for item in with_prefix], ["arabic-prefix.md"])
+        self.assertEqual(without_prefix, [])
+
+    def test_unchanged_sync_does_not_rebuild_search_index(self) -> None:
+        self.add_file("stable.txt", "unchanged indexed text")
+        traced_statements: list[str] = []
+        original_connection = self.database._connection
+
+        @contextmanager
+        def traced_connection():
+            with original_connection() as connection:
+                connection.set_trace_callback(traced_statements.append)
+                yield connection
+
+        with patch.object(
+            self.database, "_connection", side_effect=traced_connection
+        ):
+            report = self.synchronizer.sync(
+                "alice", self.workspace.id, self.root.id
+            )
+
+        self.assertEqual((report.added, report.changed), (0, 0))
+        normalized = [statement.upper() for statement in traced_statements]
+        self.assertTrue(
+            any("UPDATE INGESTED_DOCUMENTS SET LAST_SEEN_AT" in statement
+                for statement in normalized)
+        )
+        self.assertFalse(
+            any("DELETE FROM DOCUMENT_SEARCH" in statement
+                for statement in normalized)
+        )
+        self.assertFalse(
+            any("INSERT INTO DOCUMENT_SEARCH" in statement
+                for statement in normalized)
+        )
 
     def test_rank_order_is_stable_and_deterministic_for_ties(self) -> None:
         self.add_file("first.txt", "memory evidence")

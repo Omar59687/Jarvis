@@ -311,7 +311,14 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
             """,
             """
             CREATE TRIGGER ingested_documents_search_update
-            AFTER UPDATE ON ingested_documents
+            AFTER UPDATE OF id, workspace_id, root_id, relative_path,
+                            extracted_text, deleted_at ON ingested_documents
+            WHEN OLD.id IS NOT NEW.id
+              OR OLD.workspace_id IS NOT NEW.workspace_id
+              OR OLD.root_id IS NOT NEW.root_id
+              OR OLD.relative_path IS NOT NEW.relative_path
+              OR OLD.extracted_text IS NOT NEW.extracted_text
+              OR OLD.deleted_at IS NOT NEW.deleted_at
             BEGIN
                 DELETE FROM document_search WHERE document_id = OLD.id;
                 INSERT INTO document_search
