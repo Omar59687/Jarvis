@@ -19,7 +19,7 @@ from typing import Iterator, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 REQUIRED_BACKUP_COLUMNS = {
     "workspaces": {"id", "name", "kind", "created_at"},
     "workspace_permissions": {
@@ -180,6 +180,95 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
             """
             CREATE INDEX audit_events_workspace_order
                 ON audit_events(workspace_id, id)
+            """,
+        ),
+    ),
+    Migration(
+        version=2,
+        statements=(
+            """
+            CREATE TABLE ingested_documents (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                root_id TEXT NOT NULL REFERENCES approved_roots(id) ON DELETE CASCADE,
+                relative_path TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL,
+                extracted_text TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+                mtime_ns INTEGER NOT NULL,
+                file_identity TEXT,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                deleted_at TEXT
+            )
+            """,
+            """
+            CREATE UNIQUE INDEX ingested_documents_active_path
+                ON ingested_documents(root_id, relative_path)
+                WHERE deleted_at IS NULL
+            """,
+            """
+            CREATE INDEX ingested_documents_workspace_active
+                ON ingested_documents(workspace_id, deleted_at, root_id)
+            """,
+            """
+            CREATE TABLE sync_runs (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                root_id TEXT NOT NULL REFERENCES approved_roots(id) ON DELETE CASCADE,
+                actor_id TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('completed', 'partial', 'failed')),
+                discovered_count INTEGER NOT NULL DEFAULT 0,
+                changed_count INTEGER NOT NULL DEFAULT 0,
+                deleted_count INTEGER NOT NULL DEFAULT 0,
+                error_count INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT NOT NULL,
+                finished_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE sync_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL REFERENCES sync_runs(id) ON DELETE CASCADE,
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                root_id TEXT NOT NULL REFERENCES approved_roots(id) ON DELETE CASCADE,
+                document_id TEXT REFERENCES ingested_documents(id) ON DELETE SET NULL,
+                event_type TEXT NOT NULL CHECK(event_type IN
+                    ('added', 'changed', 'deleted', 'renamed', 'skipped', 'error')),
+                relative_path TEXT,
+                previous_path TEXT,
+                content_sha256 TEXT,
+                error_code TEXT,
+                created_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE INDEX sync_events_workspace_order
+                ON sync_events(workspace_id, id)
+            """,
+            """
+            CREATE TABLE sync_root_state (
+                root_id TEXT PRIMARY KEY REFERENCES approved_roots(id) ON DELETE CASCADE,
+                device_id TEXT NOT NULL,
+                file_id TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE sync_preferences (
+                root_id TEXT PRIMARY KEY REFERENCES approved_roots(id) ON DELETE CASCADE,
+                enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+                interval_seconds INTEGER NOT NULL CHECK(interval_seconds BETWEEN 60 AND 86400),
+                next_due_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TRIGGER approved_root_revocation_disables_sync
+            AFTER UPDATE OF revoked_at ON approved_roots
+            WHEN NEW.revoked_at IS NOT NULL AND OLD.revoked_at IS NULL
+            BEGIN
+                UPDATE sync_preferences SET enabled = 0 WHERE root_id = NEW.id;
+            END
             """,
         ),
     ),

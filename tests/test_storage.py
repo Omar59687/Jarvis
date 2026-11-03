@@ -23,6 +23,7 @@ from jarvis_core import (  # noqa: E402
     Permission,
     WorkspaceKind,
 )
+from jarvis_core.storage import DEFAULT_MIGRATIONS  # noqa: E402
 
 
 class StorageTests(unittest.TestCase):
@@ -45,7 +46,7 @@ class StorageTests(unittest.TestCase):
             self.assertTrue(path.exists())
             with db._connection() as connection:
                 self.assertEqual(
-                    connection.execute("PRAGMA user_version").fetchone()[0], 1
+                    connection.execute("PRAGMA user_version").fetchone()[0], 2
                 )
                 tables = {
                     row[0]
@@ -57,23 +58,38 @@ class StorageTests(unittest.TestCase):
                 {"workspaces", "workspace_permissions", "approved_roots", "audit_events"}
                 <= tables
             )
+            self.assertTrue(
+                {
+                    "ingested_documents",
+                    "sync_runs",
+                    "sync_events",
+                    "sync_preferences",
+                    "sync_root_state",
+                }
+                <= tables
+            )
 
     def test_repeated_initialization_is_idempotent(self) -> None:
         for _ in range(3):
             self.db.initialize()
         with self.db._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 1)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
             count = connection.execute(
                 "SELECT COUNT(*) FROM workspaces WHERE id = ?", ("project-1",)
             ).fetchone()[0]
         self.assertEqual(count, 1)
 
     def test_successful_upgrade_applies_new_migration_once(self) -> None:
-        version_one = Database(self.directory / "upgrade.sqlite3")
+        version_one = Database(
+            self.directory / "upgrade.sqlite3", migrations=DEFAULT_MIGRATIONS[:1]
+        )
         version_one.initialize()
+        version_one.create_workspace(
+            "Preserved", WorkspaceKind.PERSONAL, "upgrade-owner", "upgrade-1"
+        )
         version_two_migrations = (
-            *version_one._migrations,
-            Migration(2, ("CREATE TABLE migration_marker (value TEXT NOT NULL)",)),
+            *DEFAULT_MIGRATIONS,
+            Migration(3, ("CREATE TABLE migration_marker (value TEXT NOT NULL)",)),
         )
         version_two = Database(
             self.directory / "upgrade.sqlite3", migrations=version_two_migrations
@@ -81,7 +97,7 @@ class StorageTests(unittest.TestCase):
         version_two.initialize()
         version_two.initialize()
         with version_two._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
             self.assertEqual(
                 connection.execute(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type = ? AND name = ?",
@@ -89,6 +105,9 @@ class StorageTests(unittest.TestCase):
                 ).fetchone()[0],
                 1,
             )
+        self.assertEqual(
+            version_two.get_workspace("upgrade-owner", "upgrade-1").name, "Preserved"
+        )
 
     def test_migration_failure_rolls_back_schema_and_version(self) -> None:
         migrations = (
