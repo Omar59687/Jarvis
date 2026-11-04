@@ -34,6 +34,17 @@ class HistoricalDiagnosticClient:
         )
 
 
+class WrongLabelHistoricalDiagnosticClient:
+    allowed_models = frozenset({MODEL})
+
+    def generate(self, prompt, model, *, system_prompt=None, settings=GenerationSettings()):
+        self.prompt = prompt
+        self.system_prompt = system_prompt
+        return GenerationResult(
+            model=model, text="The fictional room code was Amber-7 [D1].", done=True,
+        )
+
+
 class EvaluationFrameworkTests(unittest.TestCase):
     def test_versioned_dataset_has_unique_cases_and_synthetic_sources(self):
         dataset = load_dataset()
@@ -120,6 +131,29 @@ class EvaluationFrameworkTests(unittest.TestCase):
         self.assertEqual(diagnostic["ollama_reported"]["eval_duration_ns"], 400_000_000)
         self.assertEqual(report["cases"][0]["ollama_returned_model"], MODEL)
         self.assertEqual(report["metrics"]["ollama_reported_durations_ns"]["eval_duration_ns"]["count"], 1)
+
+    def test_historical_diagnostic_retains_evidence_when_bad_citation_is_rejected(self):
+        client = WrongLabelHistoricalDiagnosticClient()
+        with tempfile.TemporaryDirectory() as temporary:
+            report = evaluate(live_client=client, model=MODEL, output_dir=Path(temporary),
+                              case_ids={"historical-en-01"},
+                              diagnostic_case_ids={"historical-en-01"})
+            diagnostic = json.loads(
+                (Path(temporary) / "historical-en-01_diagnostic.json").read_text(encoding="utf-8")
+            )
+        self.assertEqual(report["cases"][0]["outcome"], "invalid_citations")
+        self.assertEqual(diagnostic["rag_outcome"], "invalid_citations")
+        self.assertEqual(diagnostic["model_output"], "The fictional room code was Amber-7 [D1].")
+        self.assertEqual(diagnostic["model_prompt"], client.prompt)
+        self.assertEqual(diagnostic["system_prompt"], client.system_prompt)
+        self.assertEqual(len(diagnostic["selected_evidence"]), 1)
+        evidence = diagnostic["selected_evidence"][0]
+        self.assertEqual(evidence["citation_id"], "M1")
+        self.assertEqual(evidence["source_type"], "memory")
+        self.assertEqual(evidence["source_status"], "historical_sources")
+        self.assertIn("Amber-7", evidence["excerpt"])
+        self.assertEqual(diagnostic["citations"], [])
+        self.assertIn("[M1]", diagnostic["model_prompt"])
 
     def test_ollama_timing_metadata_is_not_fabricated_when_missing(self):
         with tempfile.TemporaryDirectory() as temporary:

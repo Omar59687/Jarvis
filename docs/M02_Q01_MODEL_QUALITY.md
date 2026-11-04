@@ -10,7 +10,7 @@ Plausible causes of the reported Gemma abstention include the prior wording emph
 
 The mixed-RAG prompt now distinguishes the uses: an approved historical snapshot can support a question about the past when the snapshot directly supports the answer, must be cited with its request-local `[M#]` label, and must be described as historical. A historical snapshot alone does not support a present-state claim. Retrieval, source revocation, approval, workspace authorization, evidence selection, and citation validation are unchanged. The instruction is not a factuality guarantee and does not compel an answer where evidence is insufficient.
 
-The offline runner accepts a case filter and an opt-in diagnostic filter. The diagnostic JSON captures the exact synthetic question, selected evidence excerpts and source statuses, model system/user prompts, generated output, RAG outcome, citations, and timing metadata. It is written to the chosen output directory. A fake-client regression test exercises the capture path; it is not a model benchmark.
+The offline runner accepts a case filter and an opt-in diagnostic filter. The diagnostic JSON captures the exact synthetic question, selected evidence excerpts and source statuses, model system/user prompts, generated output, RAG outcome, citations, and timing metadata. It is written to the chosen output directory. Evidence remains in the diagnostic when RAG rejects a generated response; this does not make rejected citations valid. A fake-client regression test exercises the capture path; it is not a model benchmark.
 
 ## Ollama timing fields
 

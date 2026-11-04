@@ -18,8 +18,8 @@ from jarvis_core import (AccessDenied, Database, DecisionContextIssuer, Generati
                          MemoryService, WorkspaceKind)
 from jarvis_core.ingestion import FolderSynchronizer
 from jarvis_core.ollama import GenerationSettings, OllamaClient, OllamaError
-from jarvis_core.rag import (DocumentRAG, IncompleteGenerationError, InvalidCitationError,
-                             RAGOutcome)
+from jarvis_core.rag import (DocumentRAG, EvidenceSelector, IncompleteGenerationError,
+                             InvalidCitationError, RAGOutcome, WorkspaceEvidenceComposer)
 from jarvis_core.retrieval import SearchIndex
 
 ACTOR = "synthetic-evaluator"
@@ -223,6 +223,7 @@ def evaluate(*, live_client: OllamaClient | None = None, model: str | None = Non
                          FakeGenerator(case.get("response", "JARVIS_ABSTAIN"), case.get("done", True)))
             rag = DocumentRAG(fixture.document_search, generator)
             retrieved = []
+            diagnostic_evidence = ()
             if case.get("security") != "unauthorized_workspace":
                 if case["mode"] in {"documents", "mixed"}:
                     retrieved.extend("doc:" + item.relative_path for item in fixture.document_search.search(
@@ -231,6 +232,24 @@ def evaluate(*, live_client: OllamaClient | None = None, model: str | None = Non
                     retrieved.extend("memory:" + fixture.memory_keys.get(item.memory_id, "unknown")
                                      for item in fixture.memory_service.search(
                                          ACTOR, fixture.workspace_id, case["question"], limit=3))
+                if diagnostic_case_ids and case["id"] in diagnostic_case_ids:
+                    if case["mode"] in {"memories", "mixed"}:
+                        diagnostic_evidence = WorkspaceEvidenceComposer(
+                            fixture.document_search, fixture.memory_service
+                        ).retrieve(
+                            ACTOR,
+                            fixture.workspace_id,
+                            case["question"],
+                            document_limit=1 if case["mode"] == "memories" else 3,
+                            memory_limit=3,
+                        )
+                    else:
+                        diagnostic_evidence = EvidenceSelector().select(
+                            fixture.document_search.search(
+                                ACTOR, fixture.workspace_id, case["question"], limit=3
+                            ),
+                            [],
+                        )
             started = time.perf_counter()
             error = None
             result = None
@@ -273,7 +292,7 @@ def evaluate(*, live_client: OllamaClient | None = None, model: str | None = Non
                          "source_status": item.source_status, "document_id": item.document_id,
                          "memory_id": item.memory_id, "root_id": item.root_id,
                          "relative_path": item.relative_path, "excerpt": item.excerpt}
-                        for item in (result.evidence if result else ())
+                        for item in (result.evidence if result else diagnostic_evidence)
                     ]),
                     "system_prompt": model_call.get("system_prompt") if model_call else None,
                     "model_prompt": model_call.get("prompt") if model_call else None,
