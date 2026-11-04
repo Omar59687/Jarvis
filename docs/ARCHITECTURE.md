@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Proposed Architecture
 
-**Status:** the logical product architecture below remains proposed. The merged baseline implements local SQLite storage/permissions, approved-folder ingestion and document FTS5 retrieval. M01-D memory lifecycle is on a draft review branch; no desktop, dashboard, model, voice or external integration is implemented.
+**Status:** the logical product architecture below remains proposed. The merged baseline implements local SQLite storage/permissions, approved-folder ingestion, document FTS5 retrieval and M01-D memory lifecycle. M01-E is reviewing cross-service acceptance. No desktop, dashboard, model, voice or external integration is implemented.
 
 ## 1. Architecture goals
 
@@ -25,7 +25,7 @@
 
 ### Provisional implementation direction
 
-A candidate is a Tauri 2 Windows shell with a TypeScript web UI and a Python local service. The service would expose a versioned loopback API and use Python's SQLite interface. This is a **proposal**, not a locked stack decision: it needs a small compatibility spike and should be compared against a single-process alternative before M01 implementation expands.
+A candidate is a Tauri 2 Windows shell with a TypeScript web UI and a Python local service. The service would expose a versioned loopback API and use Python's SQLite interface. This is a **proposal**, not a locked stack decision: it needs a small compatibility spike and should be compared against a single-process alternative before desktop implementation begins.
 
 The browser dashboard can use the same UI and API. If it runs in an ordinary browser, it should be loopback-only, use a short-lived local session/CSRF defense, reject arbitrary remote origins, and never expose a wildcard CORS policy. Tauri capabilities should be narrowly scoped by window and command.
 

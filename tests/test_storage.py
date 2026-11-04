@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +25,7 @@ from jarvis_core import (  # noqa: E402
     WorkspaceKind,
 )
 from jarvis_core.storage import DEFAULT_MIGRATIONS  # noqa: E402
+from jarvis_core.storage import default_database_path  # noqa: E402
 
 
 class StorageTests(unittest.TestCase):
@@ -357,6 +359,59 @@ print(workspace.name)
             existing.get_workspace("existing-owner", "existing-1").name, "Must remain"
         )
         self.assertFalse(Path(str(destination) + ".restore-tmp").exists())
+
+    def test_restore_closes_source_when_target_connection_open_fails(self) -> None:
+        backup = self.db.backup_to(self.directory / "source.sqlite3", actor_id="alice")
+        destination, existing = self._create_existing_destination()
+        original_bytes = destination.read_bytes()
+        real_connect = sqlite3.connect
+        opened_source: list[sqlite3.Connection] = []
+
+        def fail_target(path, *args, **kwargs):
+            if str(path).endswith(".restore-tmp"):
+                raise sqlite3.OperationalError("synthetic target-open failure")
+            connection = real_connect(path, *args, **kwargs)
+            opened_source.append(connection)
+            return connection
+
+        with patch("jarvis_core.storage.sqlite3.connect", side_effect=fail_target):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "target-open failure"):
+                Database.restore_from_backup(backup, destination)
+
+        self.assertEqual(len(opened_source), 1)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            opened_source[0].execute("SELECT 1")
+        self.assertEqual(destination.read_bytes(), original_bytes)
+        self.assertEqual(
+            existing.get_workspace("existing-owner", "existing-1").name, "Must remain"
+        )
+        self.assertFalse(Path(str(destination) + ".restore-tmp").exists())
+
+    def test_default_database_path_uses_synthetic_posix_and_windows_settings(self) -> None:
+        storage_module = __import__("jarvis_core.storage", fromlist=["default_database_path"])
+        with patch.dict(os.environ, {"XDG_DATA_HOME": "/synthetic/data"}, clear=True):
+            with patch.object(
+                storage_module, "os", SimpleNamespace(name="posix", environ=os.environ)
+            ):
+                posix_path = default_database_path()
+        self.assertEqual(
+            posix_path,
+            Path("/synthetic/data/jarvis/jarvis.sqlite3"),
+        )
+
+        with patch.dict(
+            os.environ,
+            {"LOCALAPPDATA": "C:/Synthetic/User/AppData/Local"},
+            clear=True,
+        ):
+            with patch.object(
+                storage_module, "os", SimpleNamespace(name="nt", environ=os.environ)
+            ):
+                windows_path = default_database_path()
+        self.assertEqual(
+            str(windows_path).replace("\\", "/"),
+            "C:/Synthetic/User/AppData/Local/Jarvis/jarvis.sqlite3",
+        )
 
     def test_core_storage_operations_do_not_use_network(self) -> None:
         with patch.object(socket, "socket", side_effect=AssertionError("network attempted")):

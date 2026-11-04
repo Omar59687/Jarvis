@@ -7,7 +7,7 @@ trusted host. Do not accept an actor ID directly from an untrusted HTTP client.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -1123,64 +1123,60 @@ class Database:
         if temporary.exists():
             raise FileExistsError(f"restore temporary file already exists: {temporary}")
 
-        source = sqlite3.connect(source_path)
-        target = sqlite3.connect(temporary)
         try:
-            integrity = source.execute("PRAGMA integrity_check").fetchone()[0]
-            if integrity != "ok":
-                raise sqlite3.DatabaseError(f"backup integrity check failed: {integrity}")
-            source_version = int(source.execute("PRAGMA user_version").fetchone()[0])
-            if source_version < 1 or source_version > SCHEMA_VERSION:
-                raise sqlite3.DatabaseError(
-                    f"unsupported backup schema version: {source_version}"
-                )
-            for table, required_columns in REQUIRED_BACKUP_COLUMNS.items():
-                columns = {
-                    row[1]
-                    for row in source.execute(f"PRAGMA table_info({table})").fetchall()
-                }
-                if not required_columns <= columns:
+            with ExitStack() as connections:
+                source = connections.enter_context(closing(sqlite3.connect(source_path)))
+                target = connections.enter_context(closing(sqlite3.connect(temporary)))
+                integrity = source.execute("PRAGMA integrity_check").fetchone()[0]
+                if integrity != "ok":
+                    raise sqlite3.DatabaseError(f"backup integrity check failed: {integrity}")
+                source_version = int(source.execute("PRAGMA user_version").fetchone()[0])
+                if source_version < 1 or source_version > SCHEMA_VERSION:
                     raise sqlite3.DatabaseError(
-                        f"backup is missing required schema for table {table}"
+                        f"unsupported backup schema version: {source_version}"
                     )
-            if source_version >= 3:
-                search_table = source.execute(
-                    "SELECT sql FROM sqlite_master WHERE type = ? AND name = ?",
-                    ("table", "document_search"),
-                ).fetchone()
-                if search_table is None or "using fts5" not in str(search_table[0]).lower():
-                    raise sqlite3.DatabaseError(
-                        "backup is missing the required FTS5 search index"
-                    )
-            if source_version >= 4:
-                v4_tables = {
-                    "memory_candidates": {"id", "workspace_id", "content", "state", "content_sha256", "evidence_sha256"},
-                    "memory_candidate_evidence": {"candidate_id", "workspace_id", "document_id", "root_id", "relative_path", "source_sha256"},
-                    "memories": {"id", "workspace_id", "content", "deleted_at", "source_candidate_id"},
-                    "memory_evidence": {"memory_id", "workspace_id", "document_id", "root_id", "relative_path", "source_sha256"},
-                    "memory_revisions": {"memory_id", "workspace_id", "revision", "content_sha256"},
-                    "memory_revision_evidence": {"memory_id", "revision", "document_id", "root_id", "relative_path", "source_sha256"},
-                    "memory_decision_receipts": {"decision_id", "context_sha256"},
-                }
-                for table, required_columns in v4_tables.items():
-                    columns = {row[1] for row in source.execute(f"PRAGMA table_info({table})").fetchall()}
+                for table, required_columns in REQUIRED_BACKUP_COLUMNS.items():
+                    columns = {
+                        row[1]
+                        for row in source.execute(f"PRAGMA table_info({table})").fetchall()
+                    }
                     if not required_columns <= columns:
-                        raise sqlite3.DatabaseError(f"backup is missing required schema for table {table}")
-            if source.execute("PRAGMA foreign_key_check").fetchone() is not None:
-                raise sqlite3.DatabaseError("backup contains foreign key violations")
-            source.backup(target)
+                        raise sqlite3.DatabaseError(
+                            f"backup is missing required schema for table {table}"
+                        )
+                if source_version >= 3:
+                    search_table = source.execute(
+                        "SELECT sql FROM sqlite_master WHERE type = ? AND name = ?",
+                        ("table", "document_search"),
+                    ).fetchone()
+                    if search_table is None or "using fts5" not in str(search_table[0]).lower():
+                        raise sqlite3.DatabaseError(
+                            "backup is missing the required FTS5 search index"
+                        )
+                if source_version >= 4:
+                    v4_tables = {
+                        "memory_candidates": {"id", "workspace_id", "content", "state", "content_sha256", "evidence_sha256"},
+                        "memory_candidate_evidence": {"candidate_id", "workspace_id", "document_id", "root_id", "relative_path", "source_sha256"},
+                        "memories": {"id", "workspace_id", "content", "deleted_at", "source_candidate_id"},
+                        "memory_evidence": {"memory_id", "workspace_id", "document_id", "root_id", "relative_path", "source_sha256"},
+                        "memory_revisions": {"memory_id", "workspace_id", "revision", "content_sha256"},
+                        "memory_revision_evidence": {"memory_id", "revision", "document_id", "root_id", "relative_path", "source_sha256"},
+                        "memory_decision_receipts": {"decision_id", "context_sha256"},
+                    }
+                    for table, required_columns in v4_tables.items():
+                        columns = {row[1] for row in source.execute(f"PRAGMA table_info({table})").fetchall()}
+                        if not required_columns <= columns:
+                            raise sqlite3.DatabaseError(f"backup is missing required schema for table {table}")
+                if source.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                    raise sqlite3.DatabaseError("backup contains foreign key violations")
+                source.backup(target)
         except Exception:
-            target.close()
-            source.close()
             for suffix in ("", "-journal", "-wal", "-shm"):
                 try:
                     Path(str(temporary) + suffix).unlink()
                 except FileNotFoundError:
                     pass
             raise
-        else:
-            target.close()
-            source.close()
         if destination_path.exists():
             current = sqlite3.connect(destination_path)
             try:

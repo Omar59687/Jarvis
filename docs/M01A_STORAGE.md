@@ -11,7 +11,7 @@ Callers can provide an explicit database path for tests or controlled deployment
 
 ## Schema and migrations
 
-M01-A introduced schema version 1, M01-B advances to v2 for document synchronization, and M01-C advances to v3 for the FTS5 document index. M01-D advances to schema v4 for pending candidates, approved memories, evidence snapshots, revisions and one-time decision receipts. The current schema in the M01-D branch is v4. Initialization is idempotent and applies all pending schema changes inside one BEGIN IMMEDIATE transaction. Migration statements use sqlite3 execute calls, not executescript, so a failed statement rolls back DDL and the version update together. A database created by a newer application is rejected rather than downgraded.
+M01-A introduced schema version 1, M01-B advances to v2 for document synchronization, M01-C advances to v3 for the FTS5 document index, and M01-D advances to schema v4 for pending candidates, approved memories, evidence snapshots, revisions and one-time decision receipts. The merged M01 baseline uses schema v4. Initialization is idempotent and applies all pending schema changes inside one BEGIN IMMEDIATE transaction. Migration statements use sqlite3 execute calls, not executescript, so a failed statement rolls back DDL and the version update together. A database created by a newer application is rejected rather than downgraded.
 
 The schema contains workspaces, explicit per-principal workspace permissions, approved folder roots, audit events, ingested documents, synchronization runs/events and preferences, the separate document FTS5 index, and M01-D memory lifecycle tables. It contains no semantic/vector, model or cloud tables.
 
