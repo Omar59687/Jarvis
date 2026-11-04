@@ -28,10 +28,12 @@ from .ollama import (
 )
 from .rag import (
     DocumentRAG,
+    EvidenceSelector,
     IncompleteGenerationError,
     InvalidCitationError,
     RAGCitation,
     RAGEvidence,
+    RAGOutcome,
     RAGResult,
     WorkspaceEvidenceComposer,
 )
@@ -58,6 +60,7 @@ __all__ = [
     "DecisionContextIssuer",
     "DocumentRAG",
     "Evidence",
+    "EvidenceSelector",
     "GenerationResult",
     "GenerationSettings",
     "IncompleteGenerationError",
@@ -85,6 +88,7 @@ __all__ = [
     "Persistence",
     "RAGCitation",
     "RAGEvidence",
+    "RAGOutcome",
     "RAGResult",
     "WorkspaceEvidenceComposer",
     "Workspace",
