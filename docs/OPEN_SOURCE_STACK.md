@@ -45,7 +45,7 @@ Nothing in this list is installed or adopted in code. “Candidate” means suit
 
 ### Proposed adoption stages
 
-1. **M01:** implement the simplest durable local storage candidate only after M01-A approval. Check the actual runtime's SQLite/FTS5 support.
+1. **M01:** the standard-library SQLite foundation and FTS5 document index are implemented through M01-D. M01-E verifies cross-service acceptance; check the deployed runtime's SQLite/FTS5 support before release.
 2. **M02-M03:** benchmark local model and speech candidates on the user's hardware after RAM and Windows versions are known.
 3. **M04 onward:** integrate one connector at a time behind explicit policies; review security advisories and test least privilege.
 4. **M05-M07:** adopt REA, OpenCode, or Playwright only for user-authorized targets/tasks with isolation and an explicit approval path.

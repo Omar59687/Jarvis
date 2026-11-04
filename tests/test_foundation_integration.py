@@ -105,6 +105,15 @@ class FoundationIntegrationTests(unittest.TestCase):
             with self.assertRaises(AccessDenied):
                 self.memories.propose("reader", "ws-a", "reader cannot propose", user_authored=True)
 
+            rejected_candidate = self.memories.propose(
+                "alice", "ws-a", "A rejected suggestion is never durable", user_authored=True
+            )
+            self.memories.reject(
+                "alice", "ws-a", rejected_candidate.id,
+                self.decision(rejected_candidate, "reject_candidate"),
+            )
+            self.assertEqual(self.memories.list_memories("alice", "ws-a"), [])
+
             old_time = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
             with patch("jarvis_core.memory._now", return_value=old_time):
                 expired = self.decision(candidate)
@@ -209,8 +218,8 @@ class FoundationIntegrationTests(unittest.TestCase):
                     ("ws-a", event),
                 ).fetchone()[0]
                 for event in (
-                    "source_root.registered", "source.sync.completed", "memory.proposed",
-                    "memory.approved", "memory.edited", "memory.deleted",
+                    "permission.granted", "source_root.registered", "source.sync.completed",
+                    "memory.proposed", "memory.rejected", "memory.approved", "memory.edited", "memory.deleted",
                     "memory.restored", "memory.purged", "source_root.revoked",
                 )
             }
@@ -224,7 +233,9 @@ class FoundationIntegrationTests(unittest.TestCase):
                 connection.execute("SELECT COUNT(*) FROM memory_revisions WHERE memory_id = ?", (approved.id,)).fetchone()[0],
             )
         self.assertEqual(counts["source_root.registered"], 1)
+        self.assertGreaterEqual(counts["permission.granted"], 1)
         self.assertGreaterEqual(counts["source.sync.completed"], 3)
+        self.assertEqual(counts["memory.rejected"], 1)
         self.assertEqual(counts["memory.approved"], 1)
         self.assertEqual(counts["memory.edited"], 1)
         self.assertEqual(counts["memory.deleted"], 2)

@@ -62,7 +62,7 @@ These statements are user-confirmed product requirements, not claims of implemen
 ### In scope
 
 - Define requirements, architecture, component adoption criteria, and milestone acceptance criteria.
-- Build a local-first foundation in M01 after approval.
+- M01 implements the local-first storage, approved-folder ingestion, lexical retrieval and memory lifecycle foundation; M01-E records remaining integration acceptance gaps.
 - Later add model, desktop, voice, integration, reverse-engineering, and agent capabilities through gated milestones.
 
 ### Not implemented by the M01 foundation
