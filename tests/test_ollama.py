@@ -1,8 +1,10 @@
 import json
+import os
 import socket
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest.mock import patch
 
 from jarvis_core.ollama import (
     GenerationSettings,
@@ -143,8 +145,9 @@ class OllamaAdapterTests(unittest.TestCase):
         worker.start()
         try:
             client = OllamaClient(f"http://127.0.0.1:{server.server_port}", ["qwen2.5:3b"], timeout=2)
-            with self.assertRaises(OllamaHTTPError):
-                client.installed_models()
+            with patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:1", "NO_PROXY": ""}):
+                with self.assertRaises(OllamaHTTPError):
+                    client.installed_models()
             self.assertEqual(seen, ["/api/tags"])
         finally:
             server.shutdown()

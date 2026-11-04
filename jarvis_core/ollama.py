@@ -72,7 +72,9 @@ class UrllibTransport:
                 max_response_bytes: int) -> HTTPResponse:
         req = urllib.request.Request(url, data=body, method=method,
                                      headers={"Accept": "application/json"})
-        opener = urllib.request.build_opener(_NoRedirect())
+        # Ignore process proxy settings: the configured loopback URL must not
+        # be sent through an environment-selected remote proxy.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
         try:
             response = opener.open(req, timeout=timeout)
         except urllib.error.HTTPError as exc:
