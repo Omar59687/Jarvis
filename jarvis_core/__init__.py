@@ -26,6 +26,7 @@ from .ollama import (
 )
 from .rag import (
     DocumentRAG,
+    IncompleteGenerationError,
     InvalidCitationError,
     RAGCitation,
     RAGEvidence,
@@ -56,6 +57,7 @@ __all__ = [
     "Evidence",
     "GenerationResult",
     "GenerationSettings",
+    "IncompleteGenerationError",
     "InvalidDecision",
     "InvalidCitationError",
     "InvalidPath",

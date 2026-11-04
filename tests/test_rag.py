@@ -15,8 +15,10 @@ from jarvis_core.ollama import (
 )
 from jarvis_core.rag import (
     DocumentRAG,
+    IncompleteGenerationError,
     InvalidCitationError,
     MAX_EVIDENCE_CHARS,
+    NO_CITATION_ANSWER,
     NO_EVIDENCE_ANSWER,
 )
 from jarvis_core.retrieval import SearchIndex, SearchResult
@@ -42,8 +44,9 @@ def json_response(value):
 class FakeGenerator:
     allowed_models = frozenset({"synthetic-local:latest"})
 
-    def __init__(self, text: str = "The answer is in the source [D1].") -> None:
+    def __init__(self, text: str = "The answer is in the source [D1].", done: bool = True) -> None:
         self.text = text
+        self.done = done
         self.calls: list[dict] = []
 
     def generate(self, prompt, model, *, system_prompt=None, settings=GenerationSettings()):
@@ -53,7 +56,7 @@ class FakeGenerator:
             "system_prompt": system_prompt,
             "settings": settings,
         })
-        return GenerationResult(model=model, text=self.text, done=True)
+        return GenerationResult(model=model, text=self.text, done=self.done)
 
 
 class DocumentRAGTests(unittest.TestCase):
@@ -166,6 +169,46 @@ class DocumentRAGTests(unittest.TestCase):
         self.generator.text = "Unsupported claim [D9]."
         with self.assertRaises(InvalidCitationError):
             self.rag.answer("alice", self.workspace.id, "marker", "synthetic-local:latest")
+
+    def test_missing_citation_returns_deterministic_abstention(self) -> None:
+        self.add_document("uncited.txt", "uncited answer evidence")
+        self.generator.text = "The answer is probably true, but I forgot a citation."
+        result = self.rag.answer(
+            "alice", self.workspace.id, "uncited", "synthetic-local:latest"
+        )
+        self.assertEqual(result.answer, NO_CITATION_ANSWER)
+        self.assertTrue(result.abstained)
+        self.assertEqual(result.citations, ())
+        self.assertEqual(len(result.evidence), 1)
+
+    def test_malformed_or_unsupported_references_are_rejected(self) -> None:
+        self.add_document("strict-citation.txt", "citation parser evidence")
+        unsupported = (
+            "Claim [D1] [D9].",
+            "Claim [D 1] [D1].",
+            "Claim [D1, D2] [D1].",
+            "Claim [D01] [D1].",
+            "Claim [d1] [D1].",
+            "Claim [D1 [D1].",
+            "Claim [S1] [D1].",
+            "Claim source 2 [D1].",
+            "Claim 【D2】 [D1].",
+        )
+        for text in unsupported:
+            with self.subTest(text=text):
+                self.generator.text = text
+                with self.assertRaises(InvalidCitationError):
+                    self.rag.answer(
+                        "alice", self.workspace.id, "citation", "synthetic-local:latest"
+                    )
+
+    def test_incomplete_generation_is_rejected(self) -> None:
+        self.add_document("incomplete.txt", "incomplete generation evidence")
+        self.generator.done = False
+        with self.assertRaises(IncompleteGenerationError):
+            self.rag.answer(
+                "alice", self.workspace.id, "incomplete", "synthetic-local:latest"
+            )
 
     def test_generation_skips_unused_citation_labels(self) -> None:
         self.add_document("one.txt", "shared token evidence")

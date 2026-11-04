@@ -20,13 +20,22 @@ MAX_QUESTION_CHARS = 1024
 MAX_EVIDENCE_ITEMS = 5
 DEFAULT_EVIDENCE_ITEMS = 3
 MAX_EVIDENCE_CHARS = 2400
-_CITATION_PATTERN = re.compile(r"\[(D[^\]\r\n]{0,16})\]", re.IGNORECASE)
+_VALID_CITATION_PATTERN = re.compile(r"\[(D[1-9][0-9]*)\]")
+_UNBRACKETED_CITATION_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])(?:D\s*#?\s*[0-9]+|(?:source|document|doc|citation|reference|ref)\s*#?\s*[0-9]+)(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
 
 NO_EVIDENCE_ANSWER = "I don't have authorized document evidence to answer this question."
+NO_CITATION_ANSWER = "I can't return a factual answer because the model did not cite retrieved evidence."
 
 
 class InvalidCitationError(ValueError):
     """The model cited a label that was not issued for this request."""
+
+
+class IncompleteGenerationError(ValueError):
+    """The local model did not report a complete generation."""
 
 
 class Generator(Protocol):
@@ -165,20 +174,42 @@ class DocumentRAG:
                 think=False,
             ),
         )
+        if type(generated.done) is not bool or not generated.done:
+            raise IncompleteGenerationError("model generation did not complete")
         answer = generated.text.strip()
         if not answer:
             raise ValueError("model returned an empty answer")
 
         by_id = {item.citation_id: item for item in evidence}
         cited_ids: list[str] = []
-        for match in _CITATION_PATTERN.finditer(answer):
+        valid_spans: list[tuple[int, int]] = []
+        for match in _VALID_CITATION_PATTERN.finditer(answer):
             citation_id = match.group(1)
             if citation_id not in by_id:
                 raise InvalidCitationError(
                     f"model returned a citation not issued for this request: [{citation_id}]"
                 )
+            valid_spans.append(match.span())
             if citation_id not in cited_ids:
                 cited_ids.append(citation_id)
+
+        # Any remaining bracket syntax is malformed or unsupported. This is
+        # intentionally strict so a bad reference cannot hide beside a valid
+        # [D#] citation or be mistaken for ordinary bracketed source syntax.
+        without_valid = list(answer)
+        for start, end in valid_spans:
+            without_valid[start:end] = " " * (end - start)
+        residual = "".join(without_valid)
+        if "[" in residual or "]" in residual:
+            raise InvalidCitationError("model returned a malformed or unsupported bracketed reference")
+
+        # Other citation-shaped forms (for example bare D2 or “source 2”) are
+        # rejected even when the model also included one valid [D#] citation.
+        if _UNBRACKETED_CITATION_PATTERN.search(residual):
+            raise InvalidCitationError("model returned a source reference outside the supported citation form")
+
+        if not cited_ids:
+            return RAGResult(NO_CITATION_ANSWER, (), tuple(evidence), abstained=True)
         citations = tuple(
             RAGCitation(
                 citation_id=item.citation_id,
