@@ -1,12 +1,12 @@
 # M02-B1 — First Document-Based RAG Answer
 
-**Status:** Implemented in `feature/m02-b1-document-rag`; awaiting review. This slice adds document-only retrieval-augmented answers over the existing workspace-scoped FTS5 service and the local Ollama adapter.
+**Status:** Merged in the stated `main` baseline. M02-B1 adds document-only retrieval-augmented answers over the existing workspace-scoped FTS5 service and the local Ollama adapter. M02-B2 separately composes approved-memory search with this document path; see [M02-B2](M02B2_MEMORY_RETRIEVAL.md).
 
 ## Behavior
 
 `DocumentRAG.answer(actor_id, workspace_id, question, model)` calls `SearchIndex.search()` with the explicit actor and workspace. The search service enforces READ permission and excludes deleted documents and revoked roots. The RAG layer does not open SQLite, traverse folders, retrieve memories, or perform a second authorization decision.
 
-At most five results are accepted, with three as the default. The question is limited to 1,024 characters and the complete evidence excerpts to 2,400 characters. The evidence records carry stable request-local labels (`D1`, `D2`, …), document and root IDs, relative source path, and bounded excerpt. The model prompt explicitly labels question/evidence as untrusted and asks the model to ignore instructions embedded in documents. This is prompt-level defense in depth; the model may still fail to follow it. Authorization is enforced by the service boundary, never by prompt text.
+At most five document results are accepted, with three as the default. The question is limited to 1,024 characters and the complete evidence excerpts to 2,400 characters. The evidence records carry stable request-local labels (`D1`, `D2`, …), document and root IDs, relative source path, and bounded excerpt. The model prompt explicitly labels question/evidence as untrusted and asks the model to ignore instructions embedded in documents. This is prompt-level defense in depth; the model may still fail to follow it. Authorization is enforced by the service boundary, never by prompt text. The existing `answer()` method keeps document-only behavior and API compatibility.
 
 Generation uses the explicitly selected model from the Ollama client's allowlist, `think=False`, temperature 0, seed 0, 2,048 context tokens and a 192-token output cap. No model is selected, downloaded, or substituted by this service. It makes no cloud calls. The Ollama deployment itself must retain the local-only controls documented in [M02-A](M02A_OLLAMA_ADAPTER.md).
 

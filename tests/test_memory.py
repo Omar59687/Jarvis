@@ -53,16 +53,16 @@ class MemoryLifecycleTests(unittest.TestCase):
     def _propose(self, content="Remember this", ids=("doc-a",), user_authored=False):
         return self.service.propose("alice","ws-a",content,evidence_document_ids=ids,user_authored=user_authored)
 
-    def test_fresh_v4_and_v3_upgrade(self):
+    def test_fresh_v5_and_v3_upgrade(self):
         with self.db._connection() as c:
-            self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0],4)
+            self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0],5)
             self.assertIsNotNone(c.execute("SELECT name FROM sqlite_master WHERE name='memories'").fetchone())
         legacy=self.root/"v3.sqlite3"
         v3=Database(legacy,migrations=self.db._migrations[:3]); v3.initialize()
         v3.create_workspace("Legacy",WorkspaceKind.PERSONAL,"legacy","legacy-ws")
         Database(legacy).initialize()
         with closing(sqlite3.connect(legacy)) as c, c:
-            self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0],4)
+            self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0],5)
 
     def test_v3_to_v4_migration_rolls_back_on_failure(self):
         legacy=self.root/"rollback.sqlite3"

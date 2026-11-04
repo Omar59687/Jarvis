@@ -9,6 +9,8 @@ from .memory import (
     LifecycleConflict,
     Memory,
     MemoryRevision,
+    MemorySearchResult,
+    MemorySearchUnavailable,
     MemoryService,
 )
 from .ollama import (
@@ -31,6 +33,7 @@ from .rag import (
     RAGCitation,
     RAGEvidence,
     RAGResult,
+    WorkspaceEvidenceComposer,
 )
 from .storage import (
     AccessDenied,
@@ -65,6 +68,8 @@ __all__ = [
     "LifecycleConflict",
     "Memory",
     "MemoryRevision",
+    "MemorySearchResult",
+    "MemorySearchUnavailable",
     "MemoryService",
     "Migration",
     "OllamaClient",
@@ -81,6 +86,7 @@ __all__ = [
     "RAGCitation",
     "RAGEvidence",
     "RAGResult",
+    "WorkspaceEvidenceComposer",
     "Workspace",
     "WorkspaceKind",
     "default_database_path",
