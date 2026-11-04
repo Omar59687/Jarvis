@@ -1,6 +1,6 @@
 # M02-C — Grounding and Context Management
 
-**Status:** Implemented on `feature/m02-c-grounding-context`; awaiting review. M01, M02-A, M02-B1, and M02-B2 are present in the stated `main` baseline.
+**Status:** M02-C is merged in the stated `main` baseline along with M01 and M02-A/B1/B2.
 
 ## Evidence selection
 

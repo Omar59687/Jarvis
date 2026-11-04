@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Proposed Architecture
 
-**Status:** the logical product architecture below remains proposed. The stated baseline implements M01-A through M01-E and M02-A through M02-B2. M02-C adds review-branch deterministic evidence selection and separated RAG context packaging; no desktop, dashboard, voice or external integration is implemented.
+**Status:** the logical product architecture below remains proposed. The stated baseline implements M01-A through M01-E and M02-A through M02-C. M02-D evaluation is on a review branch; no desktop, dashboard, voice or external integration is implemented.
 
 ## 1. Architecture goals
 
