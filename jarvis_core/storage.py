@@ -19,7 +19,7 @@ from typing import Iterator, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 REQUIRED_BACKUP_COLUMNS = {
     "workspaces": {"id", "name", "kind", "created_at"},
     "workspace_permissions": {
@@ -458,6 +458,44 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
                 context_sha256 TEXT NOT NULL,
                 consumed_at TEXT NOT NULL
             )""",
+        ),
+    ),
+    Migration(
+        version=5,
+        statements=(
+            """CREATE VIRTUAL TABLE memory_search USING fts5(
+                memory_id UNINDEXED,
+                workspace_id UNINDEXED,
+                content,
+                tokenize = 'unicode61 remove_diacritics 2'
+            )""",
+            """INSERT INTO memory_search (memory_id, workspace_id, content)
+                SELECT id, workspace_id, content FROM memories
+                WHERE deleted_at IS NULL""",
+            """CREATE TRIGGER memories_search_insert
+                AFTER INSERT ON memories
+                WHEN NEW.deleted_at IS NULL
+                BEGIN
+                    INSERT INTO memory_search (memory_id, workspace_id, content)
+                    VALUES (NEW.id, NEW.workspace_id, NEW.content);
+                END""",
+            """CREATE TRIGGER memories_search_update
+                AFTER UPDATE OF id, workspace_id, content, deleted_at ON memories
+                WHEN OLD.id IS NOT NEW.id
+                  OR OLD.workspace_id IS NOT NEW.workspace_id
+                  OR OLD.content IS NOT NEW.content
+                  OR OLD.deleted_at IS NOT NEW.deleted_at
+                BEGIN
+                    DELETE FROM memory_search WHERE memory_id = OLD.id;
+                    INSERT INTO memory_search (memory_id, workspace_id, content)
+                    SELECT NEW.id, NEW.workspace_id, NEW.content
+                    WHERE NEW.deleted_at IS NULL;
+                END""",
+            """CREATE TRIGGER memories_search_delete
+                AFTER DELETE ON memories
+                BEGIN
+                    DELETE FROM memory_search WHERE memory_id = OLD.id;
+                END""",
         ),
     ),
 )
@@ -1167,6 +1205,39 @@ class Database:
                         columns = {row[1] for row in source.execute(f"PRAGMA table_info({table})").fetchall()}
                         if not required_columns <= columns:
                             raise sqlite3.DatabaseError(f"backup is missing required schema for table {table}")
+                if source_version >= 5:
+                    memory_search = source.execute(
+                        "SELECT sql FROM sqlite_master WHERE type = ? AND name = ?",
+                        ("table", "memory_search"),
+                    ).fetchone()
+                    if memory_search is None or "using fts5" not in str(memory_search[0]).lower():
+                        raise sqlite3.DatabaseError(
+                            "backup is missing the required memory FTS5 search index"
+                        )
+                    memory_search_columns = {
+                        row[1]
+                        for row in source.execute("PRAGMA table_info(memory_search)").fetchall()
+                    }
+                    if not {"memory_id", "workspace_id", "content"} <= memory_search_columns:
+                        raise sqlite3.DatabaseError(
+                            "backup memory FTS5 search index has an unsupported schema"
+                        )
+                    triggers = {
+                        row[0]
+                        for row in source.execute(
+                            "SELECT name FROM sqlite_master WHERE type = ?",
+                            ("trigger",),
+                        ).fetchall()
+                    }
+                    required_triggers = {
+                        "memories_search_insert",
+                        "memories_search_update",
+                        "memories_search_delete",
+                    }
+                    if not required_triggers <= triggers:
+                        raise sqlite3.DatabaseError(
+                            "backup is missing memory search synchronization triggers"
+                        )
                 if source.execute("PRAGMA foreign_key_check").fetchone() is not None:
                     raise sqlite3.DatabaseError("backup contains foreign key violations")
                 source.backup(target)

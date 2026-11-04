@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Roadmap
 
-**Status:** M01-A through M01-E and M02-A are in the stated `main` baseline. M02-B1 is implemented on a review branch; M02-B2 and later sequencing remain gated.
+**Status:** M01-A through M01-E, M02-A and M02-B1 are in the stated `main` baseline. M02-B2 is implemented on a review branch; M02-C and later sequencing remain gated.
 
 ## Phase gates
 
@@ -18,7 +18,7 @@ For each milestone:
 | ID | Name | Intended outcome | Gate examples |
 |---|---|---|---|
 | M01 | Second Brain Foundation | Local workspaces, durable evidence-linked memories, approved-folder sync, scoped search, approval and reversible deletion | M01 criteria in [M01_SPEC.md](M01_SPEC.md); local-only operation; isolation; migration/restore checks |
-| M02 | AI Intelligence Engine | M02-A local Ollama adapter; M02-B1 document-based RAG answer on review branch; memory RAG, evaluation expansion and optional cloud routing require separate approval | Adapter loopback/model allowlist boundary; B1 workspace-scoped lexical search, bounded evidence, citation resolution and deterministic no-evidence abstention |
+| M02 | AI Intelligence Engine | M02-A local Ollama adapter and M02-B1 document RAG in baseline; M02-B2 separate approved-memory retrieval and mixed evidence composition on review branch; M02-C and later work require separate approval | Loopback/model allowlist; separate document/memory FTS5 indexes; single-workspace authorization; distinct citations and lifecycle-synchronized memory search |
 | M03 | Desktop, Dashboard and Voice | Windows desktop shell, browser dashboard, 3D knowledge galaxy, voice input/wake word/local speech recognition | Windows compatibility; accessibility/RTL; local audio processing; permission-bound native APIs |
 | M04 | Integration Platform | Versioned APIs and reviewed MCP/API connectors, GitHub and OpenCode integration | Per-tool authorization; secrets handling; connector isolation; approval for writes |
 | M05 | Reverse Engineering | REA-based workflows for authorized software analysis | Legal authorization; version/license/dependency review; isolated target copies; bounded workflows |
@@ -36,4 +36,4 @@ For each milestone:
 
 ## Current state and next task
 
-M01-A through M01-E and M02-A are in the stated `main` baseline. M01's acceptance report retains unresolved cross-workspace consent and other documented limitations; aggregation remains unsupported and denied by default. M02-B1 adds a single-workspace, document-only local RAG service on a review branch. It does not add memory retrieval, embeddings, evaluation corpus, UI, tools, or cloud routing. M02-B2 remains gated on separate approval.
+M01-A through M01-E, M02-A and M02-B1 are in the stated `main` baseline. M01's acceptance report retains unresolved cross-workspace consent and other documented limitations; aggregation remains unsupported and denied by default. M02-B2 adds a separate approved-memory index and one-workspace mixed document/memory RAG service on a review branch. It does not add embeddings, UI, tools, or cloud routing. M02-C remains gated on separate approval.

@@ -43,7 +43,7 @@ Soft deletion hides a memory from normal reads and keeps evidence/revisions inta
 
 Use the existing `Database.backup_to` and `Database.restore_from_backup` APIs. Backups are full database copies. Restore validates SQLite integrity, supported schema, required v4 memory tables and foreign keys before replacing a destination. Close all database handles before restore, particularly on Windows.
 
-This is local application-level authorization. A process that can write the SQLite database can bypass service checks. The signer is a trusted-host capability, not proof of human action. Evidence rows preserve provenance snapshots even if a source is later deleted or its root revoked; new approval is blocked when evidence is inactive or changed. Memory lexical/semantic search is deliberately not added. No real personal documents are used in tests.
+This is local application-level authorization. A process that can write the SQLite database can bypass service checks. The signer is a trusted-host capability, not proof of human action. Evidence rows preserve provenance snapshots even if a source is later deleted or its root revoked; new approval is blocked when evidence is inactive or changed. M01-D itself did not add memory search; separate approved-memory lexical search is introduced in M02-B2. No real personal documents are used in tests.
 
 ## Verification
 

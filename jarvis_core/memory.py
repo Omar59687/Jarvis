@@ -15,6 +15,12 @@ import sqlite3
 from typing import Iterable
 from uuid import uuid4
 
+from .retrieval import (
+    MAX_EXCERPT_CHARS,
+    MAX_RESULTS,
+    _fts_expression,
+    _terms,
+)
 from .storage import AccessDenied, Database, Permission, _now, _nonempty
 
 MAX_CONTENT_CHARS = 50_000
@@ -84,6 +90,22 @@ class MemoryRevision:
     edited_by: str
     created_at: str
     evidence: tuple[Evidence, ...]
+
+
+@dataclass(frozen=True)
+class MemorySearchResult:
+    memory_id: str
+    workspace_id: str
+    excerpt: str
+    score: float
+    revision: int
+    provenance_kind: str
+    source_status: str
+    evidence: tuple[Evidence, ...]
+
+
+class MemorySearchUnavailable(RuntimeError):
+    """The separate approved-memory FTS5 index is missing or unusable."""
 
 
 @dataclass(frozen=True)
@@ -404,6 +426,117 @@ class MemoryService:
             self.db._require_access(c,actor_id,workspace_id,Permission.READ)
             rows=c.execute("SELECT * FROM memories WHERE workspace_id=? AND deleted_at IS NULL ORDER BY updated_at,id LIMIT ?",(workspace_id,limit)).fetchall()
             return [self._memory(c,r) for r in rows]
+
+    def search(self, actor_id: str, workspace_id: str, query: str, *, limit: int = 10) -> list[MemorySearchResult]:
+        """Search approved, active memories in one authorized workspace.
+
+        Original evidence rows are returned as immutable provenance snapshots.
+        ``source_status`` is ``active_sources`` only when every source still
+        matches its approved path/content snapshot and has an active root;
+        otherwise the approved memory is explicitly marked historical.
+        """
+        actor_id = _nonempty(actor_id, "actor ID")
+        workspace_id = _nonempty(workspace_id, "workspace ID")
+        try:
+            self.db.initialize()
+        except RuntimeError as exc:
+            if "requires SQLite built with FTS5" in str(exc):
+                raise MemorySearchUnavailable(
+                    "approved-memory search requires an SQLite build with FTS5"
+                ) from exc
+            raise
+        with self.db._connection() as connection:
+            # Preserve SearchIndex's authorization-before-input-validation rule.
+            Database._require_access(connection, actor_id, workspace_id, Permission.READ)
+            if type(limit) is not int or not 1 <= limit <= MAX_RESULTS:
+                raise ValueError(f"limit must be an integer from 1 to {MAX_RESULTS}")
+            terms = _terms(query)
+            if not terms:
+                return []
+            expression = _fts_expression(terms)
+            try:
+                rows = connection.execute(
+                    """
+                    SELECT m.id AS memory_id,
+                           m.workspace_id AS workspace_id,
+                           m.revision AS revision,
+                           m.provenance_kind AS provenance_kind,
+                           substr(
+                               snippet(memory_search, 2, '', '', '…', 16),
+                               1, ?
+                           ) AS excerpt,
+                           bm25(memory_search, 0.0, 0.0, 1.0) AS score
+                    FROM memory_search
+                    JOIN memories AS m
+                      ON m.id = memory_search.memory_id
+                     AND m.workspace_id = memory_search.workspace_id
+                    WHERE memory_search MATCH ?
+                      AND memory_search.workspace_id = ?
+                      AND m.workspace_id = ?
+                      AND m.deleted_at IS NULL
+                    ORDER BY score ASC, m.id ASC
+                    LIMIT ?
+                    """,
+                    (MAX_EXCERPT_CHARS, expression, workspace_id, workspace_id, limit),
+                ).fetchall()
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if "memory_search" in message or "no such module: fts5" in message:
+                    raise MemorySearchUnavailable(
+                        "approved-memory FTS5 index is unavailable; initialize or rebuild it"
+                    ) from exc
+                raise
+
+            result: list[MemorySearchResult] = []
+            for row in rows:
+                provenance = connection.execute(
+                    """
+                    SELECT e.document_id, e.root_id, e.relative_path,
+                           e.source_sha256, e.observed_at,
+                           CASE WHEN d.id IS NOT NULL
+                                     AND d.deleted_at IS NULL
+                                     AND r.revoked_at IS NULL
+                                     AND d.relative_path = e.relative_path
+                                     AND d.content_sha256 = e.source_sha256
+                                THEN 1 ELSE 0 END AS source_active
+                    FROM memory_evidence AS e
+                    LEFT JOIN ingested_documents AS d
+                      ON d.id = e.document_id
+                     AND d.workspace_id = e.workspace_id
+                     AND d.root_id = e.root_id
+                    LEFT JOIN approved_roots AS r
+                      ON r.id = e.root_id AND r.workspace_id = e.workspace_id
+                    WHERE e.memory_id = ? AND e.workspace_id = ?
+                    ORDER BY e.document_id
+                    """,
+                    (row["memory_id"], workspace_id),
+                ).fetchall()
+                evidence = tuple(
+                    Evidence(
+                        item["document_id"], item["root_id"], item["relative_path"],
+                        item["source_sha256"], item["observed_at"],
+                    )
+                    for item in provenance
+                )
+                if row["provenance_kind"] == "user_authored":
+                    source_status = "user_authored"
+                elif evidence and all(item["source_active"] for item in provenance):
+                    source_status = "active_sources"
+                else:
+                    source_status = "historical_sources"
+                result.append(
+                    MemorySearchResult(
+                        memory_id=row["memory_id"],
+                        workspace_id=row["workspace_id"],
+                        excerpt=row["excerpt"],
+                        score=float(row["score"]),
+                        revision=int(row["revision"]),
+                        provenance_kind=row["provenance_kind"],
+                        source_status=source_status,
+                        evidence=evidence,
+                    )
+                )
+            return result
 
     def list_deleted(self, actor_id: str, workspace_id: str, *, limit: int=100) -> list[Memory]:
         if not 1<=limit<=500: raise ValueError("limit must be between 1 and 500")
