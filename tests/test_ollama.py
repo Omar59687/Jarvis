@@ -47,15 +47,25 @@ class OllamaAdapterTests(unittest.TestCase):
             json_response({"models": [{"name": "qwen2.5:3b"}]}),
             json_response({"message": {"role": "assistant", "content": "مرحبًا — hello"}, "done": True}),
         )
-        settings = GenerationSettings(temperature=0, seed=7, num_ctx=4096, num_predict=256)
+        settings = GenerationSettings(temperature=0, seed=7, num_ctx=4096, num_predict=256, think=True)
         result = client.generate("اشرح this", "qwen2.5:3b", system_prompt="Respond bilingually", settings=settings)
         self.assertEqual(result.text, "مرحبًا — hello")
         self.assertTrue(result.done)
         req = json.loads(transport.requests[1][2].decode("utf-8"))
         self.assertEqual(req["options"], {"temperature": 0, "seed": 7, "num_ctx": 4096, "num_predict": 256})
         self.assertFalse(req["stream"])
+        self.assertIs(req["think"], True)
         self.assertEqual(transport.requests[0][0:2], ("GET", "http://127.0.0.1:11434/api/tags"))
         self.assertEqual(transport.requests[1][3]["Content-Type"], "application/json")
+
+    def test_thinking_is_disabled_by_default(self):
+        client, transport = client_with(
+            json_response({"models": [{"name": "qwen2.5:3b"}]}),
+            json_response({"message": {"content": "ok"}, "done": True}),
+        )
+        client.generate("synthetic", "qwen2.5:3b")
+        request = json.loads(transport.requests[1][2].decode("utf-8"))
+        self.assertIs(request["think"], False)
 
     def test_unallowlisted_or_not_installed_model_never_generates(self):
         client, transport = client_with(json_response({"models": []}))
@@ -93,6 +103,7 @@ class OllamaAdapterTests(unittest.TestCase):
 
     def test_generation_settings_reject_boolean_and_non_integer_counts(self):
         invalid = (
+            {"think": 1}, {"think": "true"},
             {"temperature": True}, {"temperature": float("nan")},
             {"temperature": float("inf")}, {"temperature": 10 ** 1000},
             {"seed": True}, {"seed": 1.5},

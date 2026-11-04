@@ -99,8 +99,11 @@ class GenerationSettings:
     seed: int = 0
     num_ctx: int = 4096
     num_predict: int = 384
+    think: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.think) is not bool:
+            raise OllamaConfigurationError("think must be a boolean")
         if (isinstance(self.temperature, bool) or not isinstance(self.temperature, (int, float))
                 or not 0 <= self.temperature <= 2):
             raise OllamaConfigurationError("temperature must be between 0 and 2")
@@ -244,6 +247,7 @@ class OllamaClient:
         messages.append({"role": "user", "content": prompt})
         value = self._call("POST", "/api/chat", {
             "model": model, "messages": messages, "stream": False,
+            "think": settings.think,
             "options": {"temperature": settings.temperature, "seed": settings.seed,
                         "num_ctx": settings.num_ctx, "num_predict": settings.num_predict},
         })
