@@ -7,7 +7,7 @@ These instructions apply to work in this repository. Implemented behavior is lim
 - Preserve the local-first, no-mandatory-paid-service requirement.
 - Keep confirmed user requirements separate from proposals, open questions, and implemented facts.
 - Follow [docs/ROADMAP.md](docs/ROADMAP.md) phase gates and the current milestone's acceptance criteria.
-- Follow the approved scope for the active milestone; do not begin M01-E or later work without explicit user approval.
+- Follow the approved scope for the active milestone; do not begin a later milestone without explicit user approval.
 - Do not install model runtimes, REA, packages, or unrelated dependencies unless the approved task requires them.
 - Do not access personal files outside the repository or execute untrusted downloaded code.
 - Reverse engineer only software the user owns or is authorized to examine.

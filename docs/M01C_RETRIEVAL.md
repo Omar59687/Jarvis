@@ -38,4 +38,4 @@ Arabic queries match Arabic tokens and English queries match English tokens. The
 - The FTS index and excerpts are unencrypted, like the SQLite database; OS account protections apply.
 - The actor ID must come from a trusted host. This service performs authorization but is not an authentication system.
 - M01-B filesystem race limitations remain unchanged.
-- The M01-C suite was reported Windows-verified before merge. This Linux M01-E run does not independently re-verify Windows FTS5/runtime behavior; check FTS5 support in the deployed Python/SQLite build.
+- The maintainer reports the merged M01-A through M01-E baseline was Windows-verified. Check FTS5 support in the deployed Python/SQLite build when changing the runtime.
