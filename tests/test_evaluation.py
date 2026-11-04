@@ -5,7 +5,19 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from eval.runner import DATASET, evaluate, load_dataset
+from eval.runner import DATASET, MODEL, evaluate, load_dataset
+from jarvis_core.ollama import GenerationSettings
+from jarvis_core.rag import RAGOutcome
+from jarvis_core import GenerationResult
+
+
+class InvalidCitationLiveClient:
+    allowed_models = frozenset({MODEL})
+
+    def generate(self, prompt, model, *, system_prompt=None, settings=GenerationSettings()):
+        return GenerationResult(model=model,
+                                text="The invented project codename is Cedar Lantern [D99].",
+                                done=True)
 
 
 class EvaluationFrameworkTests(unittest.TestCase):
@@ -57,6 +69,21 @@ class EvaluationFrameworkTests(unittest.TestCase):
 
     def test_dataset_is_valid_json(self):
         self.assertEqual(json.loads(DATASET.read_text(encoding="utf-8"))["version"], 1)
+
+    def test_rejected_invalid_citation_does_not_get_literal_answer_credit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            report = evaluate(live_client=InvalidCitationLiveClient(), model=MODEL,
+                              output_dir=Path(temporary))
+        self.assertEqual(report["metrics"]["grounded_answer_literal_correctness"]["numerator"], 0)
+        self.assertEqual(report["metrics"]["grounded_answer_literal_correctness"]["denominator"], 0)
+        case = next(item for item in report["cases"] if item["case_id"] == "doc-en-01")
+        self.assertEqual(case["outcome"], RAGOutcome.INVALID_CITATIONS.value)
+        self.assertIsNone(case["answer_correctness"])
+        unscored = next(item for item in report["unscored_cases"]
+                        if item["case_id"] == "doc-en-01"
+                        and item["metric"] == "grounded_answer_literal_correctness")
+        self.assertEqual(unscored["status"], "not_evaluated")
+        self.assertIn("RAG rejected", unscored["reason"])
 
 
 if __name__ == "__main__":

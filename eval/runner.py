@@ -308,16 +308,21 @@ def evaluate(*, live_client: OllamaClient | None = None, model: str | None = Non
                 fake_prompt_passed += int(fake_prompt_result)
             answer_correctness = None
             if live_client and case["auto_check"] == "literal":
-                call = generator.calls[-1] if isinstance(generator, RecordingLiveGenerator) and generator.calls else None
-                completed_text = call["response"] if call and call["done"] is True else None
-                if completed_text is not None:
+                if (result is not None and not result.abstained
+                        and result.outcome == RAGOutcome.VALID_CITATIONS):
                     answer_total += 1
-                    answer_correctness = all(fact.casefold() in completed_text.casefold()
+                    answer_correctness = all(fact.casefold() in result.answer.casefold()
                                              for fact in case["expected_facts"])
                     answer_correct += int(answer_correctness)
                 else:
+                    if error == "invalid_citations":
+                        reason = "RAG rejected the generated response for invalid citations; only accepted RAG answers are scored"
+                    elif result is not None and result.abstained:
+                        reason = "RAG returned an abstention rather than an accepted factual answer"
+                    else:
+                        reason = f"RAG did not return an accepted answer (outcome: {outcome})"
                     unscored_cases.append({"case_id": case["id"], "metric": "grounded_answer_literal_correctness",
-                                           "status": "not_evaluated", "reason": "no complete generated text was available"})
+                                           "status": "not_evaluated", "reason": reason})
             case_failures = []
             if outcome_comparable and outcome != case["expected_outcome"]:
                 case_failures.append("outcome_mismatch")
