@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Proposed Architecture
 
-**Status:** the logical product architecture below remains proposed. The merged baseline implements M01-A through M01-E. M02-A adds a standard-library adapter to explicitly configured loopback Ollama; it does not orchestrate retrieval or add a UI. No desktop, dashboard, voice or external integration is implemented.
+**Status:** the logical product architecture below remains proposed. The stated baseline implements M01-A through M01-E and M02-A. M02-B1 adds a review-branch document RAG service that composes the existing authorized search API with the local Ollama adapter; no desktop, dashboard, voice or external integration is implemented.
 
 ## 1. Architecture goals
 
@@ -19,7 +19,7 @@
 | Local application service | API, authentication/session handling, orchestration, permission checks, audit events | Trusted policy enforcement point |
 | Memory and evidence store | SQLite database, migrations, FTS search, evidence/source metadata, tombstones | Local user data boundary |
 | Approved-folder sync | Watch or scan configured roots, normalize paths, record provenance, report sync state | File access limited to revocable approved roots |
-| Model adapters | M02-A local Ollama adapter; optional cloud adapters are future, separately approved work | Local adapter restricts requests to configured loopback and allowlisted installed models; future providers receive only data approved for a request |
+| Model adapters | M02-A local Ollama adapter; M02-B1 document RAG composition; optional cloud adapters are future, separately approved work | RAG passes bounded excerpts from one authorized workspace and uses the explicit local model allowlist; future providers receive only data approved for a request |
 | Tool adapters | MCP/API, GitHub/OpenCode, browser automation, REA, and future agents | Each adapter has a narrow capability and approval policy |
 | Background workers | Sync, indexing, speech, and later bounded tasks | No implicit permission expansion or unlogged side effects |
 
@@ -64,6 +64,7 @@ The signing context verifies that a trusted host issued a decision for the exact
 ## 6. Local model and cloud boundary
 
 - M02-A implements the local Ollama HTTP adapter. Model allowlisting is explicit and there is no pull/install behavior. Model choice, terms, language quality, and performance remain undecided until evaluated on the target hardware.
+- M02-B1 composes `SearchIndex.search(actor_id, workspace_id, ...)` with the Ollama adapter. It does not access SQLite directly, retrieve memories, or expose tools. Authorization is enforced by the search service; prompt wording around untrusted evidence is defense in depth only. Citation labels resolve to retrieved evidence but do not prove factual grounding.
 - A model adapter cannot grant itself database, filesystem, network, or connector permissions.
 - Treat model output, tool arguments, and retrieved text as untrusted.
 - Cloud model routing is opt-in, shows which provider may receive content, and should support per-request exclusion/redaction.
