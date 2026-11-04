@@ -339,12 +339,6 @@ class ApprovedMemorySearchTests(unittest.TestCase):
         pending = self.memories.propose(
             "alice", "ws-a", "visibilityprobe PENDING_PRIVATE_MARKER", user_authored=True
         )
-        rejection = self.issuer.issue(
-            action="reject_candidate", actor_id="alice", workspace_id="ws-a",
-            resource_id=pending.id, resource_version=pending.revision,
-            content_sha256=pending.content_sha256, evidence_sha256=pending.evidence_sha256,
-        )
-        self.memories.reject("alice", "ws-a", pending.id, rejection)
 
         rejected = self.memories.propose(
             "alice", "ws-a", "visibilityprobe REJECTED_PRIVATE_MARKER", user_authored=True
