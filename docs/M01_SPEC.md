@@ -1,7 +1,7 @@
 # M01 — Second Brain Foundation Specification
 
-**Status:** M01-A, M01-B and M01-C are implemented and merged in the stated `main` baseline. M01-D memory lifecycle is implemented on a draft review branch. These criteria remain the broader M01 acceptance baseline; see the milestone implementation documents for shipped details.  
-**Next task:** review M01-D. No M01-E scope is approved.
+**Status:** M01-A through M01-D are implemented and merged in the stated `main` baseline. M01-E is the bounded integration and acceptance review; its report tracks tested criteria, gaps, limitations and deferred work.  
+**Next task:** complete review of M01-E evidence and resolve or explicitly accept open criteria before the M01 exit gate.
 
 ## 1. Goal
 
@@ -114,6 +114,7 @@ M01-A through M01-D are delivered as separate slices in the stated implementatio
 - **M01-B:** bounded approved-folder ingestion and synchronization.
 - **M01-C:** workspace-scoped SQLite FTS5 document search with lexical limitations documented.
 - **M01-D:** pending memory candidates, snapshot-bound approval, evidence provenance, revisions, reversible deletion and explicit purge.
+- **M01-E:** synthetic cross-service acceptance coverage, restore connection-cleanup regression, platform-path tests, documentation corrections and acceptance matrix. M01-E does not implement cross-workspace consent; criterion B.4 remains unresolved.
 
 Models, semantic retrieval, UI, voice and connectors remain separate follow-up work.
 

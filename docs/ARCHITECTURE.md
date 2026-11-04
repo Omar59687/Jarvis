@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Proposed Architecture
 
-**Status:** the logical product architecture below remains proposed. The merged baseline implements local SQLite storage/permissions, approved-folder ingestion and document FTS5 retrieval. M01-D memory lifecycle is on a draft review branch; no desktop, dashboard, model, voice or external integration is implemented.
+**Status:** the logical product architecture below remains proposed. The merged baseline implements local SQLite storage/permissions, approved-folder ingestion, document FTS5 retrieval and M01-D memory lifecycle. M01-E is reviewing cross-service acceptance. No desktop, dashboard, model, voice or external integration is implemented.
 
 ## 1. Architecture goals
 

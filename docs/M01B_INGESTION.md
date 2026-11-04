@@ -74,16 +74,15 @@ Tests use only generated files in temporary directories. No home directory, user
 
 ## Validation snapshot
 
-On Linux x86_64 with Python 3.12.14 and SQLite 3.53.1, the repository suite completed with 41 tests total: 35 passed and six Windows-only tests skipped. The exercised commands were `python -m py_compile jarvis_core/*.py tests/*.py`, `python -m jarvis_core.ingestion --help`, and `python -m unittest discover -s tests -v`. Windows-specific behavior still requires a Windows runner.
+Historical M01-B baseline: on Linux x86_64 with Python 3.12.14 and SQLite 3.53.1, the suite had 41 tests: 35 passed and six Windows-only tests skipped. The exercised commands were `python -m py_compile jarvis_core/*.py tests/*.py`, `python -m jarvis_core.ingestion --help`, and `python -m unittest discover -s tests -v`. The project maintainer later reported Windows verification of M01-A through M01-D before merge. This historical Linux snapshot is not current M01-E verification.
 
 ## Windows verification checklist
 
-Run from a clean checkout of this branch with Python 3.12. Use only the suite's temporary synthetic directories.
+The project maintainer reports that the Windows checklist was completed for the merged M01-A through M01-D baseline, including ordinary files, metadata identity, hard links where supported, junctions, symlinks, root replacement, migrations, and regressions. The individual Windows logs are not included in this repository snapshot. Re-run the commands below when validating a new Windows build or M01-E changes:
 
-- [ ] Run `py -3.12 -m py_compile jarvis_core/*.py tests/*.py` and `py -3.12 -m jarvis_core.ingestion --help`.
-- [ ] Run `py -3.12 -m unittest discover -s tests -p test_ingestion.py -v`; confirm normal files ingest, path/handle file IDs agree, and the junction, symlink, hard-link (where supported), and root-replacement tests execute rather than skip. Confirm linked or hard-linked contents are not ingested.
-- [ ] Enable Windows Developer Mode or use an environment where symlink creation is allowed; run `py -3.12 -m unittest discover -s tests -p test_storage.py -v` and confirm the symlink tests execute rather than skip.
-- [ ] Confirm the root-replacement test raises `AccessDenied` and commits no document rows when the root is replaced between scan and persistence.
-- [ ] Run the complete `py -3.12 -m unittest discover -s tests -v`; verify fresh initialization creates schema version 2, the v1-to-v2 upgrade preserves existing workspace data, and all M01-A tests pass.
+- `py -3.12 -m py_compile jarvis_core/*.py tests/*.py` and `py -3.12 -m jarvis_core.ingestion --help`.
+- `py -3.12 -m unittest discover -s tests -p test_ingestion.py -v`; check ordinary files, path/handle IDs, junction, symlink, hard-link (where supported), and root-replacement cases.
+- `py -3.12 -m unittest discover -s tests -p test_storage.py -v`; ensure symlink tests run where permitted.
+- `py -3.12 -m unittest discover -s tests -v` for the full regression suite.
 
-The automated Windows root-replacement case swaps the approved directory after scanning and before persistence. It validates identity rechecking but does not simulate every possible concurrent junction race; the limitation above remains.
+The automated Windows root-replacement case swaps the approved directory after scanning and before persistence. It validates identity rechecking but does not simulate every possible concurrent junction race; the limitation above remains. M01-E's cross-service integration tests and restore target-open failure test still need execution on Windows before claiming Windows verification for the M01-E branch.

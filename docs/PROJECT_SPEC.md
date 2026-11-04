@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Project Specification
 
-**Status:** foundation requirements captured; implementation has not begun.  
+**Status:** foundation requirements are implemented through M01-D; M01-E acceptance review is in progress. Requirements below describe intended product behavior and do not imply that later milestones are implemented.  
 **Date:** 2026-11-03
 
 ## 1. Purpose
@@ -65,9 +65,9 @@ These statements are user-confirmed product requirements, not claims of implemen
 - Build a local-first foundation in M01 after approval.
 - Later add model, desktop, voice, integration, reverse-engineering, and agent capabilities through gated milestones.
 
-### Out of scope for this documentation task
+### Not implemented by the M01 foundation
 
-- Application code, schema migrations, model installation, package installation, or runtime setup.
+- Model installation, package installation, or runtime setup for later milestones.
 - Accessing personal files outside the repository.
 - Running reverse engineering, browser automation, coding agents, or Mission Mode.
 - Treating a package, model, skill, or MCP server as trusted merely because it is open source.
