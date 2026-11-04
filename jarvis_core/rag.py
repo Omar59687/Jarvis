@@ -131,12 +131,15 @@ class WorkspaceEvidenceComposer:
             actor_id, workspace_id, query, limit=memory_limit
         )
         evidence: list[RAGEvidence] = []
-        remaining = MAX_EVIDENCE_CHARS
+        both_sources = bool(documents and memories)
+        document_budget = MAX_EVIDENCE_CHARS // 2 if both_sources else MAX_EVIDENCE_CHARS
+        memory_budget = MAX_EVIDENCE_CHARS - document_budget if both_sources else MAX_EVIDENCE_CHARS
+        remaining_documents = document_budget
         for result in documents:
-            if remaining <= 0:
+            if remaining_documents <= 0:
                 break
-            excerpt = result.excerpt[:remaining]
-            remaining -= len(excerpt)
+            excerpt = result.excerpt[:remaining_documents]
+            remaining_documents -= len(excerpt)
             evidence.append(RAGEvidence(
                 citation_id=f"D{sum(item.source_type == 'document' for item in evidence) + 1}",
                 document_id=result.document_id,
@@ -146,11 +149,12 @@ class WorkspaceEvidenceComposer:
                 source_type="document",
                 source_status="active_document",
             ))
+        remaining_memories = memory_budget
         for result in memories:
-            if remaining <= 0:
+            if remaining_memories <= 0:
                 break
-            excerpt = result.excerpt[:remaining]
-            remaining -= len(excerpt)
+            excerpt = result.excerpt[:remaining_memories]
+            remaining_memories -= len(excerpt)
             evidence.append(RAGEvidence(
                 citation_id=f"M{sum(item.source_type == 'memory' for item in evidence) + 1}",
                 document_id=None,

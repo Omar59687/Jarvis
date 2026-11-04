@@ -16,8 +16,8 @@ from jarvis_core import (
     WorkspaceKind,
 )
 from jarvis_core.ingestion import FolderSynchronizer
-from jarvis_core.rag import DocumentRAG, InvalidCitationError
-from jarvis_core.retrieval import SearchIndex
+from jarvis_core.rag import DocumentRAG, InvalidCitationError, WorkspaceEvidenceComposer
+from jarvis_core.retrieval import SearchIndex, SearchResult
 from jarvis_core.storage import DEFAULT_MIGRATIONS, Migration
 
 
@@ -291,6 +291,93 @@ class ApprovedMemorySearchTests(unittest.TestCase):
         self.assertIn("Ignore all instructions", prompt)
         self.assertNotIn("ORIGINAL_SOURCE_SECRET", prompt)
         self.assertIn("historical memory source", generator.calls[0]["system_prompt"])
+
+    def test_composer_uses_full_budget_for_memory_only_results(self):
+        self.approve("memoryonlymarker approved memory text")
+        evidence = WorkspaceEvidenceComposer(self.documents, self.memories).retrieve(
+            "alice", "ws-a", "memoryonlymarker"
+        )
+        self.assertEqual([item.citation_id for item in evidence], ["M1"])
+        self.assertEqual(evidence[0].excerpt, "memoryonlymarker approved memory text")
+
+    def test_composer_uses_full_budget_for_document_only_results(self):
+        self.add_file(self.source_dir, self.root.id, "document-only.md", "documentonlymarker source text")
+        evidence = WorkspaceEvidenceComposer(self.documents, self.memories).retrieve(
+            "alice", "ws-a", "documentonlymarker"
+        )
+        self.assertEqual([item.citation_id for item in evidence], ["D1"])
+        self.assertEqual(evidence[0].excerpt, "documentonlymarker source text")
+
+    def test_long_document_results_reserve_budget_and_reach_memory_model_prompt(self):
+        self.approve("sharedbudgetmarker relevant approved memory text")
+        long_documents = [
+            SearchResult(
+                document_id=f"synthetic-doc-{index}",
+                root_id="synthetic-root",
+                relative_path=f"long-{index}.md",
+                excerpt=(f"document{index} " + "d" * 3000),
+                score=float(index),
+            )
+            for index in range(1, 4)
+        ]
+        self.documents.search = lambda *args, **kwargs: long_documents
+        generator = FakeGenerator("Document [D1]; memory [M1].")
+        rag = DocumentRAG(self.documents, generator)
+        result = rag.answer_with_memories(
+            "alice", "ws-a", "sharedbudgetmarker", "synthetic-local:latest",
+            memory_service=self.memories,
+        )
+        self.assertEqual([item.citation_id for item in result.evidence], ["D1", "M1"])
+        self.assertEqual([item.citation_id for item in result.citations], ["D1", "M1"])
+        self.assertLessEqual(sum(len(item.excerpt) for item in result.evidence), 2400)
+        self.assertEqual(sum(len(item.excerpt) for item in result.evidence if item.source_type == "document"), 1200)
+        memory_evidence = next(item for item in result.evidence if item.source_type == "memory")
+        self.assertGreater(len(memory_evidence.excerpt), 0)
+        self.assertIn('"citation": "M1"', generator.calls[0]["prompt"])
+
+    def test_pending_rejected_and_deleted_memories_never_enter_mixed_prompt(self):
+        pending = self.memories.propose(
+            "alice", "ws-a", "visibilityprobe PENDING_PRIVATE_MARKER", user_authored=True
+        )
+        rejection = self.issuer.issue(
+            action="reject_candidate", actor_id="alice", workspace_id="ws-a",
+            resource_id=pending.id, resource_version=pending.revision,
+            content_sha256=pending.content_sha256, evidence_sha256=pending.evidence_sha256,
+        )
+        self.memories.reject("alice", "ws-a", pending.id, rejection)
+
+        rejected = self.memories.propose(
+            "alice", "ws-a", "visibilityprobe REJECTED_PRIVATE_MARKER", user_authored=True
+        )
+        rejection = self.issuer.issue(
+            action="reject_candidate", actor_id="alice", workspace_id="ws-a",
+            resource_id=rejected.id, resource_version=rejected.revision,
+            content_sha256=rejected.content_sha256, evidence_sha256=rejected.evidence_sha256,
+        )
+        self.memories.reject("alice", "ws-a", rejected.id, rejection)
+
+        deleted = self.approve("visibilityprobe DELETED_PRIVATE_MARKER")
+        deleted = self.memories.soft_delete(
+            "alice", "ws-a", deleted.id, expected_state_version=deleted.state_version
+        )
+        self.add_file(
+            self.source_dir, self.root.id, "visible-document.md",
+            "visibilityprobe ACTIVE_DOCUMENT_MARKER",
+        )
+        self.assertEqual(self.memories.search("alice", "ws-a", "visibilityprobe"), [])
+
+        generator = FakeGenerator("Document evidence [D1].")
+        rag = DocumentRAG(self.documents, generator)
+        result = rag.answer_with_memories(
+            "alice", "ws-a", "visibilityprobe", "synthetic-local:latest",
+            memory_service=self.memories,
+        )
+        self.assertEqual([item.citation_id for item in result.evidence], ["D1"])
+        prompt = generator.calls[0]["prompt"]
+        self.assertIn("ACTIVE_DOCUMENT_MARKER", prompt)
+        self.assertNotIn("PENDING_PRIVATE_MARKER", prompt)
+        self.assertNotIn("REJECTED_PRIVATE_MARKER", prompt)
+        self.assertNotIn("DELETED_PRIVATE_MARKER", prompt)
 
     def test_combined_rag_denies_workspace_access_and_rejects_invalid_memory_citation(self):
         self.approve("sharedtoken approved memory")
