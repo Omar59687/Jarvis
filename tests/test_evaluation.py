@@ -28,6 +28,10 @@ class EvaluationFrameworkTests(unittest.TestCase):
                              report["metrics"]["security_checks"]["denominator"])
             self.assertTrue(all(not row["case_failures"] for row in report["cases"]))
             self.assertTrue(all(row["answer_correctness"] is None for row in report["cases"]))
+            by_id = {row["case_id"]: row for row in report["cases"]}
+            self.assertFalse(by_id["missing-en-01"]["model_called"])
+            self.assertEqual(by_id["historical-en-01"]["retrieved_sources"][0]["source_status"],
+                             "historical_sources")
             ids = {row["case_id"] for row in report["cases"]}
             self.assertIn("malformed-citation-01", ids)
             self.assertIn("incomplete-01", ids)

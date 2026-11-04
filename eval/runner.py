@@ -206,6 +206,9 @@ def evaluate(*, live_client: OllamaClient | None = None, model: str | None = Non
             latencies.append(elapsed_ms)
             if result is not None:
                 retrieved = [_evidence_key(item, fixture) for item in result.evidence]
+            retrieved_sources = ([{"key": _evidence_key(item, fixture),
+                                   "source_status": item.source_status}
+                                  for item in result.evidence] if result else [])
             expected = case["expected_evidence"]
             if expected:
                 eligible_retrieval += len(expected)
@@ -266,6 +269,8 @@ def evaluate(*, live_client: OllamaClient | None = None, model: str | None = Non
                 case_failures.append("security_check_failed")
             rows.append({"case_id": case["id"], "language": case["language"], "category": case["category"],
                          "expected_evidence": expected, "retrieved_evidence": retrieved,
+                         "retrieved_sources": retrieved_sources,
+                         "model_called": (bool(generator.calls) if isinstance(generator, FakeGenerator) else None),
                          "expected_evidence_available": set(expected).issubset(set(retrieved)) if expected else not retrieved,
                          "recall_hits": len(set(expected) & set(retrieved)), "recall_denominator": len(expected),
                          "outcome": outcome, "expected_outcome": case["expected_outcome"],
