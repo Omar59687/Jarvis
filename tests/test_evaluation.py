@@ -23,9 +23,17 @@ class EvaluationFrameworkTests(unittest.TestCase):
             report = evaluate(output_dir=Path(temporary))
             self.assertEqual(report["mode"], "offline_deterministic")
             self.assertGreater(report["metrics"]["retrieval_recall_at_k"]["denominator"], 0)
-            self.assertGreaterEqual(report["metrics"]["security_checks"]["denominator"], 3)
-            self.assertEqual(report["metrics"]["security_checks"]["numerator"],
-                             report["metrics"]["security_checks"]["denominator"])
+            metrics = report["metrics"]
+            self.assertEqual(metrics["ordinary_citation_compliance"]["numerator"], 7)
+            self.assertEqual(metrics["ordinary_citation_compliance"]["denominator"], 7)
+            self.assertEqual(metrics["validator_negative_fixture_rejection"]["numerator"], 1)
+            self.assertEqual(metrics["validator_negative_fixture_rejection"]["denominator"], 1)
+            security = metrics["security_evaluation"]
+            self.assertEqual(security["deterministic_workspace_lifecycle_checks"]["numerator"], 2)
+            self.assertEqual(security["deterministic_workspace_lifecycle_checks"]["denominator"], 2)
+            self.assertEqual(security["fake_prompt_boundary_regression"]["value"], 1.0)
+            self.assertEqual(security["live_model_prompt_injection_resistance"]["status"], "not_evaluated")
+            self.assertEqual(security["live_model_prompt_injection_resistance"]["denominator"], 0)
             self.assertTrue(all(not row["case_failures"] for row in report["cases"]))
             self.assertTrue(all(row["answer_correctness"] is None for row in report["cases"]))
             by_id = {row["case_id"]: row for row in report["cases"]}
@@ -35,10 +43,17 @@ class EvaluationFrameworkTests(unittest.TestCase):
             ids = {row["case_id"] for row in report["cases"]}
             self.assertIn("malformed-citation-01", ids)
             self.assertIn("incomplete-01", ids)
+            malformed = by_id["malformed-citation-01"]
+            self.assertEqual(malformed["ordinary_citation_compliant"], None)
+            self.assertEqual(malformed["negative_validator_fixture_status"], "passed")
+            self.assertIn("malformed citation was rejected", malformed["case_pass_reason"])
+            self.assertEqual(len(report["unscored_cases"]), 7)
             self.assertTrue((Path(temporary) / "m02_d_report.json").exists())
             markdown = (Path(temporary) / "m02_d_report.md").read_text(encoding="utf-8")
             self.assertIn("Numerator / denominator", markdown)
             self.assertIn("unverified", markdown)
+            self.assertIn("not_evaluated", markdown)
+            self.assertIn("excluded from ordinary citation compliance", markdown)
 
     def test_dataset_is_valid_json(self):
         self.assertEqual(json.loads(DATASET.read_text(encoding="utf-8"))["version"], 1)

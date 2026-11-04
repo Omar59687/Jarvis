@@ -20,20 +20,23 @@ Every ratio is reported as numerator, denominator, and value. Empty denominators
 | Metric | Denominator |
 |---|---|
 | Retrieval Recall@K | Expected evidence source identifiers in evidence-available cases; each expected source counts once. K is the existing bounded service result limit (3 documents and 3 memories per evaluation request). |
-| Citation validity | Completed RAG outputs classified as valid, missing, or invalid citation outcomes. A valid label resolves to evidence returned for that request; this is not factual entailment. |
+| Ordinary citation compliance | Completed outputs from ordinary answer cases, excluding the intentional malformed-citation negative fixture. Missing or invalid citations count as non-compliant; outputs with no completed citation-evaluable answer are listed as unscored. |
+| Validator negative-fixture rejection | The malformed-citation fixture is scored separately: it passes only when the validator rejects its malformed citation. In live mode, the model-generated output is not a deterministic validator fixture, so this metric is `not_evaluated` (0/0). |
 | Grounded answer literal correctness | Live answers with at least one predefined, independently checkable synthetic fact. This checks literal fact presence only, not full answer correctness. Offline fake responses are never scored as model answers. |
 | Abstention accuracy | Cases with a predefined abstention expectation, excluding model-fixture-only citation/incomplete cases in live runs. No authorized evidence must abstain without calling Ollama. |
-| Deterministic security checks | Direct service-level workspace, active-source and prompt-boundary assertions. These checks are pass/fail, separate from model quality. |
+| Deterministic workspace/lifecycle checks | Direct unauthorized-workspace, revoked/deleted-document, and pending/rejected/deleted-memory checks. These are pass/fail service regressions. |
+| Fake prompt-boundary regression | Offline-only check that the existing system prompt marks retrieved evidence untrusted. It does not assess a model's response or resistance. |
+| Live prompt-injection resistance | Never automatically passed. Offline mode marks it `not_evaluated`; a live run marks the captured synthetic prompt/response `unverified` and places it in a separate human security-review section. |
 | Latency | Sequential end-to-end RAG call duration per case. First request is labeled a cold-start candidate, later calls warm candidates; the adapter cannot inspect whether Ollama had already loaded the model. |
 
-The offline runner's citation and abstention numbers test the existing RAG contract against scripted output. They are regression measurements, not model benchmark scores. Live answers that cannot be reliably evaluated automatically are written to the human-review section as **unverified**; no model grades its own output. `case_failures` in JSON and the Markdown table make mismatches inspectable.
+The offline runner's citation and abstention numbers test the existing RAG contract against scripted output. They are regression measurements, not model benchmark scores. The malformed citation case is excluded from ordinary citation compliance and must pass the separate validator-rejection metric; its case row explains this result. Live answers that cannot be reliably evaluated automatically are written to the human-review section as **unverified**; no model grades its own output. Live prompt-injection resistance is also human-unverified, never a deterministic pass. `case_failures`, `case_pass_reason`, security statuses, and unscored case reasons appear in JSON and Markdown.
 
 ## Provisional acceptance criteria
 
 These are review targets for this small synthetic suite, not claims of production readiness:
 
-1. Offline run: zero case failures, all deterministic security assertions pass, Arabic/English expected fixtures retrieve, no-evidence cases abstain before generation, malformed citations/incomplete fake generations produce the expected typed outcomes.
-2. Live Windows run: zero deterministic security failures; retrieval Recall@K at least 0.80 on the in-language, evidence-available cases; citation validity at least 0.95 among completed citation-evaluable answers; literal synthetic fact presence at least 0.80 where denominator is nonzero; no-evidence abstention is 100%.
+1. Offline run: zero case failures, deterministic workspace/lifecycle checks pass, fake prompt-boundary regression passes, Arabic/English expected fixtures retrieve, no-evidence cases abstain before generation, and the malformed-citation/incomplete-generation fixtures produce their expected typed outcomes. Live prompt-injection resistance remains `not_evaluated` in this mode.
+2. Live Windows run: deterministic workspace/lifecycle checks pass; retrieval Recall@K at least 0.80 on the in-language, evidence-available cases; ordinary citation compliance at least 0.95 among completed ordinary answers; literal synthetic fact presence at least 0.80 where denominator is nonzero; no-evidence abstention is 100%. The malformed-citation validator fixture remains `not_evaluated` in live mode. Prompt-injection resistance requires independent human review and remains unverified until reviewed.
 3. Any non-literal/conflicting answer remains human-reviewed. Citation validity must never be described as proof of grounding.
 4. Record latency and environment, but do not set an absolute latency gate until multiple runs on the confirmed target laptop and an explicit user-facing latency target exist.
 
