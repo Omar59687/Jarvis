@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Project Specification
 
-**Status:** M01-A through M01-E are merged. M02-A implements a local-only Ollama adapter; later M02 and product requirements remain unimplemented unless stated otherwise. Requirements below describe intended behavior, not automatically implementation facts.  
+**Status:** M01-A through M01-E and M02-A through M02-B2 are merged. M02-C grounding and context management is on a review branch; later M02 and product requirements remain unimplemented unless stated otherwise. Requirements below describe intended behavior, not automatically implementation facts.  
 **Date:** 2026-11-03
 
 ## 1. Purpose
@@ -62,7 +62,7 @@ These statements are user-confirmed product requirements, not claims of implemen
 ### In scope
 
 - Define requirements, architecture, component adoption criteria, and milestone acceptance criteria.
-- M01 implements local storage, approved-folder ingestion, lexical retrieval, and memory lifecycle. M01-E records remaining gaps, including unresolved cross-workspace consent. M02-A provides a local Ollama HTTP adapter only; RAG is not included.
+- M01 implements local storage, approved-folder ingestion, lexical retrieval, and memory lifecycle. M01-E records remaining gaps, including unresolved cross-workspace consent. M02-A provides a local Ollama HTTP adapter; M02-B1/B2 provide document and approved-memory RAG. M02-C grounding/context work is under review in the stated branch.
 - Later add model, desktop, voice, integration, reverse-engineering, and agent capabilities through gated milestones.
 
 ### Not implemented by the M01 foundation

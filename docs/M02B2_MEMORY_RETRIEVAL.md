@@ -1,6 +1,6 @@
 # M02-B2 — Searchable Approved Memories
 
-**Status:** Implemented on `feature/m02-b2-memory-retrieval`; awaiting review. This slice adds a separate FTS5 index for approved active memories and an explicit mixed document/memory RAG path. It does not alter M01's approval, edit, deletion, restoration, or purge rules.
+**Status:** Merged in the stated `main` baseline. This slice adds a separate FTS5 index for approved active memories and an explicit mixed document/memory RAG path. M02-C adds deterministic evidence selection and context management on a review branch; it does not alter M01's approval, edit, deletion, restoration, or purge rules.
 
 ## Schema and synchronization
 
