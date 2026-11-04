@@ -2,9 +2,9 @@
 
 **A local-first personal AI second brain**
 
-Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing, and retrieving information across personal and project workspaces. M01-A through M01-E and M02-A through M02-C are in the stated `main` baseline; M02-D evaluation is on a review branch.
+Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing, and retrieving information across personal and project workspaces. M01-A through M01-E and M02-A through M02-D are in the stated `main` baseline; M02-D is the current evaluation foundation.
 
-> **Project status:** The baseline includes M01, the local Ollama adapter, document and approved-memory RAG, and M02-C grounding/context handling. M02-D adds synthetic evaluation tooling on a review branch. No embeddings, cloud, GUI or voice capability is claimed.
+> **Project status:** The baseline includes M01, the local Ollama adapter, document and approved-memory RAG, M02-C grounding/context handling, and M02-D evaluation. Q01 proposes focused quality diagnostics and local model comparison preparation. No embeddings, cloud, GUI or voice capability is claimed.
 
 ## Product goals
 
@@ -25,7 +25,7 @@ Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing,
 | Milestone | State |
 |---|---|
 | M01 — Second Brain Foundation | M01-A through M01-E merged; see acceptance report for open criterion and limitations |
-| M02 — AI Intelligence Engine | M02-A through M02-C in baseline; M02-D on review branch; later slices remain gated |
+| M02 — AI Intelligence Engine | M02-A through M02-D merged; Q01 quality checkpoint under review; later slices remain gated |
 | M03 — Desktop, Dashboard and Voice | Planned |
 | M04 — Integration Platform | Planned |
 | M05 — Reverse Engineering | Planned; authorized targets only |
@@ -49,11 +49,12 @@ Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing,
 - [M02-C grounding and context](docs/M02C_GROUNDING_CONTEXT.md) — deterministic evidence selection, separated context packaging, and answer outcomes.
 - [M02-C synthetic diagnostic](examples/m02_c_grounding_demo.py) — prints the selected evidence and exact fake-model prompt.
 - [M02-D evaluation](docs/M02D_EVALUATION.md) — synthetic dataset, offline and opt-in local Ollama runners, metrics, and verification.
+- [Q01 model quality checkpoint](docs/M02_Q01_MODEL_QUALITY.md) — historical-memory diagnostic, Ollama timing metadata, and opt-in sequential local comparison.
 - [Agent and contributor instructions](AGENTS.md).
 
 ## Repository status
 
-The stated `main` baseline contains M01-A through M01-E and M02-A through M02-C. See [M01 Acceptance](docs/M01_ACCEPTANCE.md) for the acceptance matrix, unresolved cross-workspace consent criterion, and residual limitations. M02-D remains under review.
+The stated `main` baseline contains M01-A through M01-E and M02-A through M02-D. See [M01 Acceptance](docs/M01_ACCEPTANCE.md) for the acceptance matrix, unresolved cross-workspace consent criterion, and residual limitations. Q01 changes are proposed on a review branch; no live model benchmark has been run for Q01.
 
 ## Development principles
 
@@ -65,4 +66,4 @@ The stated `main` baseline contains M01-A through M01-E and M02-A through M02-C.
 
 ## Review status
 
-M01-E and M02-A through M02-C are in the stated baseline. Cross-workspace aggregation remains unsupported and denied by default; the acceptance report preserves this open requirement. M02-D evaluation is under review; later slices remain gated. See [M01 Acceptance](docs/M01_ACCEPTANCE.md), [M02-B2](docs/M02B2_MEMORY_RETRIEVAL.md), [M02-C](docs/M02C_GROUNDING_CONTEXT.md), and [M02-D](docs/M02D_EVALUATION.md).
+M01-E and M02-A through M02-D are in the stated baseline. Cross-workspace aggregation remains unsupported and denied by default; the acceptance report preserves this open requirement. Q01 is under review; later slices remain gated. See [M01 Acceptance](docs/M01_ACCEPTANCE.md), [M02-B2](docs/M02B2_MEMORY_RETRIEVAL.md), [M02-C](docs/M02C_GROUNDING_CONTEXT.md), [M02-D](docs/M02D_EVALUATION.md), and [Q01](docs/M02_Q01_MODEL_QUALITY.md).

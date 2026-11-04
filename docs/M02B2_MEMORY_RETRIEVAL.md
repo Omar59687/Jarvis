@@ -1,6 +1,6 @@
 # M02-B2 — Searchable Approved Memories
 
-**Status:** M02-B2 is merged in the stated `main` baseline. This slice adds a separate FTS5 index for approved active memories and an explicit mixed document/memory RAG path. M02-C grounding/context management is also merged; M02-D evaluation is on a review branch. These later slices do not alter M01's approval, edit, deletion, restoration, or purge rules.
+**Status:** M02-B2 is merged in the stated `main` baseline. This slice adds a separate FTS5 index for approved active memories and an explicit mixed document/memory RAG path. M02-C grounding/context management and M02-D evaluation are also merged. These later slices do not alter M01's approval, edit, deletion, restoration, or purge rules.
 
 ## Schema and synchronization
 

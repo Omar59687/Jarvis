@@ -254,6 +254,28 @@ class ApprovedMemorySearchTests(unittest.TestCase):
         self.assertEqual(revoked.source_status, "historical_sources")
         self.assertEqual(revoked.evidence[0].source_sha256, found.evidence[0].source_sha256)
 
+    def test_historical_snapshot_can_answer_past_question_but_not_claim_current_state(self):
+        doc_id = self.add_file(self.source_dir, self.root.id, "old-room.txt",
+                               "The fictional room code is Amber-7.")
+        self.approve("The fictional room code was Amber-7.", document_ids=(doc_id,), user_authored=False)
+        (self.source_dir / "old-room.txt").write_text("The new room code is Cedar-8.", encoding="utf-8")
+        self.sync.sync("alice", "ws-a", self.root.id)
+
+        generator = FakeGenerator("The old fictional room code was Amber-7 [M1].")
+        result = DocumentRAG(self.documents, generator).answer_with_memories(
+            "alice", "ws-a", "What was the old fictional room code?", "synthetic-local:latest",
+            memory_service=self.memories,
+        )
+        self.assertEqual(result.outcome.value, "valid_citations")
+        historical = next(item for item in result.evidence if item.source_type == "memory")
+        self.assertEqual(historical.source_status, "historical_sources")
+        self.assertEqual(result.citations[0].citation_id, historical.citation_id)
+        system_prompt = generator.calls[0]["system_prompt"]
+        self.assertIn("may answer a question explicitly about the past", system_prompt)
+        self.assertIn("historical", system_prompt)
+        self.assertIn("does not establish the current state", system_prompt)
+        self.assertIn("abstain", system_prompt)
+
     def test_combined_rag_uses_distinct_labels_and_hides_inactive_source_documents(self):
         doc_id = self.add_file(
             self.source_dir, self.root.id, "private-origin.md",
