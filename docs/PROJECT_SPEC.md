@@ -98,7 +98,7 @@ These are architecture goals to validate, not measured properties.
 
 Resolve these before the related implementation gate:
 
-1. System RAM, available disk, Windows version, and whether GPU acceleration is a requirement or an optimization.
+1. CPU model and available disk remain unknown; whether GPU acceleration is a requirement or an optimization also remains open. Confirmed Windows and RAM details are in [M02-A adapter documentation](M02A_OLLAMA_ADAPTER.md).
 2. First M01 data types and a realistic size/sample corpus for performance tests.
 3. Whether the browser dashboard binds only to loopback and how it authenticates local browser sessions.
 4. Memory lifecycle: retention defaults, user export format, hard-purge UX, and backup encryption expectations.

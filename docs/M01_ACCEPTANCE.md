@@ -6,7 +6,7 @@
 
 | M01 criterion | Evidence in repository | M01 result / remaining item |
 |---|---|---|
-| A.1 per-user database location | `test_default_database_path_uses_synthetic_posix_and_windows_settings`; `default_database_path()` | Linux test exercises POSIX and Windows path branches with synthetic settings. Windows filesystem behavior itself still needs the Windows run. |
+| A.1 per-user database location | `test_default_database_path_uses_synthetic_posix_and_windows_settings`; `default_database_path()` | Linux test exercises both path branches with synthetic settings; the maintainer reports the merged M01-A–E suite was Windows-verified. |
 | A.2 offline storage and migrations | `test_core_storage_operations_do_not_use_network`; memory offline test; initialization and migration tests | Existing tests plus the M01-E integration flow run with socket creation blocked. |
 | A.3–A.4 versioned migration, rollback, restore | `test_fresh_database_initialization`, `test_successful_upgrade_applies_new_migration_once`, migration rollback tests in storage/memory; v2 and v3 upgrade coverage; backup tests | Migrations v1→v4, v2→v3 and v3→v4 are covered across the suite. Combined backup coverage is added for FTS5, memory evidence and revisions. |
 | A.5 FTS5 availability | retrieval capability probe and clear-failure test | Covered by `test_fts5_capability_probe_and_clear_failure`; no FTS extension is downloaded. |
