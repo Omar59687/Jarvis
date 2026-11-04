@@ -93,7 +93,8 @@ class OllamaAdapterTests(unittest.TestCase):
 
     def test_generation_settings_reject_boolean_and_non_integer_counts(self):
         invalid = (
-            {"temperature": True},
+            {"temperature": True}, {"temperature": float("nan")},
+            {"temperature": float("inf")}, {"temperature": 10 ** 1000},
             {"seed": True}, {"seed": 1.5},
             {"num_ctx": True}, {"num_ctx": 4096.0},
             {"num_predict": False}, {"num_predict": 4.5},

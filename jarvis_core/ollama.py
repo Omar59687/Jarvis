@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import ipaddress
 import json
-import math
 import re
 import socket
 import urllib.error
@@ -103,7 +102,7 @@ class GenerationSettings:
 
     def __post_init__(self) -> None:
         if (isinstance(self.temperature, bool) or not isinstance(self.temperature, (int, float))
-                or not math.isfinite(self.temperature) or not 0 <= self.temperature <= 2):
+                or not 0 <= self.temperature <= 2):
             raise OllamaConfigurationError("temperature must be between 0 and 2")
         if type(self.seed) is not int or not 0 <= self.seed <= 2_147_483_647:
             raise OllamaConfigurationError("seed is out of range")
