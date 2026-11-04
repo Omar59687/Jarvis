@@ -1,13 +1,12 @@
 # M01 — Foundation Acceptance Matrix
 
-**Baseline:** `main` at `c5d2212833f4ea3c966278784e206540af53a247` (M01-A through M01-D merged).  
-**M01-E scope:** synthetic cross-service verification, restore cleanup on target-open failure, platform-specific default-path tests, status corrections, and this acceptance matrix. No UI, authentication service, cross-workspace consent flow, model, or semantic retrieval is added.
+**Acceptance report:** M01-E implementation was merged into the `main` baseline `039746069da6734946331ff9f2d332b223dc8c87`. The project maintainer reports M01-A through M01-E were Windows-verified before this baseline. This matrix describes exercised scope and residual gaps; it does not claim the unresolved cross-workspace consent criterion is implemented.
 
 ## Acceptance matrix
 
-| M01 criterion | Evidence in repository | M01-E result / remaining item |
+| M01 criterion | Evidence in repository | M01 result / remaining item |
 |---|---|---|
-| A.1 per-user database location | `test_default_database_path_uses_synthetic_posix_and_windows_settings`; `default_database_path()` | Linux test exercises POSIX and Windows path branches with synthetic settings. Windows filesystem behavior itself still needs the Windows run. |
+| A.1 per-user database location | `test_default_database_path_uses_synthetic_posix_and_windows_settings`; `default_database_path()` | Linux test exercises both path branches with synthetic settings; the maintainer reports the merged M01-A–E suite was Windows-verified. |
 | A.2 offline storage and migrations | `test_core_storage_operations_do_not_use_network`; memory offline test; initialization and migration tests | Existing tests plus the M01-E integration flow run with socket creation blocked. |
 | A.3–A.4 versioned migration, rollback, restore | `test_fresh_database_initialization`, `test_successful_upgrade_applies_new_migration_once`, migration rollback tests in storage/memory; v2 and v3 upgrade coverage; backup tests | Migrations v1→v4, v2→v3 and v3→v4 are covered across the suite. Combined backup coverage is added for FTS5, memory evidence and revisions. |
 | A.5 FTS5 availability | retrieval capability probe and clear-failure test | Covered by `test_fts5_capability_probe_and_clear_failure`; no FTS extension is downloaded. |
@@ -17,7 +16,7 @@
 | B.3 no-permission isolation | direct workspace mismatch and unauthorized actor tests; M01-E service calls | Covered for existing per-workspace APIs; direct calls deny without exposing a result. |
 | B.4 cross-workspace consent | no combined retrieval API or consent receipt exists | **Open acceptance criterion.** Cross-workspace aggregation remains unsupported and denied by default. M01-E does not add consent or claim this criterion is fulfilled. A future approved scope must define the narrowly scoped consent and audit model. |
 | B.5 direct API bypass attempts | existing storage/service tests and M01-E calls without UI mediation | Covered at the service API boundary for exercised operations. Authentication of the supplied actor remains the trusted host's responsibility. |
-| B.6–B.7 approved roots and revocation | storage path tests; ingestion symlink/junction/root replacement tests; M01-E root registration, sync and revocation | Linux behavior is exercised in this run. M01-A–D Windows verification was reported by the maintainer; M01-E Windows execution remains required. Hostile concurrent path replacement cannot be fully prevented by current standard-library Windows traversal. |
+| B.6–B.7 approved roots and revocation | storage path tests; ingestion symlink/junction/root replacement tests; M01-E root registration, sync and revocation | The maintainer reports the merged M01-A–E suite was Windows-verified. Hostile concurrent path replacement cannot be fully prevented by current standard-library Windows traversal. |
 | C.1–C.2 durable memory provenance and pending-only proposals | memory lifecycle tests and M01-E evidence-linked proposal | Covered with synthetic evidence and user-authored designation. No importer or model auto-approval path exists. |
 | C.3–C.5 snapshot-bound approval and reviewable evidence | candidate digest, expiry, replay and stale-evidence tests; M01-E expired-context and source-change checks | Covered at the storage service. A valid signature proves trusted-host issuance, not that a human clicked; no authentication/UI exists. |
 | C.6 edit and revision provenance | edit/history tests; M01-E revision evidence checks | Covered, including evidence preservation and privacy-conscious audit metadata. |
@@ -79,7 +78,7 @@ py -3.12 -m unittest tests.test_foundation_integration -v
 py -3.12 -m unittest discover -s tests -v
 ```
 
-The M01-A through M01-D Windows suite was reported verified before merge. Run the commands above on Windows for the M01-E branch, especially to verify SQLite handle cleanup, junction/symlink/root replacement cases, FTS5 availability, and platform-path tests. This Linux run cannot establish Windows behavior.
+The maintainer reports M01-A through M01-E were verified on Windows before merge. The report's original run details below are historical and do not substitute for retaining platform-specific CI logs for future changes.
 
 ## Known limitations and exit gate
 
@@ -88,7 +87,8 @@ The M01-A through M01-D Windows suite was reported verified before merge. Run th
 - Windows path-based traversal reduces but does not eliminate hostile local filesystem races. Junction and symlink checks do not replace handle-relative native traversal.
 - SQLite content is unencrypted; OS account permissions and private backups are relied on. Old backups can retain purged content.
 - Search is lexical-only. Arabic morphology, stemming, clitic segmentation, semantic retrieval and Arabic-English cross-language matching are not claimed.
-- Windows verification remains necessary for M01-E. Maintainer-reported Windows verification of merged M01-A–D does not substitute for this branch's test run.
-- M02 must not start until M01-E results and the open cross-workspace criterion have been independently reviewed and the user approves the M01 exit gate.
+- Windows filesystem behavior has known limits: current standard-library traversal does not eliminate hostile concurrent path replacement races.
+- Cross-workspace aggregation remains unsupported and denied by default. It is an unresolved product criterion and must not be represented as implemented by the M01-E merge.
+- The trusted-host signer does not authenticate a user or prove a human confirmation occurred; no UI/authentication service exists.
 
-**M01 exit is not claimed by this matrix.** Exit requires reproducible Linux and Windows evidence for the accepted scope, review of the open cross-workspace authorization criterion, and explicit user acceptance of residual limitations.
+M01-A through M01-E are delivered and merged. The cross-workspace consent criterion remains explicitly unresolved; this report preserves it as a limitation rather than implying full criterion compliance.

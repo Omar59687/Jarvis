@@ -47,4 +47,4 @@ This is local application-level authorization. A process that can write the SQLi
 
 ## Verification
 
-Run `python -m unittest discover -s tests -v` from the repository root. M01-D tests use synthetic workspaces and temporary files. The historical pre-M01-E Linux run used Python 3.12.14 and SQLite 3.53.1: 71 tests ran, 65 passed and 6 Windows-specific ingestion checks were skipped. The project maintainer reported M01-D Windows verification before merge. The current M01-E Linux run does not independently re-verify Windows SQLite/filesystem behavior; see [M01 Acceptance](M01_ACCEPTANCE.md) for remaining verification.
+Run `python -m unittest discover -s tests -v` from the repository root. M01-D tests use synthetic workspaces and temporary files. The historical pre-M01-E Linux run used Python 3.12.14 and SQLite 3.53.1: 71 tests ran, 65 passed and 6 Windows-specific ingestion checks were skipped. The maintainer reports the merged M01-A through M01-E baseline was Windows-verified; see [M01 Acceptance](M01_ACCEPTANCE.md) for remaining limitations.

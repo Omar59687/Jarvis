@@ -1,7 +1,7 @@
 # M01 — Second Brain Foundation Specification
 
-**Status:** M01-A through M01-D are implemented and merged in the stated `main` baseline. M01-E is the bounded integration and acceptance review; its report tracks tested criteria, gaps, limitations and deferred work.  
-**Next task:** complete review of M01-E evidence and resolve or explicitly accept open criteria before the M01 exit gate.
+**Status:** M01-A through M01-E are implemented and merged in the stated `main` baseline. The [acceptance report](M01_ACCEPTANCE.md) records tested criteria, limitations, and the unresolved cross-workspace consent requirement. M01 does not provide combined cross-workspace retrieval.
+**Next task:** M02-A local Ollama adapter; later M02 slices require separate approval.
 
 ## 1. Goal
 

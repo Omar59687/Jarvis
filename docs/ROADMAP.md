@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Roadmap
 
-**Status:** M01-A through M01-D are merged in the stated `main` baseline. M01-E is the current bounded integration and acceptance review. M02 and later sequencing remain gated and proposed.
+**Status:** M01-A through M01-E are merged in the stated `main` baseline. M02-A is the approved local Ollama adapter slice; M02-B and later sequencing remain gated.
 
 ## Phase gates
 
@@ -18,7 +18,7 @@ For each milestone:
 | ID | Name | Intended outcome | Gate examples |
 |---|---|---|---|
 | M01 | Second Brain Foundation | Local workspaces, durable evidence-linked memories, approved-folder sync, scoped search, approval and reversible deletion | M01 criteria in [M01_SPEC.md](M01_SPEC.md); local-only operation; isolation; migration/restore checks |
-| M02 | AI Intelligence Engine | Local Ollama model adapter, retrieval-augmented answers, evidence citations, optional cloud routing | Model/license inventory; Arabic/English evaluation; provider disclosure; no-cloud test |
+| M02 | AI Intelligence Engine | M02-A local Ollama adapter; later retrieval-augmented answers, evidence citations, and optional cloud routing require separate approval | M02-A loopback/model allowlist boundary; later model/license inventory, Arabic/English evaluation, provider disclosure, no-cloud tests |
 | M03 | Desktop, Dashboard and Voice | Windows desktop shell, browser dashboard, 3D knowledge galaxy, voice input/wake word/local speech recognition | Windows compatibility; accessibility/RTL; local audio processing; permission-bound native APIs |
 | M04 | Integration Platform | Versioned APIs and reviewed MCP/API connectors, GitHub and OpenCode integration | Per-tool authorization; secrets handling; connector isolation; approval for writes |
 | M05 | Reverse Engineering | REA-based workflows for authorized software analysis | Legal authorization; version/license/dependency review; isolated target copies; bounded workflows |
@@ -36,4 +36,4 @@ For each milestone:
 
 ## Current state and next task
 
-M01-A storage and permissions, M01-B approved-folder ingestion, M01-C bilingual lexical retrieval, and M01-D memory approval/reversible deletion are merged into `main` at the specified starting point. M01-E is limited to synthetic integration coverage, a confirmed restore connection-cleanup fix, path-selection tests, documentation status corrections, and the acceptance matrix. M02 remains gated on M01 review and explicit approval.
+M01-A through M01-E are merged into `main` at the stated starting point. M01's acceptance report retains unresolved cross-workspace consent and other documented limitations; aggregation remains unsupported and denied by default. M02-A implements only a local Ollama adapter and its deployment documentation. M02-B remains gated on separate approval.

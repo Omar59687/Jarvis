@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Proposed Architecture
 
-**Status:** the logical product architecture below remains proposed. The merged baseline implements local SQLite storage/permissions, approved-folder ingestion, document FTS5 retrieval and M01-D memory lifecycle. M01-E is reviewing cross-service acceptance. No desktop, dashboard, model, voice or external integration is implemented.
+**Status:** the logical product architecture below remains proposed. The merged baseline implements M01-A through M01-E. M02-A adds a standard-library adapter to explicitly configured loopback Ollama; it does not orchestrate retrieval or add a UI. No desktop, dashboard, voice or external integration is implemented.
 
 ## 1. Architecture goals
 
@@ -19,7 +19,7 @@
 | Local application service | API, authentication/session handling, orchestration, permission checks, audit events | Trusted policy enforcement point |
 | Memory and evidence store | SQLite database, migrations, FTS search, evidence/source metadata, tombstones | Local user data boundary |
 | Approved-folder sync | Watch or scan configured roots, normalize paths, record provenance, report sync state | File access limited to revocable approved roots |
-| Model adapters | Ollama first; optional cloud adapters behind explicit routing and data-sharing controls | Model providers receive only the data approved for a request |
+| Model adapters | M02-A local Ollama adapter; optional cloud adapters are future, separately approved work | Local adapter restricts requests to configured loopback and allowlisted installed models; future providers receive only data approved for a request |
 | Tool adapters | MCP/API, GitHub/OpenCode, browser automation, REA, and future agents | Each adapter has a narrow capability and approval policy |
 | Background workers | Sync, indexing, speech, and later bounded tasks | No implicit permission expansion or unlogged side effects |
 
@@ -44,7 +44,7 @@ The browser dashboard can use the same UI and API. If it runs in an ordinary bro
 - Every memory, evidence record, source, sync job, and audit event is associated with a workspace.
 - Personal and project workspace identifiers are not interchangeable.
 - Retrieval APIs require a workspace context and apply access checks in the service before returning data.
-- Cross-workspace retrieval is denied by default; an explicit user approval grants only the requested scope and should be visible in the audit trail.
+- Cross-workspace retrieval is denied by default. The merged M01 implementation has no combined retrieval or consent-receipt workflow; see the open criterion in [M01 Acceptance](M01_ACCEPTANCE.md).
 - Folder permissions are granted per selected root, not per drive or user home by default.
 - Connectors receive only the workspace and capability needed for the specific operation.
 - System prompts and frontend hiding are not security controls.
@@ -63,7 +63,7 @@ The signing context verifies that a trusted host issued a decision for the exact
 
 ## 6. Local model and cloud boundary
 
-- Ollama is the initial local inference candidate; availability, model terms, language quality, and performance must be tested on the target hardware.
+- M02-A implements the local Ollama HTTP adapter. Model allowlisting is explicit and there is no pull/install behavior. Model choice, terms, language quality, and performance remain undecided until evaluated on the target hardware.
 - A model adapter cannot grant itself database, filesystem, network, or connector permissions.
 - Treat model output, tool arguments, and retrieved text as untrusted.
 - Cloud model routing is opt-in, shows which provider may receive content, and should support per-request exclusion/redaction.

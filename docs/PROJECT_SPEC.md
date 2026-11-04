@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Project Specification
 
-**Status:** foundation requirements are implemented through M01-D; M01-E acceptance review is in progress. Requirements below describe intended product behavior and do not imply that later milestones are implemented.  
+**Status:** M01-A through M01-E are merged. M02-A implements a local-only Ollama adapter; later M02 and product requirements remain unimplemented unless stated otherwise. Requirements below describe intended behavior, not automatically implementation facts.  
 **Date:** 2026-11-03
 
 ## 1. Purpose
@@ -54,15 +54,15 @@ These statements are user-confirmed product requirements, not claims of implemen
 ### Cost and hardware constraints
 
 - No mandatory paid APIs or subscriptions.
-- Target hardware: Intel i7-1165G7 and NVIDIA MX450 with 2 GB VRAM.
-- System RAM is not confirmed. Model size, quantization, context length, speech workload, and GPU offload therefore remain open validation items.
+- Confirmed target hardware: Windows 11 Home 64-bit build 26100, 15.77 GB system RAM, NVIDIA GeForce MX450 with 2 GB VRAM, NVIDIA driver 581.83, Ollama 0.40.14, and CUDA 13.0 as reported by NVIDIA-SMI.
+- CPU model and free disk space are unknown. Model selection, fit, quantization, performance, context-memory use, speech workload, and GPU offload remain open validation items; no live inference benchmark has run on this laptop.
 
 ## 4. Scope and guardrails
 
 ### In scope
 
 - Define requirements, architecture, component adoption criteria, and milestone acceptance criteria.
-- M01 implements the local-first storage, approved-folder ingestion, lexical retrieval and memory lifecycle foundation; M01-E records remaining integration acceptance gaps.
+- M01 implements local storage, approved-folder ingestion, lexical retrieval, and memory lifecycle. M01-E records remaining gaps, including unresolved cross-workspace consent. M02-A provides a local Ollama HTTP adapter only; RAG is not included.
 - Later add model, desktop, voice, integration, reverse-engineering, and agent capabilities through gated milestones.
 
 ### Not implemented by the M01 foundation
@@ -98,7 +98,7 @@ These are architecture goals to validate, not measured properties.
 
 Resolve these before the related implementation gate:
 
-1. System RAM, available disk, Windows version, and whether GPU acceleration is a requirement or an optimization.
+1. CPU model and available disk remain unknown; whether GPU acceleration is a requirement or an optimization also remains open. Confirmed Windows and RAM details are in [M02-A adapter documentation](M02A_OLLAMA_ADAPTER.md).
 2. First M01 data types and a realistic size/sample corpus for performance tests.
 3. Whether the browser dashboard binds only to loopback and how it authenticates local browser sessions.
 4. Memory lifecycle: retention defaults, user export format, hard-purge UX, and backup encryption expectations.

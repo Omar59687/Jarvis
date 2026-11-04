@@ -1,7 +1,7 @@
 # Jarvis 2.0 — Open-Source Stack Audit
 
-**Audit date:** 2026-11-03  
-**Repository inspected:** `Omar59687/Jarvis`, default branch `main`, initial commit `ac32b9c927ac71f897cbd49b4d463c95c3b5014b`. At audit time it contained only a one-character README. No package lockfiles, source, tests, or integrations existed.  
+**Audit date:** 2026-11-03 (historical inventory; M02-A status updated in this change)  
+**Repository inspected:** initial inventory covered `Omar59687/Jarvis` at `ac32b9c927ac71f897cbd49b4d463c95c3b5014b`; later milestone adoption states are updated below.  
 **Scope:** public upstream documentation and repository metadata; no downloaded code was executed and no dependency was installed.
 
 ## 1. Recommendation
@@ -10,7 +10,7 @@ Adopt a staged, evidence-first stack:
 
 - **M01 candidate:** SQLite with migrations; test whether the selected runtime build includes FTS5. Keep persistence behind a storage interface.
 - **Desktop/UI candidate:** evaluate Tauri 2 plus a shared TypeScript web UI, with narrow capabilities; compare packaging and security cost against a simpler browser-only local UI before locking it.
-- **Local model candidate:** Ollama behind a replaceable adapter, only after hardware/model evaluation. Ollama software licensing does not license every model it can run.
+- **Local model:** M02-A implements a standard-library adapter for a replaceable local Ollama endpoint. No model is selected or bundled. Ollama software licensing does not license every model it can run.
 - **3D visualization candidate:** Three.js for the knowledge galaxy, deferred until the dashboard milestone.
 - **Voice candidates:** faster-whisper for local speech-to-text and openWakeWord for wake-word detection, both subject to Windows/hardware and model-asset checks.
 - **Integration candidates:** official MCP Python SDK, Playwright, OpenCode, and REA only in later milestones with version pinning, central approval policy, and isolation.
@@ -23,7 +23,7 @@ Nothing in this list is installed or adopted in code. “Candidate” means suit
 | Capability | Candidate and license | Reuse type | Fit and trade-offs | Security/licensing notes | Adoption |
 |---|---|---|---|---|---|
 | Local storage and text search | [SQLite](https://www.sqlite.org/copyright.html) is public domain; [FTS5](https://www.sqlite.org/fts5.html) is included in SQLite amalgamation | Runtime/library | Small local footprint; good M01 fit; FTS availability depends on shipped SQLite build | Check SQLite build options; use parameterized queries, migrations, backups, and secure-delete/retention design; wrappers have their own licenses | **Proposed for M01** |
-| Local model runtime | [Ollama](https://github.com/ollama/ollama), MIT software license | Runtime/service | Local API provides a replaceable inference target; setup and model memory requirements remain | Model weights have separate terms; review model card/license and source. Keep API on loopback; do not assume local endpoint is authenticated | **Candidate for M02** |
+| Local model runtime | [Ollama](https://github.com/ollama/ollama), MIT software license | Runtime/service | M02-A adapter uses its local tags and chat APIs; model choice and memory fit remain open | Model weights have separate terms; review exact model card/license and source. Adapter restricts configured endpoint to numeric loopback, rejects redirects, and does not authenticate other local processes | **Adapter implemented; runtime separately installed; no model selected or bundled** |
 | Windows desktop shell | [Tauri 2](https://github.com/tauri-apps/tauri), MIT/Apache-2.0 project licensing | Application framework | Reuses web UI and offers scoped native commands; Rust, C++ build tools, WebView2 and packaging add complexity | Scope capabilities by window/command; audit plugins and origin model; WebView2/build prerequisites documented upstream | **Compatibility spike only** |
 | Knowledge galaxy | [Three.js](https://github.com/mrdoob/three.js), MIT | UI library | General-purpose WebGL 3D library; suitable rendering base, but graph layout, accessibility, and large-graph performance remain Jarvis work | Preserve MIT notice and audit addon/font/asset licenses separately | **Candidate for M03** |
 | Speech recognition | [faster-whisper](https://github.com/SYSTRAN/faster-whisper), MIT | Python library/runtime | CTranslate2-based Whisper transcription; local operation; CPU may be practical, GPU setup needs measurement | Models and downloaded assets have separate terms; check exact CTranslate2/CUDA/Windows compatibility and memory. No inference benchmark performed | **Candidate for M03** |
@@ -45,8 +45,9 @@ Nothing in this list is installed or adopted in code. “Candidate” means suit
 
 ### Proposed adoption stages
 
-1. **M01:** the standard-library SQLite foundation and FTS5 document index are implemented through M01-D. M01-E verifies cross-service acceptance; check the deployed runtime's SQLite/FTS5 support before release.
-2. **M02-M03:** benchmark local model and speech candidates on the user's hardware after RAM and Windows versions are known.
+1. **M01:** M01-A through M01-E are merged. Cross-workspace consent remains unresolved and denied by default; see the acceptance matrix.
+2. **M02-A:** local-only Ollama adapter implemented with no model download. Model selection and performance evaluation are open; target RAM and Windows version are now recorded in [M02-A adapter documentation](M02A_OLLAMA_ADAPTER.md), but CPU and free disk remain unknown.
+3. **M02-M03:** benchmark local model and speech candidates on the actual target Windows laptop before selecting models or claiming resource fit.
 3. **M04 onward:** integrate one connector at a time behind explicit policies; review security advisories and test least privilege.
 4. **M05-M07:** adopt REA, OpenCode, or Playwright only for user-authorized targets/tasks with isolation and an explicit approval path.
 
