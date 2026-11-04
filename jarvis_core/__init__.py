@@ -24,6 +24,14 @@ from .ollama import (
     OllamaResponseTooLarge,
     OllamaTimeout,
 )
+from .rag import (
+    DocumentRAG,
+    IncompleteGenerationError,
+    InvalidCitationError,
+    RAGCitation,
+    RAGEvidence,
+    RAGResult,
+)
 from .storage import (
     AccessDenied,
     ApprovedRoot,
@@ -45,10 +53,13 @@ __all__ = [
     "Database",
     "DecisionContext",
     "DecisionContextIssuer",
+    "DocumentRAG",
     "Evidence",
     "GenerationResult",
     "GenerationSettings",
+    "IncompleteGenerationError",
     "InvalidDecision",
+    "InvalidCitationError",
     "InvalidPath",
     "LastWorkspaceManager",
     "LifecycleConflict",
@@ -67,6 +78,9 @@ __all__ = [
     "OllamaTimeout",
     "Permission",
     "Persistence",
+    "RAGCitation",
+    "RAGEvidence",
+    "RAGResult",
     "Workspace",
     "WorkspaceKind",
     "default_database_path",
