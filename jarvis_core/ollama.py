@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import math
 import re
 import socket
 import urllib.error
@@ -56,7 +57,7 @@ class HTTPResponse:
 
 
 class OllamaTransport(Protocol):
-    def request(self, method: str, url: str, body: bytes | None, timeout: float,
+    def request(self, method: str, url: str, body: bytes | None, headers: dict[str, str], timeout: float,
                 max_response_bytes: int) -> HTTPResponse: ...
 
 
@@ -68,10 +69,9 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 class UrllibTransport:
     """Bounded stdlib HTTP transport. Redirects are returned, never followed."""
 
-    def request(self, method: str, url: str, body: bytes | None, timeout: float,
+    def request(self, method: str, url: str, body: bytes | None, headers: dict[str, str], timeout: float,
                 max_response_bytes: int) -> HTTPResponse:
-        req = urllib.request.Request(url, data=body, method=method,
-                                     headers={"Accept": "application/json"})
+        req = urllib.request.Request(url, data=body, method=method, headers=headers)
         # Ignore process proxy settings: the configured loopback URL must not
         # be sent through an environment-selected remote proxy.
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
@@ -102,13 +102,14 @@ class GenerationSettings:
     num_predict: int = 384
 
     def __post_init__(self) -> None:
-        if not 0 <= self.temperature <= 2:
+        if (isinstance(self.temperature, bool) or not isinstance(self.temperature, (int, float))
+                or not math.isfinite(self.temperature) or not 0 <= self.temperature <= 2):
             raise OllamaConfigurationError("temperature must be between 0 and 2")
-        if not 0 <= self.seed <= 2_147_483_647:
+        if type(self.seed) is not int or not 0 <= self.seed <= 2_147_483_647:
             raise OllamaConfigurationError("seed is out of range")
-        if not 1 <= self.num_ctx <= 4096:
+        if type(self.num_ctx) is not int or not 1 <= self.num_ctx <= 4096:
             raise OllamaConfigurationError("num_ctx must be between 1 and 4096")
-        if not 1 <= self.num_predict <= 512:
+        if type(self.num_predict) is not int or not 1 <= self.num_predict <= 512:
             raise OllamaConfigurationError("num_predict must be between 1 and 512")
 
 
@@ -120,6 +121,14 @@ class GenerationResult:
 
 
 _MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+
+
+def _is_cloud_model_name(name: str) -> bool:
+    normalized = name.lower()
+    if normalized.endswith(":cloud"):
+        return True
+    _, separator, tag = normalized.rpartition(":")
+    return bool(separator and tag.endswith("-cloud"))
 
 
 class OllamaClient:
@@ -136,7 +145,7 @@ class OllamaClient:
         if not allowed_models or isinstance(allowed_models, (str, bytes)):
             raise OllamaConfigurationError("An explicit non-empty model allowlist is required")
         models = tuple(allowed_models)
-        if any(not isinstance(m, str) or not _MODEL_RE.fullmatch(m) or m.lower().endswith(":cloud")
+        if any(not isinstance(m, str) or not _MODEL_RE.fullmatch(m) or _is_cloud_model_name(m)
                for m in models):
             raise OllamaConfigurationError("Model allowlist contains an unsupported model identifier")
         if len(set(models)) != len(models):
@@ -165,7 +174,10 @@ class OllamaClient:
     def _call(self, method: str, path: str, payload: dict | None = None) -> dict:
         body = None if payload is None else json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         try:
-            response = self._transport.request(method, self._origin + path, body,
+            headers = {"Accept": "application/json"}
+            if payload is not None:
+                headers["Content-Type"] = "application/json"
+            response = self._transport.request(method, self._origin + path, body, headers,
                                                self.timeout, self.MAX_RESPONSE_BYTES)
         except OllamaError:
             raise
@@ -195,7 +207,14 @@ class OllamaClient:
             if not isinstance(entry, dict):
                 raise OllamaProtocolError("Ollama model list has an unexpected format")
             name = entry.get("name")
-            if isinstance(name, str) and _MODEL_RE.fullmatch(name):
+            canonical = entry.get("model")
+            # Current Ollama APIs expose remote_model/remote_host for remote
+            # model records. Reject these even when a local-looking alias is used.
+            if entry.get("remote_model") or entry.get("remote_host"):
+                continue
+            if (isinstance(name, str) and _MODEL_RE.fullmatch(name)
+                    and not _is_cloud_model_name(name)
+                    and not (isinstance(canonical, str) and _is_cloud_model_name(canonical))):
                 names.append(name)
         return tuple(names)
 
@@ -229,6 +248,10 @@ class OllamaClient:
             "options": {"temperature": settings.temperature, "seed": settings.seed,
                         "num_ctx": settings.num_ctx, "num_predict": settings.num_predict},
         })
+        returned_model = value.get("model")
+        if (value.get("remote_model") or value.get("remote_host")
+                or (isinstance(returned_model, str) and _is_cloud_model_name(returned_model))):
+            raise OllamaProtocolError("Ollama reported a remote model response; local-only policy was violated")
         message = value.get("message")
         text = message.get("content") if isinstance(message, dict) else None
         done = value.get("done")
