@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Roadmap
 
-**Status:** M01-A through M01-E and M02-A through M02-D are in the stated `main` baseline. Q01 quality-checkpoint work is proposed on a review branch; later sequencing remains gated.
+**Status:** M01-A through M01-E, M02-A through M02-D, and Q01 are in the stated `main` baseline. M03-A is under review; later sequencing remains gated.
 
 ## Phase gates
 
@@ -36,4 +36,4 @@ For each milestone:
 
 ## Current state and next task
 
-M01-A through M01-E and M02-A through M02-D are in the stated `main` baseline. M01's acceptance report retains unresolved cross-workspace consent and other documented limitations; aggregation remains unsupported and denied by default. Q01 adds a historical-memory diagnostic and prepares (but does not run) sequential local Ollama comparison. It does not add embeddings, UI, tools, or cloud routing. M03 remains separately gated.
+M01-A through M01-E, M02-A through M02-D, and Q01 are in the stated `main` baseline. M01's acceptance report retains unresolved cross-workspace consent and other documented limitations; aggregation remains unsupported and denied by default. M03-A is under review with a mock-only browser/health spike and a stack comparison; it is not a production desktop or authenticated dashboard. Stack approval and Windows prerequisite verification remain open. Later M03 features remain separately gated.

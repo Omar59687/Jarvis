@@ -53,6 +53,11 @@ The product targets Arabic and English, Windows desktop, and a browser dashboard
 **Proposal:** M01-M07 support explicit user-directed operations; Mission Mode is deferred to M08.  
 **Reason:** permissions, audit, stop controls, budgets, and recovery depend on earlier milestones.
 
+### P-07 — Shared desktop and browser foundation
+**Proposal:** keep Tauri 2 + a shared TypeScript UI + the existing Python service as the leading conditional direction for the confirmed Windows desktop and browser-dashboard target; use a browser-only Python implementation for the first low-cost contract spike. This is not an approval to build or package the production app.
+**Reason:** a shared web UI can serve the two client surfaces, while Tauri offers a Windows shell and scoped native bridge. The extra Rust, C++ build, WebView2, Python-child lifecycle, and packaging surfaces are real costs. A browser-only app is simpler, but does not provide the intended native shell.
+**Validation:** M03-A records the comparison and a mock health-only spike. Owner verification of Windows prerequisites, packaged service lifecycle, startup/resource measurements, and security tests is still required before selecting the stack. See [M03-A](M03A_DESKTOP_FOUNDATION.md).
+
 ## Open decisions
 
 - Exact system RAM and supported Windows versions.

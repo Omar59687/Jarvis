@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jarvis — M03-A mock prototype</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">J</span><span>Jarvis</span><small>M03-A mock</small></div>
+    <div class="top-actions">
+      <span id="health" class="health" role="status" data-en="Checking local service…" data-ar="جارٍ فحص الخدمة المحلية…">Checking local service…</span>
+      <label class="language-label" for="language" data-en="Language" data-ar="اللغة">Language</label>
+      <select id="language" aria-label="Language">
+        <option value="en">English</option>
+        <option value="ar">العربية</option>
+      </select>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <p class="eyebrow" data-en="WORKSPACE" data-ar="مساحة العمل">WORKSPACE</p>
+      <label for="workspace" data-en="Current workspace" data-ar="مساحة العمل الحالية">Current workspace</label>
+      <select id="workspace">
+        <option data-en="Personal — mock" data-ar="شخصي — تجريبي">Personal — mock</option>
+        <option data-en="Project — mock" data-ar="مشروع — تجريبي">Project — mock</option>
+      </select>
+      <nav aria-label="Main navigation">
+        <a class="selected" href="#search" data-en="Search" data-ar="بحث">Search</a>
+        <a href="#chat" data-en="AI chat" data-ar="محادثة ذكية">AI chat</a>
+        <a href="#settings" data-en="Settings" data-ar="الإعدادات">Settings</a>
+      </nav>
+      <p class="mock-note" data-en="Mock screens only. No Jarvis data or APIs are connected." data-ar="واجهات تجريبية فقط. لا توجد بيانات أو واجهات Jarvis متصلة.">Mock screens only. No Jarvis data or APIs are connected.</p>
+    </aside>
+
+    <div class="content">
+      <section id="search" class="panel hero">
+        <p class="eyebrow" data-en="LOCAL KNOWLEDGE" data-ar="المعرفة المحلية">LOCAL KNOWLEDGE</p>
+        <h1 data-en="Find what matters" data-ar="اعثر على ما يهمك">Find what matters</h1>
+        <p class="muted" data-en="Search stays within the selected, authorized workspace." data-ar="يبقى البحث ضمن مساحة العمل المحددة والمصرح بها.">Search stays within the selected, authorized workspace.</p>
+        <form id="search-form" class="search-row">
+          <input id="search-query" type="search" autocomplete="off" data-en-placeholder="Search notes and approved sources" data-ar-placeholder="ابحث في الملاحظات والمصادر المعتمدة" placeholder="Search notes and approved sources">
+          <button type="submit" data-en="Search" data-ar="بحث">Search</button>
+        </form>
+        <p id="mock-message" class="mock-message" aria-live="polite" data-en="Search is not connected in this prototype." data-ar="البحث غير متصل في هذا النموذج التجريبي.">Search is not connected in this prototype.</p>
+      </section>
+
+      <div class="columns">
+        <section id="chat" class="panel">
+          <div class="section-heading">
+            <div><p class="eyebrow" data-en="ASSISTANT" data-ar="المساعد">ASSISTANT</p><h2 data-en="Ask Jarvis" data-ar="اسأل جارفس">Ask Jarvis</h2></div>
+            <span class="badge" data-en="Mock answer" data-ar="إجابة تجريبية">Mock answer</span>
+          </div>
+          <div class="chat-bubble user" data-en="Summarize the approved project notes." data-ar="لخّص ملاحظات المشروع المعتمدة.">Summarize the approved project notes.</div>
+          <div class="chat-bubble assistant" data-en="This answer is sample UI content. A future service response must include evidence and citations." data-ar="هذا محتوى تجريبي للواجهة. يجب أن تتضمن استجابة الخدمة مستقبلاً الأدلة والاستشهادات.">This answer is sample UI content. A future service response must include evidence and citations.</div>
+          <form id="chat-form" class="chat-row">
+            <input id="chat-query" type="text" autocomplete="off" data-en-placeholder="Ask a question" data-ar-placeholder="اكتب سؤالاً" placeholder="Ask a question">
+            <button type="submit" aria-label="Send" data-en="Send" data-ar="إرسال">Send</button>
+          </form>
+        </section>
+
+        <section class="panel evidence">
+          <p class="eyebrow" data-en="ANSWER SOURCES" data-ar="مصادر الإجابة">ANSWER SOURCES</p>
+          <h2 data-en="Evidence" data-ar="الأدلة">Evidence</h2>
+          <article class="citation-card">
+            <div class="citation-heading"><span class="citation">[D1]</span><span class="badge mock-badge" data-en="Mock" data-ar="تجريبي">Mock</span></div>
+            <p data-en="Synthetic evidence preview. No document was retrieved." data-ar="معاينة دليل اصطناعي. لم يتم استرجاع أي مستند.">Synthetic evidence preview. No document was retrieved.</p>
+            <small data-en="Sample source · not connected" data-ar="مصدر تجريبي · غير متصل">Sample source · not connected</small>
+          </article>
+        </section>
+      </div>
+
+      <section id="settings" class="panel settings">
+        <div><p class="eyebrow" data-en="PREFERENCES" data-ar="التفضيلات">PREFERENCES</p><h2 data-en="Settings" data-ar="الإعدادات">Settings</h2></div>
+        <div class="setting-row"><span data-en="Local model" data-ar="النموذج المحلي">Local model</span><span class="badge" data-en="gemma3:4b · mock" data-ar="gemma3:4b · تجريبي">gemma3:4b · mock</span></div>
+        <div class="setting-row"><span data-en="Cloud routing" data-ar="التوجيه السحابي">Cloud routing</span><strong data-en="Not available in this slice" data-ar="غير متاح في هذه المرحلة">Not available in this slice</strong></div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>
