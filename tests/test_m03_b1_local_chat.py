@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 from pathlib import Path
 import threading
@@ -312,8 +313,8 @@ class M03B1LocalChatTests(unittest.TestCase):
             server.server_close()
 
     def test_frontend_uses_same_origin_chat_and_never_persists_or_calls_ollama(self):
-        app_js = (Path(__file__).parents[1] / "prototypes/m03_b1/app.js").read_text()
-        page = (Path(__file__).parents[1] / "prototypes/m03_b1/index.html").read_text()
+        app_js = (Path(__file__).parents[1] / "prototypes/m03_b1/app.js").read_text(encoding="utf-8")
+        page = (Path(__file__).parents[1] / "prototypes/m03_b1/index.html").read_text(encoding="utf-8")
         self.assertIn('fetch("/api/v1/chat"', app_js)
         self.assertIn("setTimeout(() => controller.abort(), 150000)", app_js)
         self.assertIn('"X-Jarvis-CSRF": csrfToken', app_js)
@@ -324,7 +325,46 @@ class M03B1LocalChatTests(unittest.TestCase):
         self.assertNotIn("11434", app_js)
         self.assertNotIn('fetch("http', app_js.lower())
         self.assertNotIn('"/api/chat"', app_js.lower())
-        self.assertNotIn("/api/v1/chat", (Path(__file__).parents[1] / "prototypes/m03_a/app.js").read_text())
+        self.assertNotIn("/api/v1/chat", (Path(__file__).parents[1] / "prototypes/m03_a/app.js").read_text(encoding="utf-8"))
+        self.assertIn("العربية", page)
+
+    def test_repeated_unauthenticated_posts_with_bodies_receive_401_and_close_cleanly(self):
+        payload = json.dumps({"message": "Unauthorized request"}).encode("utf-8")
+        for _ in range(20):
+            connection = http.client.HTTPConnection(self.server.server_address[0],
+                                                    self.server.server_address[1], timeout=5)
+            try:
+                connection.request(
+                    "POST", f"{API_PREFIX}/chat", body=payload,
+                    headers={"Host": self.server.expected_host,
+                             "Origin": self.server.expected_origin,
+                             "Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                self.assertEqual(response.status, 401)
+                self.assertEqual(json.loads(response.read()), {"error": "authentication_required"})
+                self.assertEqual(response.getheader("Connection"), "close")
+            finally:
+                connection.close()
+        self.assertEqual(self.generator.calls, [])
+
+    def test_unauthenticated_oversized_declared_body_is_not_read(self):
+        connection = http.client.HTTPConnection(self.server.server_address[0],
+                                                self.server.server_address[1], timeout=5)
+        try:
+            connection.putrequest("POST", f"{API_PREFIX}/chat", skip_host=True)
+            connection.putheader("Host", self.server.expected_host)
+            connection.putheader("Origin", self.server.expected_origin)
+            connection.putheader("Content-Type", "application/json")
+            connection.putheader("Content-Length", "4097")
+            connection.endheaders()
+            response = connection.getresponse()
+            self.assertEqual(response.status, 401)
+            self.assertEqual(json.loads(response.read()), {"error": "authentication_required"})
+            self.assertEqual(response.getheader("Connection"), "close")
+        finally:
+            connection.close()
+        self.assertEqual(self.generator.calls, [])
 
 
 if __name__ == "__main__":

@@ -264,6 +264,8 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if self.close_connection:
+            self.send_header("Connection", "close")
         for name, value in SECURITY_HEADERS.items():
             self.send_header(name, value)
         if extra_headers:
@@ -288,17 +290,47 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         values = self.headers.get_all("Origin", [])
         return len(values) == 1 and _secret_matches(values[0], self.server.expected_origin)
 
-    def _reject_host(self) -> bool:
+    def _discard_bounded_request_body(self, max_bytes: int) -> None:
+        """Consume a safely bounded body before closing an early-rejected request.
+
+        Authentication and origin decisions are already made. This only avoids
+        leaving normal request bytes queued on an HTTP/1.1 connection, which can
+        otherwise make a peer reset while the handler parses a bogus next request.
+        Ambiguous, missing, malformed, or oversized framing is never read.
+        """
+        self.close_connection = True
+        if self.headers.get("Transfer-Encoding") is not None:
+            return
+        lengths = self.headers.get_all("Content-Length", [])
+        if len(lengths) != 1 or len(lengths[0]) > 10 or not lengths[0].isdecimal():
+            return
+        length = int(lengths[0])
+        if length > max_bytes:
+            return
+        if length == 0:
+            return
+        try:
+            body = self.rfile.read(length)
+        except (OSError, TimeoutError, socket.timeout):
+            return
+        if len(body) != length:
+            return
+
+    def _reject_host(self, *, discard_body_limit: int | None = None) -> bool:
         if self._host_is_exact():
             return False
         self.close_connection = True
+        if discard_body_limit is not None:
+            self._discard_bounded_request_body(discard_body_limit)
         self._json(421, {"error": "host_not_allowed"})
         return True
 
-    def _reject_origin(self) -> bool:
+    def _reject_origin(self, *, discard_body_limit: int | None = None) -> bool:
         if self._origin_is_exact():
             return False
         self.close_connection = True
+        if discard_body_limit is not None:
+            self._discard_bounded_request_body(discard_body_limit)
         self._json(403, {"error": "origin_not_allowed"})
         return True
 
@@ -321,7 +353,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             return None
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if content_type != "application/json":
-            self.close_connection = True
+            self._discard_bounded_request_body(max_bytes)
             self._json(415, {"error": "json_required"})
             return None
         lengths = self.headers.get_all("Content-Length", [])
@@ -388,10 +420,13 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         self._send(200, body, content_type)
 
     def do_POST(self) -> None:
-        if self._reject_host() or self._reject_origin():
+        post_body_limit = max(CHAT_MAX_REQUEST_BYTES, PAIR_MAX_REQUEST_BYTES)
+        if (self._reject_host(discard_body_limit=post_body_limit)
+                or self._reject_origin(discard_body_limit=post_body_limit)):
             return
         path, query = self._request_path()
         if query:
+            self._discard_bounded_request_body(post_body_limit)
             self._json(404, {"error": "not_found"})
             return
         if path == f"{API_PREFIX}/session/pair":
@@ -399,9 +434,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         elif path == f"{API_PREFIX}/chat":
             self._chat()
         else:
-            # No route consumes a body. Close rather than leave attacker-supplied
-            # bytes on a persistent connection to be parsed as another request.
-            self.close_connection = True
+            self._discard_bounded_request_body(post_body_limit)
             self._json(404, {"error": "not_found"})
 
     def do_DELETE(self) -> None:
@@ -449,10 +482,12 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         session_id = self._cookie_session_id()
         record = self.server.sessions.resolve(session_id)
         if record is None or session_id is None:
+            self._discard_bounded_request_body(CHAT_MAX_REQUEST_BYTES)
             self._json(401, {"error": "authentication_required"})
             return
         csrf = self.headers.get("X-Jarvis-CSRF", "")
         if not _secret_matches(csrf, record.csrf_token):
+            self._discard_bounded_request_body(CHAT_MAX_REQUEST_BYTES)
             self._json(403, {"error": "csrf_rejected"})
             return
         value = self._read_json(CHAT_MAX_REQUEST_BYTES)
