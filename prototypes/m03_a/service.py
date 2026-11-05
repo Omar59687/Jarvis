@@ -18,6 +18,9 @@ STATIC_FILES = {
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/app.css": ("app.css", "text/css; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/galaxy-model.mjs": ("galaxy-model.mjs", "text/javascript; charset=utf-8"),
+    "/vendor/three.core.js": ("vendor/three.core.js", "text/javascript; charset=utf-8"),
+    "/vendor/three.module.js": ("vendor/three.module.js", "text/javascript; charset=utf-8"),
 }
 ROOT = Path(__file__).resolve().parent
 SECURITY_HEADERS = {
