@@ -58,6 +58,11 @@ The product targets Arabic and English, Windows desktop, and a browser dashboard
 **Reason:** a shared web UI can serve the two client surfaces, while Tauri offers a Windows shell and scoped native bridge. The extra Rust, C++ build, WebView2, Python-child lifecycle, and packaging surfaces are real costs. A browser-only app is simpler, but does not provide the intended native shell.
 **Validation:** M03-A records the comparison and a mock health-only spike. Owner verification of Windows prerequisites, packaged service lifecycle, startup/resource measurements, and security tests is still required before selecting the stack. See [M03-A](M03A_DESKTOP_FOUNDATION.md).
 
+### P-08 — Restricted local-chat development alpha
+**Proposal:** M03-B1 may use a short-lived terminal-paired, process-local browser session to expose one bounded chat endpoint backed only by the existing Ollama adapter explicitly configured for installed `gemma3:4b`. The conversation is single-turn and ephemeral; it has no workspace, memory, file, browser, tool, or cloud access. This alpha is not the production dashboard authentication decision.
+**Reason:** exercise the Knowledge Galaxy command dock with a real local model behind a small reviewable service boundary while preserving existing retrieval and authorization code.
+**Validation:** deterministic tests use a fake generator. The owner must verify Ollama cloud routing is disabled and perform the real Windows conversation after code review. See [M03-B1](M03B1_LOCAL_CHAT.md).
+
 ## Open decisions
 
 - Exact system RAM and supported Windows versions.

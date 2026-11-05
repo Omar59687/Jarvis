@@ -2,9 +2,9 @@
 
 **A local-first personal AI second brain**
 
-Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing, and retrieving information across personal and project workspaces. M01-A through M01-E and M02-A through M02-D are in the stated `main` baseline; M02-D is the current evaluation foundation.
+Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing, and retrieving information across personal and project workspaces. M01-A through M01-E, M02-A through M02-D, Q01, and M03-A are in the stated `main` baseline.
 
-> **Project status:** The baseline includes M01, the local Ollama adapter, document and approved-memory RAG, M02-C grounding/context handling, and M02-D evaluation. Q01 proposes focused quality diagnostics and local model comparison preparation. No embeddings, cloud, GUI or voice capability is claimed.
+> **Project status:** This branch proposes M03-B1, a restricted local single-turn chat alpha on the existing synthetic Knowledge Galaxy. It uses a terminal-paired loopback session and the existing local-only Ollama adapter. It is not a production authenticated dashboard and has no knowledge search, memory, file, tool, or cloud integration. A real Windows Gemma run remains owner verification.
 
 ## Product goals
 
@@ -26,7 +26,7 @@ Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing,
 |---|---|
 | M01 — Second Brain Foundation | M01-A through M01-E merged; see acceptance report for open criterion and limitations |
 | M02 — AI Intelligence Engine | M02-A through M02-D and Q01 merged; later slices remain gated |
-| M03 — Desktop, Dashboard and Voice | M03-A synthetic knowledge-galaxy visual prototype under review; no production desktop or dashboard |
+| M03 — Desktop, Dashboard and Voice | M03-A visual prototype merged; M03-B1 local chat alpha proposed on this branch; no production desktop or dashboard |
 | M04 — Integration Platform | Planned |
 | M05 — Reverse Engineering | Planned; authorized targets only |
 | M06 — AI Software Factory | Planned |
@@ -52,11 +52,12 @@ Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing,
 - [Q01 model quality checkpoint](docs/M02_Q01_MODEL_QUALITY.md) — historical-memory diagnostic, Ollama timing metadata, and opt-in sequential local comparison.
 - [M03-A desktop foundation](docs/M03A_DESKTOP_FOUNDATION.md) — stack comparison, local-service trust boundary, Windows checks, and prototype acceptance criteria.
 - [M03-A mock prototype](prototypes/m03_a/README.md) — browser-only synthetic galaxy preview and harmless loopback health check.
+- [M03-B1 local chat alpha](docs/M03B1_LOCAL_CHAT.md) — scope, pairing/security boundary, Windows launch and cloud-off instructions, tests, and limitations.
 - [Agent and contributor instructions](AGENTS.md).
 
 ## Repository status
 
-The stated `main` baseline contains M01-A through M01-E, M02-A through M02-D, and Q01. See [M01 Acceptance](docs/M01_ACCEPTANCE.md) for the acceptance matrix, unresolved cross-workspace consent criterion, and residual limitations. Q01 includes user-reported live Windows measurements; they are not reproduced by this repository status page. M03-A adds a synthetic-only browser/service visual prototype on a review branch; it does not implement a production desktop app, authenticated dashboard, AI chat, or workspace search.
+The stated `main` baseline contains M01-A through M01-E, M02-A through M02-D, Q01, and the synthetic M03-A browser/service prototype. This branch adds an alpha authenticated local chat path; it does not implement a production dashboard, workspace search, or persistent conversations. See [M03-B1](docs/M03B1_LOCAL_CHAT.md) for exact limits and verification instructions.
 
 ## Development principles
 
@@ -68,4 +69,4 @@ The stated `main` baseline contains M01-A through M01-E, M02-A through M02-D, an
 
 ## Review status
 
-M01-E, M02-A through M02-D, and Q01 are in the stated baseline. Cross-workspace aggregation remains unsupported and denied by default; the acceptance report preserves this open requirement. M03-A is under review; later slices remain gated. See [M01 Acceptance](docs/M01_ACCEPTANCE.md), [M02-B2](docs/M02B2_MEMORY_RETRIEVAL.md), [M02-C](docs/M02C_GROUNDING_CONTEXT.md), [M02-D](docs/M02D_EVALUATION.md), [Q01](docs/M02_Q01_MODEL_QUALITY.md), and [M03-A](docs/M03A_DESKTOP_FOUNDATION.md).
+M01-E, M02-A through M02-D, Q01, and M03-A are in the stated baseline. Cross-workspace aggregation remains unsupported and denied by default; the acceptance report preserves this open requirement. M03-B1 is a review branch and is not merged. See [M01 Acceptance](docs/M01_ACCEPTANCE.md), [Q01](docs/M02_Q01_MODEL_QUALITY.md), [M03-A](docs/M03A_DESKTOP_FOUNDATION.md), and [M03-B1](docs/M03B1_LOCAL_CHAT.md).
