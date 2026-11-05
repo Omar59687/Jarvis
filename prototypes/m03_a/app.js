@@ -1,4 +1,4 @@
-import { NODES, EDGES, connectedNodeIds, searchNodeIds, classifyNode } from "/galaxy-model.mjs";
+import { NODES, EDGES, connectedNodeIds, searchNodeIds, classifyNode, createFrameDriver } from "/galaxy-model.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 const languageSelect = $("#language");
@@ -19,6 +19,9 @@ function applyLanguage(next) {
   language = next;
   document.documentElement.lang = language;
   document.documentElement.dir = language === "ar" ? "rtl" : "ltr";
+  canvasHost.setAttribute("aria-label", language === "ar"
+    ? "مجرة معرفة اصطناعية تفاعلية. اختر العقد من قائمة العقد التجريبية."
+    : "Interactive synthetic knowledge galaxy. Select nodes from the sample node list.");
   for (const element of document.querySelectorAll("[data-en][data-ar]")) element.textContent = element.dataset[language];
   for (const element of document.querySelectorAll("[data-en-placeholder][data-ar-placeholder]")) {
     element.placeholder = element.dataset[`${language}Placeholder`];
@@ -41,6 +44,7 @@ function renderNodeList() {
   $("#node-count").textContent = String(nodes.length).padStart(2, "0");
   $("#empty-search").hidden = nodes.length > 0;
   for (const node of nodes) {
+    const item = document.createElement("li");
     const button = document.createElement("button");
     button.type = "button";
     button.setAttribute("aria-pressed", String(selectedId === node.id));
@@ -48,7 +52,8 @@ function renderNodeList() {
     button.innerHTML = `<span class="node-kind" aria-hidden="true" style="color:${node.color};background:${node.color}"></span><span class="node-name"></span>`;
     button.querySelector(".node-name").textContent = localized(node.label);
     button.addEventListener("click", () => selectNode(node.id));
-    nodeList.append(button);
+    item.append(button);
+    nodeList.append(item);
   }
 }
 
@@ -129,8 +134,7 @@ async function initGalaxy() {
   renderer.setClearColor(0x000000, 0);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   canvasHost.replaceChildren(renderer.domElement);
-  renderer.domElement.tabIndex = 0;
-  renderer.domElement.setAttribute("aria-label", language === "ar" ? "رسم مجرة معرفة اصطناعية ثلاثي الأبعاد. استخدم قائمة العقد للتنقل بلوحة المفاتيح." : "Synthetic 3D knowledge galaxy. Use the node list to navigate by keyboard.");
+  renderer.domElement.setAttribute("aria-hidden", "true");
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(42, 1, .1, 100);
   camera.position.set(0, 0, 11);
@@ -180,6 +184,7 @@ async function initGalaxy() {
   let target = new THREE.Vector3();
   let desiredCamera = new THREE.Vector3(0, 0, 11);
   let distance = 11;
+  let frameDriver = null;
   const focusPoint = (id) => id && objects.has(id)
     ? objects.get(id).getWorldPosition(new THREE.Vector3())
     : new THREE.Vector3();
@@ -188,6 +193,7 @@ async function initGalaxy() {
     if (!rect.width || !rect.height) return;
     renderer.setSize(rect.width, rect.height, false);
     camera.aspect = rect.width / rect.height; camera.updateProjectionMatrix();
+    frameDriver?.invalidate();
   };
   const resizeObserver = new ResizeObserver(resize); resizeObserver.observe(canvasHost); resize();
   const applyEmphasis = () => {
@@ -219,7 +225,7 @@ async function initGalaxy() {
     if (reduceMotion) camera.position.copy(desiredCamera);
     camera.lookAt(target);
     applyEmphasis();
-    if (reduceMotion) renderer.render(scene, camera);
+    frameDriver?.invalidate();
   };
   renderer.domElement.addEventListener("pointerdown", (event) => { dragging = true; moved = false; lastX = event.clientX; lastY = event.clientY; renderer.domElement.setPointerCapture(event.pointerId); });
   renderer.domElement.addEventListener("pointermove", (event) => {
@@ -228,6 +234,7 @@ async function initGalaxy() {
     if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
     orbit.rotation.y += dx * .004; orbit.rotation.x = Math.max(-.65, Math.min(.65, orbit.rotation.x + dy * .003));
     lastX = event.clientX; lastY = event.clientY;
+    frameDriver?.invalidate();
   });
   renderer.domElement.addEventListener("pointerup", (event) => {
     dragging = false;
@@ -246,14 +253,9 @@ async function initGalaxy() {
     desiredCamera.set(focus.x, focus.y, focus.z + distance);
     if (reduceMotion) camera.position.copy(desiredCamera);
     camera.lookAt(focus);
-    if (reduceMotion) renderer.render(scene, camera);
+    frameDriver?.invalidate();
   }, { passive: false });
-  renderer.domElement.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") selectNode(null);
-    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectNode(NODES[0].id); }
-  });
-  let animationId;
-  const render = () => {
+  const drawFrame = () => {
     if (!reduceMotion) starField.rotation.y += .00012;
     if (selectedId) {
       orbit.updateMatrixWorld(true);
@@ -261,21 +263,25 @@ async function initGalaxy() {
       desiredCamera.set(target.x, target.y, target.z + distance);
     }
     if (!reduceMotion) camera.position.lerp(desiredCamera, .085);
+    else camera.position.copy(desiredCamera);
     camera.lookAt(target);
     renderer.render(scene, camera);
-    if (!reduceMotion) animationId = requestAnimationFrame(render);
   };
-  render();
+  frameDriver = createFrameDriver(drawFrame);
+  frameDriver.setReducedMotion(reduceMotion);
   const refreshLabels = () => {
     for (const item of nodeMeshes.values()) {
       item.label.material.map?.dispose(); item.label.material.map = makeLabelTexture(THREE, localized(item.node.label), item.node.color); item.label.material.needsUpdate = true;
     }
+    frameDriver.invalidate();
   };
   sceneState = {
-    select, setVisible: () => applyEmphasis(), refreshLabels,
-    setMotion: (enabled) => { reduceMotion = enabled; cancelAnimationFrame(animationId); if (!enabled) render(); else { camera.position.copy(desiredCamera); renderer.render(scene, camera); } },
+    select,
+    setVisible: () => { applyEmphasis(); frameDriver.invalidate(); },
+    refreshLabels,
+    setMotion: (enabled) => { reduceMotion = enabled; frameDriver.setReducedMotion(enabled); },
     reset: () => { orbit.rotation.set(0, 0, 0); distance = 11; select(null); },
-    dispose: () => { cancelAnimationFrame(animationId); resizeObserver.disconnect(); renderer.dispose(); }
+    dispose: () => { frameDriver.dispose(); resizeObserver.disconnect(); renderer.dispose(); }
   };
   applyEmphasis();
   $("#render-status").innerHTML = `<i></i><span>${language === "ar" ? "معاينة ثلاثية الأبعاد" : "3D PREVIEW"}</span>`;

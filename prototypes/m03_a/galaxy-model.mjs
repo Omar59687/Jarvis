@@ -31,3 +31,38 @@ export function searchNodeIds(nodes, query, language = "en") {
 export function classifyNode(nodeId, nodes = NODES) {
   return nodes.find(({ id }) => id === nodeId) ?? null;
 }
+
+export function createFrameDriver(drawFrame, {
+  requestFrame = (callback) => requestAnimationFrame(callback),
+  cancelFrame = (frameId) => cancelAnimationFrame(frameId)
+} = {}) {
+  let reducedMotion = false;
+  let frameId = null;
+  let disposed = false;
+
+  const draw = () => {
+    frameId = null;
+    if (disposed) return;
+    drawFrame();
+    if (!reducedMotion) frameId = requestFrame(draw);
+  };
+
+  return {
+    invalidate() {
+      if (disposed) return;
+      if (reducedMotion) drawFrame();
+      else if (frameId === null) frameId = requestFrame(draw);
+    },
+    setReducedMotion(value) {
+      reducedMotion = Boolean(value);
+      if (frameId !== null) cancelFrame(frameId);
+      frameId = null;
+      draw();
+    },
+    dispose() {
+      disposed = true;
+      if (frameId !== null) cancelFrame(frameId);
+      frameId = null;
+    }
+  };
+}

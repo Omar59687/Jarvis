@@ -41,12 +41,27 @@ class M03APrototypeTests(unittest.TestCase):
             self.assertIn(expected.lower(), page.lower())
         self.assertIn('disabled', page.lower())
         self.assertNotIn("<form", page.lower())
+        self.assertIn('<ul id="node-list"', page.lower())
+        self.assertIn('id="galaxy-canvas" class="galaxy-canvas" role="img"', page.lower())
+        self.assertNotIn('id="galaxy-canvas" class="galaxy-canvas" aria-hidden="true"', page.lower())
         with urlopen(self.base_url + "/app.js", timeout=2) as response:
             script = response.read().decode("utf-8")
+        with urlopen(self.base_url + "/app.css", timeout=2) as response:
+            style = response.read().decode("utf-8")
         self.assertIn('document.documentElement.dir = language === "ar" ? "rtl" : "ltr"', script)
         self.assertIn('import("/vendor/three.module.js")', script)
+        self.assertIn('renderer.domElement.setAttribute("aria-hidden", "true")', script)
+        self.assertNotIn("renderer.domElement.tabIndex", script)
+        self.assertNotIn('renderer.domElement.addEventListener("keydown"', script)
         self.assertNotIn("https://", script)
         self.assertNotIn("fetch(", script.replace('fetch("/health"', ""))
+        mobile_rules = style.split("@media (max-width: 760px)", 1)[1].split(
+            "@media (prefers-reduced-motion", 1
+        )[0]
+        self.assertIn(".node-list { display: grid", mobile_rules)
+        self.assertNotIn(".node-list,.sidebar-footer { display: none; }", mobile_rules)
+        self.assertIn('html[dir="rtl"] .nav-item', style)
+        self.assertIn("html[dir=\"rtl\"] .fallback-graph button { font-size: 11px; }", style)
         self.assertEqual(headers.get("Content-Security-Policy"),
                          "default-src 'self'; script-src 'self'; style-src 'self'; "
                          "connect-src 'self'; img-src 'self' data:; object-src 'none'; "
