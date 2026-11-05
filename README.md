@@ -25,8 +25,8 @@ Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing,
 | Milestone | State |
 |---|---|
 | M01 — Second Brain Foundation | M01-A through M01-E merged; see acceptance report for open criterion and limitations |
-| M02 — AI Intelligence Engine | M02-A through M02-D merged; Q01 quality checkpoint under review; later slices remain gated |
-| M03 — Desktop, Dashboard and Voice | Planned |
+| M02 — AI Intelligence Engine | M02-A through M02-D and Q01 merged; later slices remain gated |
+| M03 — Desktop, Dashboard and Voice | M03-A synthetic knowledge-galaxy visual prototype under review; no production desktop or dashboard |
 | M04 — Integration Platform | Planned |
 | M05 — Reverse Engineering | Planned; authorized targets only |
 | M06 — AI Software Factory | Planned |
@@ -50,11 +50,13 @@ Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing,
 - [M02-C synthetic diagnostic](examples/m02_c_grounding_demo.py) — prints the selected evidence and exact fake-model prompt.
 - [M02-D evaluation](docs/M02D_EVALUATION.md) — synthetic dataset, offline and opt-in local Ollama runners, metrics, and verification.
 - [Q01 model quality checkpoint](docs/M02_Q01_MODEL_QUALITY.md) — historical-memory diagnostic, Ollama timing metadata, and opt-in sequential local comparison.
+- [M03-A desktop foundation](docs/M03A_DESKTOP_FOUNDATION.md) — stack comparison, local-service trust boundary, Windows checks, and prototype acceptance criteria.
+- [M03-A mock prototype](prototypes/m03_a/README.md) — browser-only synthetic galaxy preview and harmless loopback health check.
 - [Agent and contributor instructions](AGENTS.md).
 
 ## Repository status
 
-The stated `main` baseline contains M01-A through M01-E and M02-A through M02-D. See [M01 Acceptance](docs/M01_ACCEPTANCE.md) for the acceptance matrix, unresolved cross-workspace consent criterion, and residual limitations. Q01 changes are proposed on a review branch; no live model benchmark has been run for Q01.
+The stated `main` baseline contains M01-A through M01-E, M02-A through M02-D, and Q01. See [M01 Acceptance](docs/M01_ACCEPTANCE.md) for the acceptance matrix, unresolved cross-workspace consent criterion, and residual limitations. Q01 includes user-reported live Windows measurements; they are not reproduced by this repository status page. M03-A adds a synthetic-only browser/service visual prototype on a review branch; it does not implement a production desktop app, authenticated dashboard, AI chat, or workspace search.
 
 ## Development principles
 
@@ -66,4 +68,4 @@ The stated `main` baseline contains M01-A through M01-E and M02-A through M02-D.
 
 ## Review status
 
-M01-E and M02-A through M02-D are in the stated baseline. Cross-workspace aggregation remains unsupported and denied by default; the acceptance report preserves this open requirement. Q01 is under review; later slices remain gated. See [M01 Acceptance](docs/M01_ACCEPTANCE.md), [M02-B2](docs/M02B2_MEMORY_RETRIEVAL.md), [M02-C](docs/M02C_GROUNDING_CONTEXT.md), [M02-D](docs/M02D_EVALUATION.md), and [Q01](docs/M02_Q01_MODEL_QUALITY.md).
+M01-E, M02-A through M02-D, and Q01 are in the stated baseline. Cross-workspace aggregation remains unsupported and denied by default; the acceptance report preserves this open requirement. M03-A is under review; later slices remain gated. See [M01 Acceptance](docs/M01_ACCEPTANCE.md), [M02-B2](docs/M02B2_MEMORY_RETRIEVAL.md), [M02-C](docs/M02C_GROUNDING_CONTEXT.md), [M02-D](docs/M02D_EVALUATION.md), [Q01](docs/M02_Q01_MODEL_QUALITY.md), and [M03-A](docs/M03A_DESKTOP_FOUNDATION.md).

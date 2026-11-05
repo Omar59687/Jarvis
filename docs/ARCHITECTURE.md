@@ -25,7 +25,7 @@
 
 ### Provisional implementation direction
 
-A candidate is a Tauri 2 Windows shell with a TypeScript web UI and a Python local service. The service would expose a versioned loopback API and use Python's SQLite interface. This is a **proposal**, not a locked stack decision: it needs a small compatibility spike and should be compared against a single-process alternative before desktop implementation begins.
+A candidate is a Tauri 2 Windows shell with a TypeScript web UI and a Python local service. The service would expose a versioned loopback API and use Python's SQLite interface. This is a **proposal**, not a locked stack decision. [M03-A](M03A_DESKTOP_FOUNDATION.md) compares it with a browser-only Python application and adds a synthetic browser/health prototype; Tauri build, packaging, and Windows compatibility remain unverified.
 
 The browser dashboard can use the same UI and API. If it runs in an ordinary browser, it should be loopback-only, use a short-lived local session/CSRF defense, reject arbitrary remote origins, and never expose a wildcard CORS policy. Tauri capabilities should be narrowly scoped by window and command.
 

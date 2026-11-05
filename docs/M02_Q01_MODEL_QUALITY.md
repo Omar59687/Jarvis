@@ -1,6 +1,6 @@
 # M02 Quality Checkpoint Q01
 
-**Status:** Proposed on `feature/q01-model-quality`; review required. No live model benchmark was run for this checkpoint.
+**Status:** Merged in the stated baseline at `55ffdde`. This guide documents the Q01 implementation and Windows workflow; the live measurements subsequently supplied by the owner are not reproduced here.
 
 ## Historical-memory case
 

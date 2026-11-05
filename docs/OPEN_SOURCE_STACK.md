@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Open-Source Stack Audit
 
-**Audit date:** 2026-11-03 (historical inventory; M02-A status updated in this change)  
+**Audit date:** 2026-11-05 (M03-A Windows desktop and shared UI screen; original component inventory from 2026-11-03)
 **Repository inspected:** initial inventory covered `Omar59687/Jarvis` at `ac32b9c927ac71f897cbd49b4d463c95c3b5014b`; later milestone adoption states are updated below.  
 **Scope:** public upstream documentation and repository metadata; no downloaded code was executed and no dependency was installed.
 
@@ -11,12 +11,12 @@ Adopt a staged, evidence-first stack:
 - **M01 candidate:** SQLite with migrations; test whether the selected runtime build includes FTS5. Keep persistence behind a storage interface.
 - **Desktop/UI candidate:** evaluate Tauri 2 plus a shared TypeScript web UI, with narrow capabilities; compare packaging and security cost against a simpler browser-only local UI before locking it.
 - **Local model:** M02-A implements a standard-library adapter for a replaceable local Ollama endpoint. No model is selected or bundled. Ollama software licensing does not license every model it can run.
-- **3D visualization candidate:** Three.js for the knowledge galaxy, deferred until the dashboard milestone.
+- **3D visualization prototype:** Three.js 0.186.1 (release tag r186) is vendored locally for the M03-A synthetic knowledge-galaxy preview; production adoption remains unapproved.
 - **Voice candidates:** faster-whisper for local speech-to-text and openWakeWord for wake-word detection, both subject to Windows/hardware and model-asset checks.
 - **Integration candidates:** official MCP Python SDK, Playwright, OpenCode, and REA only in later milestones with version pinning, central approval policy, and isolation.
 - **Agent instruction content:** Matt Pocock's skills and REA's agent skill files are instructions, not executable integrations. Review and adapt individual workflows; do not install or treat instructions as a security boundary.
 
-Nothing in this list is installed or adopted in code. “Candidate” means suitable for a bounded compatibility/security spike, not approved production dependency.
+The M03-A visual prototype bundles the one pinned Three.js core module noted above. Other items in this list are not installed or adopted in code. “Candidate” means suitable for a bounded compatibility/security spike, not approved production dependency.
 
 ## 2. Comparison
 
@@ -24,8 +24,9 @@ Nothing in this list is installed or adopted in code. “Candidate” means suit
 |---|---|---|---|---|---|
 | Local storage and text search | [SQLite](https://www.sqlite.org/copyright.html) is public domain; [FTS5](https://www.sqlite.org/fts5.html) is included in SQLite amalgamation | Runtime/library | Small local footprint; good M01 fit; FTS availability depends on shipped SQLite build | Check SQLite build options; use parameterized queries, migrations, backups, and secure-delete/retention design; wrappers have their own licenses | **Proposed for M01** |
 | Local model runtime | [Ollama](https://github.com/ollama/ollama), MIT software license | Runtime/service | M02-A adapter uses its local tags and chat APIs; model choice and memory fit remain open | Model weights have separate terms; review exact model card/license and source. Adapter restricts configured endpoint to numeric loopback, rejects redirects, and does not authenticate other local processes | **Adapter implemented; runtime separately installed; no model selected or bundled** |
-| Windows desktop shell | [Tauri 2](https://github.com/tauri-apps/tauri), MIT/Apache-2.0 project licensing | Application framework | Reuses web UI and offers scoped native commands; Rust, C++ build tools, WebView2 and packaging add complexity | Scope capabilities by window/command; audit plugins and origin model; WebView2/build prerequisites documented upstream | **Compatibility spike only** |
-| Knowledge galaxy | [Three.js](https://github.com/mrdoob/three.js), MIT | UI library | General-purpose WebGL 3D library; suitable rendering base, but graph layout, accessibility, and large-graph performance remain Jarvis work | Preserve MIT notice and audit addon/font/asset licenses separately | **Candidate for M03** |
+| Windows desktop shell | [Tauri 2](https://github.com/tauri-apps/tauri), MIT/Apache-2.0 project licensing | Application framework | Reuses web UI and offers scoped native commands; Rust, C++ build tools, WebView2 and packaging add complexity | Scope capabilities by window/command; audit plugins and origin model; WebView2/build prerequisites documented upstream | **Leading conditional direction in M03-A review; no Tauri app/runtime installed or built** |
+| Shared web UI toolchain | [TypeScript](https://github.com/microsoft/TypeScript), Apache-2.0; [Node.js](https://github.com/nodejs/node), MIT | Proposed build-time language/toolchain | Could share typed screens across Tauri and an ordinary browser; introduces Node/npm packages, build scripts, lockfile and supply-chain maintenance | Pin runtime/tool versions; inspect npm scripts and full dependency closure; no frontend package is adopted by the prototype | **Proposed for review; not installed or added** |
+| Knowledge galaxy | [Three.js](https://github.com/mrdoob/three.js), MIT | Prototype visualization library | General-purpose WebGL 3D library; used to render the synthetic M03-A graph, with an accessible node list and simple fallback; graph layout, screen-reader behavior, and scale remain Jarvis work | Core ES module pair only; pinned r186 / 0.186.1, upstream commit and SHA-256 recorded in M03-A scope; matching MIT notice bundled; no CDN, add-ons, fonts, or textures | **Bundled for M03-A visual prototype only; production dependency not approved** |
 | Speech recognition | [faster-whisper](https://github.com/SYSTRAN/faster-whisper), MIT | Python library/runtime | CTranslate2-based Whisper transcription; local operation; CPU may be practical, GPU setup needs measurement | Models and downloaded assets have separate terms; check exact CTranslate2/CUDA/Windows compatibility and memory. No inference benchmark performed | **Candidate for M03** |
 | Wake word | [openWakeWord](https://github.com/dscripka/openWakeWord), Apache-2.0 code | Python library/model assets | Purpose-built phrase detection; separate audio pipeline and platform dependencies | Verify each included model/voice asset's terms and provenance; inspect native wheels and microphone consent/privacy | **Candidate for M03** |
 | MCP support | [Official Python SDK](https://github.com/modelcontextprotocol/python-sdk), MIT | Client/server SDK | Direct fit for Python tool integration; supports multiple transports | SDK support policy and security advisories change; pin a supported release, monitor advisories, validate tool schemas, isolate transport and require central authorization. MCP protocol support is not a permission system | **Candidate for M04** |
