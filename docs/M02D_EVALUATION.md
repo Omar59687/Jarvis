@@ -1,6 +1,6 @@
 # M02-D — Bilingual Evaluation and Security Acceptance
 
-**Status:** Implemented on `feature/m02-d-evaluation`; review required. M01 and M02-A through M02-C are in the stated `main` baseline.
+**Status:** Merged into `main`. M01 and M02-A through M02-D are in the stated `main` baseline.
 
 ## Scope and artifacts
 
@@ -8,7 +8,7 @@ This slice measures existing workspace-scoped document and approved-memory RAG. 
 
 - `eval/datasets/m02_d_v1.json` is dataset version 1. Evidence expectations use stable fixture keys such as `doc:project.txt` and `memory:YEAR-M`, not random database IDs or model-generated citations.
 - `python -m eval.runner` runs the deterministic offline suite using canned fake-generator responses. It makes no network requests and does not grade model quality. Outputs are written to `eval/results/m02_d_report.json` and `.md` by default.
-- `python -m eval.run_live_ollama --model gemma3:4b` runs the same synthetic cases sequentially through the existing Ollama adapter. It never installs or pulls models and only accepts the explicit `gemma3:4b` allowlist entry in this first version. Set `--output-dir` to retain a separate report.
+- `python -m eval.run_live_ollama --model gemma3:4b` runs the same synthetic cases sequentially through the existing Ollama adapter. It never installs or pulls models and accepts only explicit supported model IDs. Set `--output-dir` to retain a separate report.
 - `tests/test_evaluation.py` checks dataset integrity, report generation, and deterministic security outcomes.
 
 The dataset covers English and Arabic document retrieval, memory-only and mixed retrieval, a conflicting document/memory pair, historical approved memory, no evidence, irrelevant evidence, Arabic-to-English lexical limitation, prompt injection text, malformed/incomplete fake generations, workspace denial, revoked/deleted documents, and pending/rejected/deleted memory exclusion.
@@ -41,6 +41,8 @@ These are review targets for this small synthetic suite, not claims of productio
 4. Record latency and environment, but do not set an absolute latency gate until multiple runs on the confirmed target laptop and an explicit user-facing latency target exist.
 
 The suite is intentionally too small to establish corpus-level bilingual quality or security against an adaptive model. Poor scores must be reported as observed; do not edit expected answers just to improve a score.
+
+For Q01 historical-memory diagnostics, optional Ollama telemetry, and a sequential comparison of the already-installed `gemma3:4b` and `llama3.2:latest`, see [M02 Q01](M02_Q01_MODEL_QUALITY.md). The v1 dataset remains unchanged.
 
 ## Linux verification
 

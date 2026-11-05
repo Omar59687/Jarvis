@@ -120,6 +120,20 @@ class GenerationResult:
     model: str
     text: str
     done: bool
+    # Optional fields from Ollama's non-streaming /api/chat response. Missing
+    # or malformed values remain None; the adapter never estimates them.
+    returned_model: str | None = None
+    total_duration_ns: int | None = None
+    load_duration_ns: int | None = None
+    prompt_eval_count: int | None = None
+    prompt_eval_cached_count: int | None = None
+    prompt_eval_duration_ns: int | None = None
+    eval_count: int | None = None
+    eval_duration_ns: int | None = None
+
+
+def _optional_nonnegative_int(value: object) -> int | None:
+    return value if type(value) is int and value >= 0 else None
 
 
 _MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
@@ -262,4 +276,16 @@ class OllamaClient:
             raise OllamaProtocolError("Ollama chat response has an unexpected format")
         if "tool_calls" in message:
             raise OllamaProtocolError("Tool-call responses are unsupported by this adapter")
-        return GenerationResult(model=model, text=text, done=done)
+        return GenerationResult(
+            model=model,
+            text=text,
+            done=done,
+            returned_model=returned_model if isinstance(returned_model, str) else None,
+            total_duration_ns=_optional_nonnegative_int(value.get("total_duration")),
+            load_duration_ns=_optional_nonnegative_int(value.get("load_duration")),
+            prompt_eval_count=_optional_nonnegative_int(value.get("prompt_eval_count")),
+            prompt_eval_cached_count=_optional_nonnegative_int(value.get("prompt_eval_cached_count")),
+            prompt_eval_duration_ns=_optional_nonnegative_int(value.get("prompt_eval_duration")),
+            eval_count=_optional_nonnegative_int(value.get("eval_count")),
+            eval_duration_ns=_optional_nonnegative_int(value.get("eval_duration")),
+        )

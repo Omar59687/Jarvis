@@ -10,12 +10,14 @@ from eval.runner import evaluate
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", required=True, choices=("gemma3:4b",),
+    parser.add_argument("--model", required=True, choices=("gemma3:4b", "llama3.2:latest"),
                         help="explicitly select an installed, allowlisted local model")
     parser.add_argument("--output-dir", type=Path, default=Path("eval/results/live"))
     parser.add_argument("--timeout", type=float, default=180.0)
     args = parser.parse_args()
     client = OllamaClient("http://127.0.0.1:11434", [args.model], timeout=args.timeout)
+    if args.model not in client.installed_models():
+        parser.error(f"{args.model} is not installed locally; this command never downloads models")
     report = evaluate(live_client=client, model=args.model, output_dir=args.output_dir)
     from eval.runner import render_markdown
     print(render_markdown(report))

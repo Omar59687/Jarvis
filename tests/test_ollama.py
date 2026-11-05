@@ -67,6 +67,37 @@ class OllamaAdapterTests(unittest.TestCase):
         request = json.loads(transport.requests[1][2].decode("utf-8"))
         self.assertIs(request["think"], False)
 
+    def test_optional_server_timing_metadata_is_preserved_and_invalid_values_omitted(self):
+        client, _ = client_with(
+            json_response({"models": [{"name": "qwen2.5:3b"}]}),
+            json_response({
+                "model": "qwen2.5:3b", "message": {"content": "ok"}, "done": True,
+                "total_duration": 100, "load_duration": 20,
+                "prompt_eval_count": 7, "prompt_eval_cached_count": 2,
+                "prompt_eval_duration": 30, "eval_count": 4, "eval_duration": 50,
+            }),
+        )
+        result = client.generate("synthetic", "qwen2.5:3b")
+        self.assertEqual(result.returned_model, "qwen2.5:3b")
+        self.assertEqual(result.total_duration_ns, 100)
+        self.assertEqual(result.load_duration_ns, 20)
+        self.assertEqual(result.prompt_eval_count, 7)
+        self.assertEqual(result.prompt_eval_cached_count, 2)
+        self.assertEqual(result.prompt_eval_duration_ns, 30)
+        self.assertEqual(result.eval_count, 4)
+        self.assertEqual(result.eval_duration_ns, 50)
+
+        client, _ = client_with(
+            json_response({"models": [{"name": "qwen2.5:3b"}]}),
+            json_response({"message": {"content": "ok"}, "done": True,
+                           "total_duration": "estimated", "eval_count": True,
+                           "eval_duration": -1}),
+        )
+        missing = client.generate("synthetic", "qwen2.5:3b")
+        self.assertIsNone(missing.total_duration_ns)
+        self.assertIsNone(missing.eval_count)
+        self.assertIsNone(missing.eval_duration_ns)
+
     def test_unallowlisted_or_not_installed_model_never_generates(self):
         client, transport = client_with(json_response({"models": []}))
         with self.assertRaises(OllamaConfigurationError):

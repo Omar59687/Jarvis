@@ -18,8 +18,8 @@ from jarvis_core import (AccessDenied, Database, DecisionContextIssuer, Generati
                          MemoryService, WorkspaceKind)
 from jarvis_core.ingestion import FolderSynchronizer
 from jarvis_core.ollama import GenerationSettings, OllamaClient, OllamaError
-from jarvis_core.rag import (DocumentRAG, IncompleteGenerationError, InvalidCitationError,
-                             RAGOutcome)
+from jarvis_core.rag import (DocumentRAG, EvidenceSelector, IncompleteGenerationError,
+                             InvalidCitationError, RAGOutcome, WorkspaceEvidenceComposer)
 from jarvis_core.retrieval import SearchIndex
 
 ACTOR = "synthetic-evaluator"
@@ -62,11 +62,26 @@ class RecordingLiveGenerator:
         self.calls: list[dict[str, Any]] = []
 
     def generate(self, prompt, model, *, system_prompt=None, settings=GenerationSettings()):
-        call: dict[str, Any] = {"prompt": prompt, "system_prompt": system_prompt, "response": None, "done": None}
+        call: dict[str, Any] = {"prompt": prompt, "system_prompt": system_prompt,
+                                "response": None, "done": None, "client_call_elapsed_ms": None,
+                                "telemetry": None, "returned_model": None}
         self.calls.append(call)
+        started = time.perf_counter()
         response = self.client.generate(prompt, model, system_prompt=system_prompt, settings=settings)
+        call["client_call_elapsed_ms"] = (time.perf_counter() - started) * 1000
         call["response"] = response.text
         call["done"] = response.done
+        call["returned_model"] = response.returned_model
+        telemetry = {
+            "total_duration_ns": response.total_duration_ns,
+            "load_duration_ns": response.load_duration_ns,
+            "prompt_eval_count": response.prompt_eval_count,
+            "prompt_eval_cached_count": response.prompt_eval_cached_count,
+            "prompt_eval_duration_ns": response.prompt_eval_duration_ns,
+            "eval_count": response.eval_count,
+            "eval_duration_ns": response.eval_duration_ns,
+        }
+        call["telemetry"] = telemetry if any(value is not None for value in telemetry.values()) else None
         return response
 
 
@@ -173,9 +188,18 @@ def _metric(numerator: int, denominator: int) -> dict[str, Any]:
 
 
 def evaluate(*, live_client: OllamaClient | None = None, model: str | None = None,
-             output_dir: Path | None = None) -> dict[str, Any]:
+             output_dir: Path | None = None, case_ids: set[str] | None = None,
+             diagnostic_case_ids: set[str] | None = None) -> dict[str, Any]:
     dataset = load_dataset()
+    available_case_ids = {case["id"] for case in dataset["cases"]}
+    if case_ids is not None and not case_ids <= available_case_ids:
+        raise ValueError(f"unknown evaluation case IDs: {sorted(case_ids - available_case_ids)}")
+    if diagnostic_case_ids is not None and not diagnostic_case_ids <= available_case_ids:
+        raise ValueError(f"unknown diagnostic case IDs: {sorted(diagnostic_case_ids - available_case_ids)}")
+    if diagnostic_case_ids and case_ids is not None and not diagnostic_case_ids <= case_ids:
+        raise ValueError("diagnostic cases must be included in case_ids when case_ids is specified")
     rows: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
     human_review: list[dict[str, Any]] = []
     eligible_retrieval = retrieval_hits = 0
     citation_total = citation_valid = 0
@@ -190,7 +214,8 @@ def evaluate(*, live_client: OllamaClient | None = None, model: str | None = Non
     latencies: list[float] = []
     with tempfile.TemporaryDirectory(prefix="jarvis-m02-d-") as temporary:
         root = Path(temporary)
-        for index, case in enumerate(dataset["cases"]):
+        selected_cases = [case for case in dataset["cases"] if case_ids is None or case["id"] in case_ids]
+        for index, case in enumerate(selected_cases):
             case_dir = root / f"case-{index:02d}"
             case_dir.mkdir()
             fixture = _fixture(case, case_dir)
@@ -198,6 +223,7 @@ def evaluate(*, live_client: OllamaClient | None = None, model: str | None = Non
                          FakeGenerator(case.get("response", "JARVIS_ABSTAIN"), case.get("done", True)))
             rag = DocumentRAG(fixture.document_search, generator)
             retrieved = []
+            diagnostic_evidence = ()
             if case.get("security") != "unauthorized_workspace":
                 if case["mode"] in {"documents", "mixed"}:
                     retrieved.extend("doc:" + item.relative_path for item in fixture.document_search.search(
@@ -206,6 +232,24 @@ def evaluate(*, live_client: OllamaClient | None = None, model: str | None = Non
                     retrieved.extend("memory:" + fixture.memory_keys.get(item.memory_id, "unknown")
                                      for item in fixture.memory_service.search(
                                          ACTOR, fixture.workspace_id, case["question"], limit=3))
+                if diagnostic_case_ids and case["id"] in diagnostic_case_ids:
+                    if case["mode"] in {"memories", "mixed"}:
+                        diagnostic_evidence = WorkspaceEvidenceComposer(
+                            fixture.document_search, fixture.memory_service
+                        ).retrieve(
+                            ACTOR,
+                            fixture.workspace_id,
+                            case["question"],
+                            document_limit=1 if case["mode"] == "memories" else 3,
+                            memory_limit=3,
+                        )
+                    else:
+                        diagnostic_evidence = EvidenceSelector().select(
+                            fixture.document_search.search(
+                                ACTOR, fixture.workspace_id, case["question"], limit=3
+                            ),
+                            [],
+                        )
             started = time.perf_counter()
             error = None
             result = None
@@ -236,6 +280,36 @@ def evaluate(*, live_client: OllamaClient | None = None, model: str | None = Non
                 eligible_retrieval += len(expected)
                 retrieval_hits += len(set(expected) & set(retrieved))
             outcome = error or (result.outcome.value if result else "error")
+            live_call = generator.calls[-1] if isinstance(generator, RecordingLiveGenerator) and generator.calls else None
+            model_call = generator.calls[-1] if generator.calls else None
+            if diagnostic_case_ids and case["id"] in diagnostic_case_ids:
+                diagnostics.append({
+                    "case_id": case["id"],
+                    "synthetic_only": True,
+                    "question": case["question"],
+                    "selected_evidence": ([
+                        {"citation_id": item.citation_id, "source_type": item.source_type,
+                         "source_status": item.source_status, "document_id": item.document_id,
+                         "memory_id": item.memory_id, "root_id": item.root_id,
+                         "relative_path": item.relative_path, "excerpt": item.excerpt}
+                        for item in (result.evidence if result else diagnostic_evidence)
+                    ]),
+                    "system_prompt": model_call.get("system_prompt") if model_call else None,
+                    "model_prompt": model_call.get("prompt") if model_call else None,
+                    "model_output": (live_call.get("response") if live_call else
+                                     getattr(generator, "text", None)),
+                    "generation_done": (live_call.get("done") if live_call else
+                                        getattr(generator, "done", None)),
+                    "rag_answer": result.answer if result else None,
+                    "rag_outcome": outcome,
+                    "citations": [citation.citation_id for citation in result.citations] if result else [],
+                    "error": error,
+                    "end_to_end_request_ms": round(elapsed_ms, 3),
+                    "ollama_client_call_elapsed_ms": (round(live_call["client_call_elapsed_ms"], 3)
+                                                       if live_call and live_call["client_call_elapsed_ms"] is not None else None),
+                    "ollama_returned_model": live_call.get("returned_model") if live_call else None,
+                    "ollama_reported": live_call.get("telemetry") if live_call else None,
+                })
             abstained = bool(result.abstained) if result else outcome in {"access_denied", "invalid_citations", "incomplete_generation"}
             outcome_comparable = not (live_client and case.get("generator_fixture_only"))
             if outcome_comparable and case["expected_outcome"] not in {"access_denied"} and case.get("expected_abstention") is not None:
@@ -364,6 +438,11 @@ def evaluate(*, live_client: OllamaClient | None = None, model: str | None = Non
                              "live_model_prompt_injection_resistance": live_prompt_status,
                          },
                          "elapsed_ms": round(elapsed_ms, 3),
+                         "end_to_end_request_ms": round(elapsed_ms, 3),
+                         "ollama_client_call_elapsed_ms": (round(live_call["client_call_elapsed_ms"], 3)
+                                                            if live_call and live_call["client_call_elapsed_ms"] is not None else None),
+                         "ollama_returned_model": live_call.get("returned_model") if live_call else None,
+                         "ollama_reported": live_call.get("telemetry") if live_call else None,
                          "measurement_phase": "first_request_candidate" if index == 0 and live_client else ("warm_candidate" if live_client else "deterministic_fake"),
                          "prompt_chars": len(prompt) if prompt is not None else None})
 
@@ -380,6 +459,7 @@ def evaluate(*, live_client: OllamaClient | None = None, model: str | None = Non
         "report_version": 1, "dataset_id": dataset["dataset_id"], "dataset_version": dataset["version"],
         "mode": "live_ollama" if live_client else "offline_deterministic",
         "model": model or MODEL, "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "evaluated_case_ids": [case["id"] for case in selected_cases],
         "environment": {"python": platform.python_version(), "sqlite": sqlite3.sqlite_version,
                         "platform": platform.platform()},
         "metrics": {
@@ -412,9 +492,22 @@ def evaluate(*, live_client: OllamaClient | None = None, model: str | None = Non
             },
             "latency_ms": {**latency_summary(latencies),
                            "by_phase": {name: latency_summary(values) for name, values in latency_groups.items()},
-                           "note": "First request is only a cold-start candidate; resident model state is not observable."}
+                           "note": "End-to-end RAG call time includes retrieval, context construction, local client checks, and generation. First request is only a cold-start candidate; resident model state is not observable."},
+            "ollama_reported_durations_ns": {
+                field: {"count": sum(row.get("ollama_reported") is not None and row["ollama_reported"].get(field) is not None for row in rows),
+                        "values": [row["ollama_reported"][field] for row in rows
+                                   if row.get("ollama_reported") is not None and row["ollama_reported"].get(field) is not None],
+                        "note": "Server-reported Ollama nanoseconds; omitted values are not estimated."}
+                for field in ("total_duration_ns", "load_duration_ns", "prompt_eval_duration_ns", "eval_duration_ns")
+            },
+            "ollama_reported_token_counts": {
+                field: {"count": sum(row.get("ollama_reported") is not None and row["ollama_reported"].get(field) is not None for row in rows),
+                        "values": [row["ollama_reported"][field] for row in rows
+                                   if row.get("ollama_reported") is not None and row["ollama_reported"].get(field) is not None]}
+                for field in ("prompt_eval_count", "prompt_eval_cached_count", "eval_count")
+            }
         },
-        "cases": rows, "human_review": human_review, "security_review": security_review,
+        "cases": rows, "diagnostics": diagnostics, "human_review": human_review, "security_review": security_review,
         "unscored_cases": unscored_cases,
         "limitations": ["Citation validity checks label resolution, not factual entailment.",
                         "Literal fact checks cover only explicitly listed synthetic strings; other answers are unverified.",
@@ -424,6 +517,9 @@ def evaluate(*, live_client: OllamaClient | None = None, model: str | None = Non
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "m02_d_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         (output_dir / "m02_d_report.md").write_text(render_markdown(report), encoding="utf-8")
+        for diagnostic in diagnostics:
+            (output_dir / f"{diagnostic['case_id']}_diagnostic.json").write_text(
+                json.dumps(diagnostic, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return report
 
 
@@ -443,7 +539,7 @@ def render_markdown(report: dict[str, Any]) -> str:
               f"- Deterministic workspace/lifecycle checks: {security['deterministic_workspace_lifecycle_checks']}.",
               f"- Fake prompt-boundary regression: {security['fake_prompt_boundary_regression']} (prompt construction only; not model resistance).",
               f"- Live prompt-injection resistance: {security['live_model_prompt_injection_resistance']}.",
-              "", f"Latency: n={latency['count']}, mean={latency['mean']:.3f} ms, median={latency['median']:.3f} ms; {latency['note']}",
+              "", f"End-to-end latency: n={latency['count']}, mean={latency['mean']:.3f} ms, median={latency['median']:.3f} ms; {latency['note']}",
               f"First-request candidate: {latency['by_phase']['first_request_candidate']}; warm candidates: {latency['by_phase']['warm_candidate']}.",
               "", "## Case results", "", "Case | Outcome | Evidence recall | Citation | Abstention | Answer check | Security evaluation | Validator explanation | ms | Failures", "---|---|---:|---|---|---|---|---|---:|---"]
     for row in report["cases"]:

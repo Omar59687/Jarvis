@@ -336,6 +336,19 @@ class DocumentRAGTests(unittest.TestCase):
         self.assertIn("2030", prompt)
         self.assertIn("2031", prompt)
 
+    def test_memory_prompt_requires_exact_source_specific_citation_labels(self) -> None:
+        self.approve_memory("ambermarker The fictional room code was Amber-7.")
+        self.generator.text = "The code was Amber-7 [M1]."
+        self.rag.answer_with_memories(
+            "alice", self.workspace.id, "ambermarker room code", "synthetic-local:latest",
+            memory_service=self.memories,
+        )
+        call = self.generator.calls[0]
+        self.assertIn("use [D#] for an active document and [M#] for an approved memory",
+                      call["system_prompt"])
+        self.assertIn("if only M labels are supplied, cite [M#], never [D#]", call["prompt"])
+        self.assertIn("record [M1] must be cited as [M1]", call["prompt"])
+
     def test_mixed_context_marks_historical_memory_separately_and_untrusted(self) -> None:
         document_id = self.add_document("source.txt", "historicalmarker original source text")
         # The memory snapshot is approved while its source is active.
