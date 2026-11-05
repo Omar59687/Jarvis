@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Project Specification
 
-**Status:** M01-A through M01-E, M02-A through M02-D, and Q01 are merged. M03-A is under review; later M02 and product requirements remain unimplemented unless stated otherwise. Requirements below describe intended behavior, not automatically implementation facts.
+**Status:** M01-A through M01-E, M02-A through M02-D, Q01, and M03-A are merged. M03-B1 is proposed on a draft review branch; later product requirements remain unimplemented unless stated otherwise. Requirements below describe intended behavior, not automatically implementation facts.
 **Date:** 2026-11-03
 
 ## 1. Purpose

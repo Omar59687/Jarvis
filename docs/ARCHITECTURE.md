@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Proposed Architecture
 
-**Status:** the logical product architecture below remains proposed. The stated baseline implements M01-A through M01-E and M02-A through M02-D. No desktop, dashboard, voice or external integration is implemented.
+**Status:** the logical product architecture below remains proposed. The stated baseline implements M01-A through M01-E, M02-A through M02-D, Q01, and an M03-A synthetic visual prototype. This branch proposes an M03-B1 restricted local chat alpha; see [M03-B1](M03B1_LOCAL_CHAT.md). No production desktop, dashboard, voice or external integration is implemented.
 
 ## 1. Architecture goals
 
@@ -83,6 +83,8 @@ The signing context verifies that a trusted host issued a decision for the exact
 - Future Mission Mode must have named objective, allowed tools, data/workspace scope, time/action budget, stop conditions, dry-run or preview, and a human stop control.
 
 ## 8. Security and privacy requirements for implementation
+
+M03-B1 implements a narrow alpha boundary for single-turn local chat only: loopback binding, exact Host checks and exact Origin checks on state-changing requests, terminal one-time pairing, process-local cookie sessions, CSRF checks, bounded requests, and the existing fixed local Ollama adapter. It does not implement workspace authorization because it exposes no workspace data or operations. This development alpha uses plain HTTP on numeric loopback and is not a production authentication design. See [M03-B1](M03B1_LOCAL_CHAT.md) for the detailed lifecycle, limits, and residual risks.
 
 - Bind the local service to loopback by default. Do not assume a local port is secret or trusted.
 - Use per-install random session tokens or equivalent protection for browser clients; protect against cross-site requests and hostile origins.
