@@ -4,10 +4,11 @@ import json
 from pathlib import Path
 import threading
 import unittest
+from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from jarvis_core.ollama import GenerationResult, OllamaClient, OllamaModelUnavailable
+from jarvis_core.ollama import GenerationResult, OllamaClient, OllamaModelUnavailable, OllamaTimeout
 from prototypes.m03_b1.service import (
     API_PREFIX,
     GENERAL_CHAT_SYSTEM_PROMPT,
@@ -271,6 +272,11 @@ class M03B1LocalChatTests(unittest.TestCase):
         status, _, body = self.chat(cookie=cookie, csrf=csrf)
         self.assertEqual(status, 503)
         self.assertEqual(json.loads(body), {"error": "model_not_installed"})
+        self.generator.error = OllamaTimeout("private timed-out request detail")
+        status, _, body = self.chat(cookie=cookie, csrf=csrf)
+        self.assertEqual(status, 504)
+        self.assertEqual(json.loads(body), {"error": "generation_timeout"})
+        self.assertNotIn(b"private", body)
         self.generator.error = None
         self.generator.result = GenerationResult(model=MODEL, text="x" * 16001, done=True)
         status, _, body = self.chat(cookie=cookie, csrf=csrf)
@@ -281,13 +287,27 @@ class M03B1LocalChatTests(unittest.TestCase):
         self.assertEqual(status, 502)
         self.assertEqual(json.loads(body), {"error": "generation_failed"})
 
+    def test_incomplete_generation_is_rejected_with_generic_error(self):
+        cookie, csrf = self.pair()
+        incomplete_results = (
+            GenerationResult(model=MODEL, text="partial secret answer", done=False),
+            SimpleNamespace(text="partial without completion field"),
+            SimpleNamespace(text="partial with invalid completion", done="true"),
+        )
+        for result in incomplete_results:
+            self.generator.result = result
+            status, _, body = self.chat(cookie=cookie, csrf=csrf)
+            self.assertEqual(status, 502)
+            self.assertEqual(json.loads(body), {"error": "generation_failed"})
+            self.assertNotIn(b"partial", body)
+
     def test_production_factory_explicitly_allows_only_local_gemma_without_network_call(self):
         server = make_server(0)
         try:
             self.assertIsInstance(server.generator, OllamaClient)
             self.assertEqual(server.generator.allowed_models, frozenset({"gemma3:4b"}))
             self.assertEqual(server.generator._origin, "http://127.0.0.1:11434")
-            self.assertEqual(server.generator.timeout, 45.0)
+            self.assertEqual(server.generator.timeout, 120.0)
         finally:
             server.server_close()
 
@@ -295,6 +315,7 @@ class M03B1LocalChatTests(unittest.TestCase):
         app_js = (Path(__file__).parents[1] / "prototypes/m03_b1/app.js").read_text()
         page = (Path(__file__).parents[1] / "prototypes/m03_b1/index.html").read_text()
         self.assertIn('fetch("/api/v1/chat"', app_js)
+        self.assertIn("setTimeout(() => controller.abort(), 150000)", app_js)
         self.assertIn('"X-Jarvis-CSRF": csrfToken', app_js)
         self.assertIn("sending || !csrfToken", app_js)
         self.assertIn("autocomplete=\"one-time-code\"", page)

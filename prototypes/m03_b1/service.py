@@ -41,6 +41,7 @@ MAX_CHATS_PER_MINUTE = 6
 MAX_SESSIONS = 8
 MAX_HANDLER_THREADS = 16
 API_PREFIX = "/api/v1"
+OLLAMA_REQUEST_TIMEOUT_SECONDS = 120.0
 GENERAL_CHAT_SYSTEM_PROMPT = (
     "You are Jarvis, a helpful local conversational assistant. This request is a single-turn "
     "general conversation. Answer naturally and, when practical, in the language used by the "
@@ -495,7 +496,9 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             self._json(502, {"error": "generation_failed"})
         else:
             reply = getattr(result, "text", None)
-            if not isinstance(reply, str) or not reply.strip() or len(reply) > MAX_REPLY_CHARS or "\x00" in reply:
+            if (getattr(result, "done", None) is not True
+                    or not isinstance(reply, str) or not reply.strip()
+                    or len(reply) > MAX_REPLY_CHARS or "\x00" in reply):
                 self._json(502, {"error": "generation_failed"})
             else:
                 try:
@@ -532,7 +535,7 @@ def make_server(port: int = 8765, *, generator=None, pairing_code: str | None = 
     if type(port) is not int or not 0 <= port <= 65535:
         raise ValueError("port must be an integer between 0 and 65535")
     if generator is None:
-        generator = OllamaClient(OLLAMA_URL, (MODEL,), timeout=45.0)
+        generator = OllamaClient(OLLAMA_URL, (MODEL,), timeout=OLLAMA_REQUEST_TIMEOUT_SECONDS)
     return LocalChatServer(port, generator=generator, pairing_code=pairing_code, clock=clock)
 
 

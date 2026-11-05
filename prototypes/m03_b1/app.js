@@ -209,7 +209,7 @@ async function sendChat(event) {
   const pending = appendChatEntry("assistant pending", language === "ar" ? "جارٍ إنشاء رد محلي…" : "Generating a local response…");
   chatInput.value = "";
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 100000);
+  const timeout = setTimeout(() => controller.abort(), 150000);
   try {
     const response = await fetch("/api/v1/chat", {
       method: "POST", credentials: "same-origin", cache: "no-store", signal: controller.signal,
