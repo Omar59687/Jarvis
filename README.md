@@ -4,7 +4,7 @@
 
 Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing, and retrieving information across personal and project workspaces. M01-A through M01-E, M02-A through M02-D, Q01, and M03-A are in the stated `main` baseline.
 
-> **Project status:** This branch proposes M03-B2, a restricted local single-turn chat alpha on the existing synthetic Knowledge Galaxy. It uses an explicitly configured local model provider (LM Studio Bionic or Ollama) behind a terminal-paired loopback service. It is not a production authenticated dashboard and has no knowledge search, memory, file, tool, or cloud integration. A live Windows Bionic smoke test remains owner verification.
+> **Project status:** This branch implements P2-A1's trusted principal/session binding and authenticated workspace listing/selection API on top of the M03-B2 local chat baseline. It remains a restricted local alpha: the Knowledge Galaxy workspace view is still synthetic, chat is still general single-turn conversation, and no retrieval, memory writes, tools, account provisioning, or cloud integration is connected.
 
 ## Product goals
 
@@ -56,11 +56,12 @@ Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing,
 - [M03-B2 local provider abstraction](docs/M03B2_LOCAL_PROVIDER.md) — provider configuration, Bionic/Ollama adapters, security boundary, Windows startup, tests, and limitations.
 - [P2-A authenticated memory chat design](docs/P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md) — proposed identity, workspace, evidence, citations, consent, privacy, API, and threat model.
 - [P2-A acceptance and test plan](docs/P2A_ACCEPTANCE_AND_TEST_PLAN.md) — implementation slices and observable regression/security gates.
+- [P2-A1 trusted workspace sessions](docs/P2A1_TRUSTED_WORKSPACE_SESSION.md) — implemented API behavior, Windows configuration and smoke steps, and current limits.
 - [Agent and contributor instructions](AGENTS.md).
 
 ## Repository status
 
-The stated `main` baseline contains M01-A through M01-E, M02-A through M02-D, Q01, and the synthetic M03-A browser/service prototype. This branch contains the M03-B2 local chat/provider baseline and proposes P2-A as a design only. No memory-powered chat integration is implemented here. See [M03-B2](docs/M03B2_LOCAL_PROVIDER.md), [P2-A design](docs/P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md), and its [test plan](docs/P2A_ACCEPTANCE_AND_TEST_PLAN.md).
+The stated `main` baseline contains M01-A through M01-E, M02-A through M02-D, Q01, and the synthetic M03-A browser/service prototype. This branch starts from the P2-A design commit and implements only P2-A1's trusted session identity and workspace selection API. No memory-powered chat integration is implemented here. See [P2-A design](docs/P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md), [P2-A1 implementation](docs/P2A1_TRUSTED_WORKSPACE_SESSION.md), and its [acceptance/test plan](docs/P2A_ACCEPTANCE_AND_TEST_PLAN.md).
 
 ## Development principles
 
@@ -72,4 +73,4 @@ The stated `main` baseline contains M01-A through M01-E, M02-A through M02-D, Q0
 
 ## Review status
 
-M01-E, M02-A through M02-D, Q01, and M03-A are in the stated baseline. Cross-workspace aggregation remains unsupported and denied by default; the acceptance report preserves this open requirement. M03-B1 is the stated branch baseline; M03-B2 is the local design baseline; P2-A is a documentation-only proposal and is not implemented or merged. See [M01 Acceptance](docs/M01_ACCEPTANCE.md), [Q01](docs/M02_Q01_MODEL_QUALITY.md), [M03-A](docs/M03A_DESKTOP_FOUNDATION.md), and [M03-B2](docs/M03B2_LOCAL_PROVIDER.md).
+M01-E, M02-A through M02-D, Q01, and M03-A are in the stated baseline. Cross-workspace aggregation remains unsupported and denied by default; P2-A1 exposes no multi-workspace retrieval. This branch implements only trusted session binding and permission-filtered workspace listing/selection; P2-A2 and later remain unimplemented. See [M01 Acceptance](docs/M01_ACCEPTANCE.md), [Q01](docs/M02_Q01_MODEL_QUALITY.md), [M03-A](docs/M03A_DESKTOP_FOUNDATION.md), and [P2-A1](docs/P2A1_TRUSTED_WORKSPACE_SESSION.md).

@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Proposed Architecture
 
-**Status:** the logical product architecture below remains proposed. The stated baseline implements M01-A through M01-E, M02-A through M02-D, Q01, and an M03-A synthetic visual prototype. This branch uses M03-B2 local-provider abstraction as its baseline and proposes P2-A authenticated memory/evidence chat; see [M03-B2](M03B2_LOCAL_PROVIDER.md) and [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md). No production desktop, dashboard, voice or external integration is implemented.
+**Status:** the logical product architecture below remains proposed. The stated baseline implements M01-A through M01-E, M02-A through M02-D, Q01, and an M03-A synthetic visual prototype. This branch starts from the P2-A design commit and implements only P2-A1 trusted session identity and workspace list/select APIs. No production desktop, connected workspace UI, retrieval integration, voice, or external integration is implemented. See [M03-B2](M03B2_LOCAL_PROVIDER.md), [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md), and [P2-A1 implementation notes](P2A1_TRUSTED_WORKSPACE_SESSION.md).
 
 ## 1. Architecture goals
 
@@ -84,7 +84,7 @@ The signing context verifies that a trusted host issued a decision for the exact
 
 ## 8. Security and privacy requirements for implementation
 
-M03-B2 extends the M03-B1 single-turn alpha with a provider-neutral generation contract and explicit Ollama/Bionic adapters. Loopback binding, exact Host and Origin checks, terminal one-time pairing, process-local cookie sessions, CSRF, bounded requests, and generic error handling remain in the service. Provider HTTP accepts numeric loopback destinations only, disables proxies, and rejects redirects. The alpha exposes no workspace data or operations and does not implement workspace authorization. It uses plain HTTP on numeric loopback and is not a production authentication design. See [M03-B2](M03B2_LOCAL_PROVIDER.md) for configuration and residual risks.
+M03-B2 extends the M03-B1 single-turn alpha with a provider-neutral generation contract and explicit Ollama/Bionic adapters. Loopback binding, exact Host and Origin checks, terminal one-time pairing, process-local cookie sessions, CSRF, bounded requests, and generic error handling remain in the service. Provider HTTP accepts numeric loopback destinations only, disables proxies, and rejects redirects. P2-A1 adds an optional explicitly configured server principal, session binding, and permission-checked workspace list/select APIs; it does not connect general chat to a workspace or expose retrieval/memory operations. The prototype uses plain HTTP on numeric loopback and is not a production multi-user authentication design. See [P2-A1](P2A1_TRUSTED_WORKSPACE_SESSION.md) for configuration and verification.
 
 - Bind the local service to loopback by default. Do not assume a local port is secret or trusted.
 - Use per-install random session tokens or equivalent protection for browser clients; protect against cross-site requests and hostile origins.
@@ -98,7 +98,7 @@ M03-B2 extends the M03-B1 single-turn alpha with a provider-neutral generation c
 
 ### P2-A proposal: one-workspace memory chat
 
-The proposed P2-A design binds a paired browser session to a server-configured principal, selects one workspace only after `Database` READ authorization, and calls the existing document and approved-memory search/RAG services. It keeps chat single-turn and ephemeral. Durable memory proposals remain pending until a separate authenticated WRITE-authorized confirmation bound to the exact reviewed candidate and evidence snapshot. This proposal has not been implemented; see [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md) and [acceptance/test plan](P2A_ACCEPTANCE_AND_TEST_PLAN.md).
+The P2-A architecture proposes binding a paired browser session to a server-configured principal, selecting one workspace only after `Database` READ authorization, and calling the existing document and approved-memory search/RAG services. P2-A1 implements only the trusted identity and workspace selection foundation. Retrieval/RAG, evidence UI, candidate proposals, and explicit memory approval are still unimplemented; see [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md), [acceptance/test plan](P2A_ACCEPTANCE_AND_TEST_PLAN.md), and [P2-A1 implementation notes](P2A1_TRUSTED_WORKSPACE_SESSION.md).
 
 ## 9. Proposed component diagram
 

@@ -1,6 +1,6 @@
 # M03-B2 — Local Model Provider Abstraction and Bionic
 
-**Status:** implementation on `feature/m03-b2-local-provider-abstraction`, based on M03-B1 commit `6cb0635`. This is a restricted local single-turn chat alpha, not a production assistant or authenticated knowledge dashboard.
+**Status:** describes the M03-B2 local-provider baseline on `feature/m03-b2-local-provider-abstraction`, based on M03-B1 commit `6cb0635`. The P2-A1 feature branch adds an optional trusted principal and workspace list/select API; see [P2-A1 implementation notes](P2A1_TRUSTED_WORKSPACE_SESSION.md). This remains a restricted local alpha, not a production assistant or multi-user authenticated dashboard.
 
 ## Scope and behavior
 
@@ -36,7 +36,7 @@ The named model must already be installed. To prevent remote inference, configur
 
 ## Service and security boundary
 
-The browser continues to use only `GET /api/v1/session`, `POST /api/v1/session/pair`, authenticated/CSRF-protected `POST /api/v1/chat`, and `DELETE /api/v1/session`. Pairing, exact Host and Origin checks, rate limits, bounded bodies and outputs, one-in-flight-chat policy, ephemeral sessions, and generic error redaction are unchanged. No SQLite, memory, workspace, filesystem, tool, voice, cloud API, or external action is exposed in this milestone.
+The M03-B2 baseline browser uses `GET /api/v1/session`, `POST /api/v1/session/pair`, authenticated/CSRF-protected `POST /api/v1/chat`, and `DELETE /api/v1/session`. P2-A1 additionally exposes authenticated `GET /api/v1/workspaces` and CSRF-protected `PUT /api/v1/session/workspace` when a trusted actor and database are configured. These routes expose permission-filtered workspace metadata only; chat remains general conversation and does not consume the selected workspace. Pairing, exact Host and Origin checks, rate limits, bounded bodies and outputs, one-in-flight-chat policy, ephemeral sessions, and generic error redaction remain in place. No memory, retrieval, filesystem, tool, voice, cloud API, or external action is exposed.
 
 Provider transport rules:
 
@@ -53,7 +53,7 @@ This is still plain HTTP on loopback, intended for one local development user. I
 
 No new production package was added; adapters use Python's standard library. LM Studio is an optional separately installed local runtime and is not bundled or imported as a Python/JavaScript dependency. Bionic and model licensing/terms must be reviewed for the actual installed runtime and exact model release before redistribution or other use. Existing bundled M03-A Three.js assets remain local; no CDN is used.
 
-Limitations include no live Bionic check in this environment, no streaming, chat history, retrieval, citations, memory writes, workspace operations, model discovery, runtime lifecycle management, cloud routing, authentication beyond this development pairing workflow, or Windows packaging. The endpoint convention and response parser are exercised with deterministic fake transports in CI; only the owner can confirm a live Bionic install and Windows browser behavior.
+Limitations include no live Bionic check in this environment, no streaming, chat history, retrieval, citations, memory writes, model discovery, runtime lifecycle management, cloud routing, multi-user authentication, account provisioning, or Windows packaging. P2-A1 workspace APIs are a single-principal development-alpha extension and the galaxy workspace picker is still a synthetic mock. The endpoint convention and response parser are exercised with deterministic fake transports in CI; only the owner can confirm live provider and Windows behavior.
 
 ## Offline verification
 

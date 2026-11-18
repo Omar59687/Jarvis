@@ -73,7 +73,8 @@ The product targets Arabic and English, Windows desktop, and a browser dashboard
 **Proposal:** bind each paired local browser session to a trusted, configured Jarvis principal; let the user select one workspace only after server-side READ authorization; route chat through existing document search, approved-memory search, and citation-validated RAG. Proposals remain pending until a separate authenticated WRITE-authorized human approval action bound to an exact candidate snapshot. Chat remains single-turn and non-persistent.
 **Reason:** add memory-grounded assistance without creating a second permissions/retrieval stack or weakening user consent.
 **Constraints:** no client-supplied actor authority, no cross-workspace default, no model-triggered writes, no tools/filesystem/cloud, no chat transcript table. Reuse schema v5 and existing lifecycle APIs; provider-neutralize the RAG/generation interface before connecting Bionic.
-**Validation:** the architecture and test gates are proposed in [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md) and [P2-A acceptance/test plan](P2A_ACCEPTANCE_AND_TEST_PLAN.md). This branch contains no production implementation. Do not begin P2-A coding until separately approved.
+**Implementation status:** P2-A1 is implemented on `feature/p2-a1-workspace-session-binding`: trusted configured session principal plus permission-filtered workspace list/select API. The rest of P2-A remains proposed and is not approved by this slice.
+**Validation:** P2-A1 has focused temporary-SQLite integration tests in `tests/test_m03_p2a_identity.py`; architecture and later-stage gates are in [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md), [P2-A acceptance/test plan](P2A_ACCEPTANCE_AND_TEST_PLAN.md), and [P2-A1 implementation notes](P2A1_TRUSTED_WORKSPACE_SESSION.md).
 
 ## Open decisions
 

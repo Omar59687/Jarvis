@@ -17,6 +17,7 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from jarvis_core.lmstudio import LMStudioBionicClient
+from jarvis_core.storage import AccessDenied, Database, default_database_path
 from jarvis_core.model_provider import (
     ModelProvider,
     ProviderConnectionError,
@@ -41,6 +42,7 @@ SESSION_ABSOLUTE_SECONDS = 4 * 60 * 60
 PAIR_MAX_ATTEMPTS = 5
 CHAT_MAX_REQUEST_BYTES = 4096
 PAIR_MAX_REQUEST_BYTES = 2048
+WORKSPACE_MAX_REQUEST_BYTES = 2048
 MAX_MESSAGE_CHARS = 1000
 MAX_REPLY_CHARS = 16000
 MAX_CHATS_PER_MINUTE = 6
@@ -61,6 +63,21 @@ GENERAL_CHAT_SYSTEM_PROMPT = (
 def _secret_matches(candidate: object, expected: str) -> bool:
     return (isinstance(candidate, str) and candidate.isascii()
             and secrets.compare_digest(candidate, expected))
+
+
+def _trusted_actor_id(value: object) -> str:
+    """Validate the service-configured principal; never call this on a request value."""
+    if (not isinstance(value, str) or not value.strip() or len(value.strip()) > 200
+            or any(ord(char) < 32 or ord(char) == 127 for char in value)):
+        raise ValueError("a valid explicitly configured actor ID is required")
+    return value.strip()
+
+
+def _contains_client_identity(value: dict) -> bool:
+    """Reject identity-shaped JSON fields instead of silently accepting false authority."""
+    identity_keys = {"actorid", "principalid", "userid"}
+    return any(isinstance(key, str) and key.casefold().replace("_", "").replace("-", "") in identity_keys
+               for key in value)
 
 M03A_ROOT = Path(__file__).resolve().parents[1] / "m03_a"
 B1_ROOT = Path(__file__).resolve().parent
@@ -122,6 +139,8 @@ class SessionRecord:
     csrf_token: str
     created_at: float
     last_seen: float
+    actor_id: str | None = None
+    active_workspace_id: str | None = None
     chat_times: deque[float] = field(default_factory=deque)
     in_flight: bool = False
 
@@ -142,14 +161,14 @@ class SessionStore:
         return (now - record.last_seen >= SESSION_IDLE_SECONDS
                 or now - record.created_at >= SESSION_ABSOLUTE_SECONDS)
 
-    def issue(self) -> tuple[str, SessionRecord] | None:
+    def issue(self, *, actor_id: str | None = None) -> tuple[str, SessionRecord] | None:
         now = self._clock()
         with self._lock:
             self._purge_locked(now)
             if len(self._records) >= MAX_SESSIONS:
                 return None
             session_id = secrets.token_urlsafe(32)
-            record = SessionRecord(secrets.token_urlsafe(32), now, now)
+            record = SessionRecord(secrets.token_urlsafe(32), now, now, actor_id=actor_id)
             self._records[self._key(session_id)] = record
             return session_id, record
 
@@ -199,6 +218,31 @@ class SessionStore:
             if record is not None:
                 record.in_flight = False
 
+    def set_active_workspace(self, session_id: str, workspace_id: str) -> bool:
+        now = self._clock()
+        with self._lock:
+            key = self._key(session_id)
+            record = self._records.get(key)
+            if record is None or self._expired(record, now):
+                self._records.pop(key, None)
+                return False
+            record.active_workspace_id = workspace_id
+            record.last_seen = now
+            return True
+
+    def clear_active_workspace(self, session_id: str, *, touch: bool = False) -> bool:
+        now = self._clock()
+        with self._lock:
+            key = self._key(session_id)
+            record = self._records.get(key)
+            if record is None or self._expired(record, now):
+                self._records.pop(key, None)
+                return False
+            record.active_workspace_id = None
+            if touch:
+                record.last_seen = now
+            return True
+
     def revoke(self, session_id: str | None) -> bool:
         if not isinstance(session_id, str) or not session_id:
             return False
@@ -214,8 +258,21 @@ class LocalChatServer(ThreadingHTTPServer):
     request_queue_size = 16
 
     def __init__(self, port: int, *, generator: ModelProvider, model: str, provider_name: str,
+                 actor_id: str | None = None, database: Database | None = None,
+                 database_path: str | Path | None = None,
                  pairing_code: str | None = None,
                  clock: Callable[[], float] = time.monotonic):
+        if actor_id is None:
+            if database is not None or database_path is not None:
+                raise ValueError("database configuration requires an explicit actor ID")
+            configured_actor = None
+            configured_database = None
+        else:
+            configured_actor = _trusted_actor_id(actor_id)
+            if database is not None and database_path is not None:
+                raise ValueError("provide a database instance or database path, not both")
+            configured_database = database or Database(database_path or default_database_path())
+            configured_database.initialize()
         super().__init__((HOST, port), LocalChatHandler)
         actual_port = self.server_address[1]
         self.expected_host = f"{HOST}:{actual_port}"
@@ -223,6 +280,8 @@ class LocalChatServer(ThreadingHTTPServer):
         self.generator = generator
         self.model = model
         self.provider_name = provider_name
+        self.actor_id = configured_actor
+        self.database = configured_database
         self.pairing = PairingAuthority(code=pairing_code, clock=clock)
         self.sessions = SessionStore(clock=clock)
         self._handler_slots = threading.BoundedSemaphore(MAX_HANDLER_THREADS)
@@ -414,8 +473,44 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             if record is None:
                 self._json(401, {"error": "authentication_required"})
                 return
+            active_workspace_id = record.active_workspace_id
+            if active_workspace_id is not None:
+                try:
+                    if record.actor_id is None or self.server.database is None:
+                        raise AccessDenied("workspace service is unavailable")
+                    self.server.database.get_workspace(record.actor_id, active_workspace_id)
+                except Exception:
+                    # Permission revocation or an unavailable database must never
+                    # leave a stale workspace selected in the session.
+                    if session_id is not None:
+                        self.server.sessions.clear_active_workspace(session_id)
+                    active_workspace_id = None
             self._json(200, {"authenticated": True, "csrf_token": record.csrf_token,
-                             "model": self.server.model, "provider": self.server.provider_name})
+                             "model": self.server.model, "provider": self.server.provider_name,
+                             "active_workspace_id": active_workspace_id})
+            return
+        if path == f"{API_PREFIX}/workspaces":
+            session_id = self._cookie_session_id()
+            record = self.server.sessions.resolve(session_id, touch=True)
+            if record is None:
+                self._json(401, {"error": "authentication_required"})
+                return
+            if record.actor_id is None or self.server.database is None:
+                self._json(503, {"error": "workspace_service_unavailable"})
+                return
+            try:
+                workspaces = self.server.database.list_workspaces(record.actor_id)
+            except Exception:
+                self._json(503, {"error": "workspace_service_unavailable"})
+                return
+            workspace_ids = {workspace.id for workspace in workspaces}
+            if record.active_workspace_id is not None and record.active_workspace_id not in workspace_ids:
+                if session_id is not None:
+                    self.server.sessions.clear_active_workspace(session_id)
+            self._json(200, {"workspaces": [
+                {"id": workspace.id, "name": workspace.name, "kind": workspace.kind.value}
+                for workspace in workspaces
+            ]})
             return
         static = STATIC_FILES.get(path)
         if static is None:
@@ -468,15 +563,67 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             "Set-Cookie": f"{COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path={API_PREFIX}; Max-Age=0"
         })
 
+    def do_PUT(self) -> None:
+        if (self._reject_host(discard_body_limit=WORKSPACE_MAX_REQUEST_BYTES)
+                or self._reject_origin(discard_body_limit=WORKSPACE_MAX_REQUEST_BYTES)):
+            return
+        path, query = self._request_path()
+        if query or path != f"{API_PREFIX}/session/workspace":
+            self._discard_bounded_request_body(WORKSPACE_MAX_REQUEST_BYTES)
+            self._json(404, {"error": "not_found"})
+            return
+        session_id = self._cookie_session_id()
+        record = self.server.sessions.resolve(session_id)
+        if record is None or session_id is None:
+            self._discard_bounded_request_body(WORKSPACE_MAX_REQUEST_BYTES)
+            self._json(401, {"error": "authentication_required"})
+            return
+        csrf = self.headers.get("X-Jarvis-CSRF", "")
+        if not _secret_matches(csrf, record.csrf_token):
+            self._discard_bounded_request_body(WORKSPACE_MAX_REQUEST_BYTES)
+            self._json(403, {"error": "csrf_rejected"})
+            return
+        if record.actor_id is None or self.server.database is None:
+            self._discard_bounded_request_body(WORKSPACE_MAX_REQUEST_BYTES)
+            self._json(503, {"error": "workspace_service_unavailable"})
+            return
+        value = self._read_json(WORKSPACE_MAX_REQUEST_BYTES)
+        if value is None:
+            return
+        if _contains_client_identity(value):
+            self._json(400, {"error": "invalid_request"})
+            return
+        workspace_id = value.get("workspace_id")
+        if (not isinstance(workspace_id, str) or not workspace_id.strip()
+                or len(workspace_id) > 200 or "\x00" in workspace_id):
+            self._json(400, {"error": "invalid_workspace"})
+            return
+        try:
+            workspace = self.server.database.get_workspace(record.actor_id, workspace_id)
+        except AccessDenied:
+            # Keep absent and unauthorized IDs indistinguishable.
+            self._json(404, {"error": "workspace_unavailable"})
+            return
+        except Exception:
+            self._json(503, {"error": "workspace_service_unavailable"})
+            return
+        if not self.server.sessions.set_active_workspace(session_id, workspace.id):
+            self._json(401, {"error": "authentication_required"})
+            return
+        self._json(200, {"active_workspace_id": workspace.id})
+
     def _pair(self) -> None:
         value = self._read_json(PAIR_MAX_REQUEST_BYTES)
         if value is None:
+            return
+        if _contains_client_identity(value):
+            self._json(400, {"error": "invalid_request"})
             return
         code = value.get("pairing_code")
         if not self.server.pairing.redeem(code):
             self._json(401, {"error": "pairing_rejected"})
             return
-        issued = self.server.sessions.issue()
+        issued = self.server.sessions.issue(actor_id=self.server.actor_id)
         if issued is None:
             self._json(503, {"error": "session_capacity_reached"})
             return
@@ -503,6 +650,9 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             return
         value = self._read_json(CHAT_MAX_REQUEST_BYTES)
         if value is None:
+            return
+        if _contains_client_identity(value):
+            self._json(400, {"error": "invalid_request"})
             return
         message = value.get("message")
         if (not isinstance(message, str) or not message.strip() or len(message) > MAX_MESSAGE_CHARS
@@ -562,9 +712,6 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             return
         self._json(405, {"error": "method_not_allowed"})
 
-    def do_PUT(self) -> None:
-        self._reject_method()
-
     def do_PATCH(self) -> None:
         self._reject_method()
 
@@ -608,6 +755,8 @@ class OllamaProvider:
 def make_server(port: int = 8765, *, provider: str | None = None, model: str | None = None,
                 base_url: str | None = None, timeout: float = DEFAULT_PROVIDER_TIMEOUT_SECONDS,
                 generator: ModelProvider | None = None, pairing_code: str | None = None,
+                actor_id: str | None = None, database: Database | None = None,
+                database_path: str | Path | None = None,
                 clock: Callable[[], float] = time.monotonic) -> LocalChatServer:
     if type(port) is not int or not 0 <= port <= 65535:
         raise ValueError("port must be an integer between 0 and 65535")
@@ -626,6 +775,7 @@ def make_server(port: int = 8765, *, provider: str | None = None, model: str | N
     elif provider not in {"test", "ollama", "lmstudio"}:
         provider = "test"
     return LocalChatServer(port, generator=generator, model=model, provider_name=provider,
+                           actor_id=actor_id, database=database, database_path=database_path,
                            pairing_code=pairing_code, clock=clock)
 
 
@@ -639,11 +789,20 @@ def main() -> None:
                         help="provider endpoint base URL on numeric loopback, including port")
     parser.add_argument("--timeout", type=float, default=120.0,
                         help="finite provider request timeout in seconds (0.1 to 300)")
+    parser.add_argument("--actor-id",
+                        help="trusted existing Jarvis principal ID; enables workspace listing/selection")
+    parser.add_argument("--database", type=Path,
+                        help="SQLite database path for workspace permissions (default: per-user Jarvis database)")
     args = parser.parse_args()
     server = make_server(args.port, provider=args.provider, model=args.model,
-                         base_url=args.base_url, timeout=args.timeout)
+                         base_url=args.base_url, timeout=args.timeout,
+                         actor_id=args.actor_id, database_path=args.database)
     print(f"Jarvis M03-B2 local chat: http://{server.expected_host}/")
     print(f"Local provider/model: {server.provider_name}/{server.model} (explicitly configured; no discovery or download).")
+    if server.actor_id is None:
+        print("Workspace APIs are disabled; general local chat is unchanged.")
+    else:
+        print("Workspace APIs are enabled for the explicitly configured local principal.")
     print("Pairing code (valid for 5 minutes; one use; do not share):")
     print(server.pairing.terminal_code)
     print("This code is displayed only in this trusted terminal. Press Ctrl+C to stop.")

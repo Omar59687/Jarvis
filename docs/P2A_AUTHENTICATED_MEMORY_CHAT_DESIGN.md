@@ -1,6 +1,6 @@
 # P2-A — Authenticated Memory and Evidence Chat Design
 
-**Status:** Proposed design only. No production code changes are included in this branch. This proposal is based on M03-B2 commit `346b7ceee4fcc0330ef59e8c1537e73c5df6cf3f`; it does not authorize implementation or replace the existing M01/M02/M03 security decisions.
+**Status:** Architecture proposal. The P2-A1 trusted principal/session and workspace listing/selection subset is implemented on `feature/p2-a1-workspace-session-binding`; retrieval, evidence chat, memory writes, UI integration, and P2-A2+ remain unimplemented. This proposal is based on M03-B2 commit `346b7ceee4fcc0330ef59e8c1537e73c5df6cf3f`; it does not replace the existing M01/M02/M03 security decisions. See [P2-A1 implementation notes](P2A1_TRUSTED_WORKSPACE_SESSION.md).
 
 **Goal:** let a paired Jarvis browser ask one question against one explicitly selected workspace's active documents and approved memories, receive an answer with request-scoped citations and provenance, and stage/approve durable memories only through an explicit authenticated human action.
 
@@ -196,4 +196,4 @@ Detailed observable acceptance tests are in [P2-A acceptance and test plan](P2A_
 3. **P2-A3 — Human-reviewed candidate lifecycle.** Add user-triggered proposal and candidate review/approve/reject routes using existing MemoryService/DecisionContext flow. Gate: proposal is pending only; memory search unchanged before approval; only explicit matching snapshot approve activates it; stale/replayed/wrong actor/cross-workspace/CSRF failures do not write.
 4. **P2-A4 — Bilingual UI, privacy, regression, and owner smoke acceptance.** Wire selector, evidence panel, and explicit memory confirmation; verify accessibility/RTL, no transcript persistence, all Python/Node regressions, Windows provider smoke with fake tests plus owner-authorized local provider test. Gate: independent code review before any production integration or broader multi-user claim.
 
-Do not start P2-A implementation until this design is approved. Do not create a PR, merge, or change `main` without separate owner approval.
+P2-A1 is the only implementation slice authorized by the current task. P2-A2 and later require their own approval. Do not create a PR, merge, or change `main` without separate owner approval.

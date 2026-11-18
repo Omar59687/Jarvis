@@ -1,6 +1,6 @@
 # P2-A — Acceptance and Test Plan
 
-**Status:** proposed test plan for [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md). No tests or implementation are added by this design branch.
+**Status:** test plan for [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md). The P2-A1 identity/workspace API subset has focused implementation tests in `tests/test_m03_p2a_identity.py`; the remaining gates below are proposed for later approved slices.
 
 ## Test fixtures
 
@@ -8,8 +8,10 @@ Use temporary SQLite databases initialized with existing schema v5, explicit wor
 
 ## A. Identity, pairing, and workspace authorization
 
+Implemented P2-A1 coverage: `tests.test_m03_p2a_identity` exercises trusted actor binding, browser identity rejection, READ-filtered workspace listing and selection, session/CSRF/Origin checks, cross-workspace denial, READ revocation cleanup, and the no-actor general-chat compatibility path. The tests use a temporary SQLite database and fake generator.
+
 1. Pairing binds the configured server principal to `SessionRecord.actor_id`; browser JSON fields `actor_id`, `principal_id`, or `user_id` cannot change it.
-2. Missing principal configuration, nonexistent principal grants, missing/expired sessions, bad pairing code, expired pairing, replayed pairing, wrong Host/Origin, and bad CSRF fail closed before retrieval or provider invocation.
+2. For workspace-scoped P2-A routes, missing principal configuration, nonexistent principal grants, missing/expired sessions, bad pairing code, expired pairing, replayed pairing, wrong Host/Origin, and bad CSRF fail closed before workspace data is returned or any future RAG/provider path is invoked. P2-A1 preserves M03-B2 general chat when no actor is configured; that path has no workspace context and remains separately session/CSRF/rate protected.
 3. `GET /api/v1/workspaces` returns only `Database.list_workspaces(session.actor_id)` results. It never accepts an actor selector.
 4. Workspace selection succeeds only if `Database.get_workspace` grants READ. Unknown and unauthorized IDs yield the same public result. A workspace with only WRITE but no READ is not listed/selectable for chat.
 5. Chat contains no workspace or actor authority fields. It uses the session's active workspace. No selected workspace returns a safe conflict without touching the provider.
