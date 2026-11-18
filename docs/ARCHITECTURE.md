@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Proposed Architecture
 
-**Status:** the logical product architecture below remains proposed. The stated baseline implements M01-A through M01-E, M02-A through M02-D, Q01, and an M03-A synthetic visual prototype. This branch proposes an M03-B2 local-provider abstraction and Bionic integration; see [M03-B2](M03B2_LOCAL_PROVIDER.md). No production desktop, dashboard, voice or external integration is implemented.
+**Status:** the logical product architecture below remains proposed. The stated baseline implements M01-A through M01-E, M02-A through M02-D, Q01, and an M03-A synthetic visual prototype. This branch uses M03-B2 local-provider abstraction as its baseline and proposes P2-A authenticated memory/evidence chat; see [M03-B2](M03B2_LOCAL_PROVIDER.md) and [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md). No production desktop, dashboard, voice or external integration is implemented.
 
 ## 1. Architecture goals
 
@@ -95,6 +95,10 @@ M03-B2 extends the M03-B1 single-turn alpha with a provider-neutral generation c
 - Limit logs to necessary metadata and provide a redaction/export policy.
 - Back up before migrations and test restore, deletion, and permission isolation.
 - No security property is considered verified until exercised by implementation-specific tests/review.
+
+### P2-A proposal: one-workspace memory chat
+
+The proposed P2-A design binds a paired browser session to a server-configured principal, selects one workspace only after `Database` READ authorization, and calls the existing document and approved-memory search/RAG services. It keeps chat single-turn and ephemeral. Durable memory proposals remain pending until a separate authenticated WRITE-authorized confirmation bound to the exact reviewed candidate and evidence snapshot. This proposal has not been implemented; see [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md) and [acceptance/test plan](P2A_ACCEPTANCE_AND_TEST_PLAN.md).
 
 ## 9. Proposed component diagram
 

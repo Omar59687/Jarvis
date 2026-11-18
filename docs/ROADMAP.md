@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Roadmap
 
-**Status:** M01-A through M01-E, M02-A through M02-D, Q01, and M03-A are in the stated `main` baseline. M03-B1 is proposed on a draft review branch; later sequencing remains gated.
+**Status:** M01-A through M01-E, M02-A through M02-D, Q01, and M03-A are in the stated `main` baseline. M03-B2 is the explicit local-provider baseline for this design branch; P2-A is design-only here and is not implemented or merged.
 
 ## Phase gates
 
@@ -25,6 +25,7 @@ For each milestone:
 | M06 | AI Software Factory | Multi-agent coding workflows with repository-scoped workspaces | Agent capability matrix; reviewable diffs; human approval before merge/deploy; reproducibility |
 | M07 | Computer and Productivity Automation | Carefully scoped browser and desktop automation | Dedicated profiles; action confirmation; domain/path policy; safe interruption and recovery |
 | M08 | Mission Mode, Proactivity and Reliability | Opt-in proactive suggestions and bounded multi-step missions | Explicit goals, permission policy, budget/time limits, audit, stop control, failure recovery |
+| P2-A | Authenticated Memory and Evidence Chat | Proposed first memory-powered chat using one authorized workspace, citations, and explicit memory approval | Server-derived actor identity; READ/WRITE checks; one-workspace RAG; citation provenance; no transcript persistence; approval snapshot/replay tests |
 
 ## Dependency notes
 
@@ -36,4 +37,4 @@ For each milestone:
 
 ## Current state and next task
 
-M01-A through M01-E, M02-A through M02-D, Q01, and M03-A are in the stated `main` baseline. M01's acceptance report retains unresolved cross-workspace consent and other documented limitations; aggregation remains unsupported and denied by default. M03-B1 is a restricted local-chat review branch; it is not a production desktop or authenticated dashboard. The exact scope and Windows check are documented in [M03-B1](M03B1_LOCAL_CHAT.md). Later M03 features remain separately gated.
+M01-A through M01-E, M02-A through M02-D, Q01, and M03-A are in the stated `main` baseline. M01's acceptance report retains unresolved cross-workspace consent and other documented limitations; aggregation remains unsupported and denied by default. M03-B2 is the provider-abstraction baseline for this branch, not a production authenticated dashboard. P2-A is currently a design proposal only. Its implementation-ready architecture, threat model, API, and test gates are documented in [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md) and [P2-A test plan](P2A_ACCEPTANCE_AND_TEST_PLAN.md). No P2-A production code is authorized by those documents.

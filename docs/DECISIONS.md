@@ -69,6 +69,12 @@ The product targets Arabic and English, Windows desktop, and a browser dashboard
 **Security boundary:** adapters reject non-loopback URLs, bypass system proxies, do not follow redirects, bound requests/responses, and expose no tool or integration fields. The local runtime must itself be configured for local-only inference.
 **Validation:** deterministic provider and service tests cover native request construction, response parsing, safe errors, and authenticated response delivery. Live Windows Bionic verification remains an owner task; see [M03-B2](M03B2_LOCAL_PROVIDER.md).
 
+### P-10 — Single-workspace authenticated memory chat (P2-A design)
+**Proposal:** bind each paired local browser session to a trusted, configured Jarvis principal; let the user select one workspace only after server-side READ authorization; route chat through existing document search, approved-memory search, and citation-validated RAG. Proposals remain pending until a separate authenticated WRITE-authorized human approval action bound to an exact candidate snapshot. Chat remains single-turn and non-persistent.
+**Reason:** add memory-grounded assistance without creating a second permissions/retrieval stack or weakening user consent.
+**Constraints:** no client-supplied actor authority, no cross-workspace default, no model-triggered writes, no tools/filesystem/cloud, no chat transcript table. Reuse schema v5 and existing lifecycle APIs; provider-neutralize the RAG/generation interface before connecting Bionic.
+**Validation:** the architecture and test gates are proposed in [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md) and [P2-A acceptance/test plan](P2A_ACCEPTANCE_AND_TEST_PLAN.md). This branch contains no production implementation. Do not begin P2-A coding until separately approved.
+
 ## Open decisions
 
 - Exact system RAM and supported Windows versions.
