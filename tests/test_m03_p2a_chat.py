@@ -46,7 +46,7 @@ class P2AWorkspaceChatTests(unittest.TestCase):
         self.server._test_thread.start()
         status, headers, body = self.request("POST", f"{API_PREFIX}/session/pair",
                                              {"pairing_code": "one-time"})
-        self.assertEqual(status, 200)
+        self.assertEqual(status, 200, body)
         self.cookie = headers["Set-Cookie"].split(";", 1)[0]
         self.csrf = json.loads(body)["csrf_token"]
         self.request("PUT", f"{API_PREFIX}/session/workspace", {"workspace_id": "ws-a"})
@@ -57,14 +57,15 @@ class P2AWorkspaceChatTests(unittest.TestCase):
         self.server._test_thread.join(timeout=2)
         self.temp.cleanup()
 
-    def request(self, method, path, payload=None):
+    def request(self, method, path, payload=None, *, include_csrf=True):
         headers = {"Host": self.server.expected_host, "Origin": self.server.expected_origin,
                    "Cookie": getattr(self, "cookie", "")}
         data = None
         if payload is not None:
             data = json.dumps(payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
-            headers["X-Jarvis-CSRF"] = getattr(self, "csrf", "")
+            if include_csrf:
+                headers["X-Jarvis-CSRF"] = getattr(self, "csrf", "")
         request = Request(f"http://{self.server.expected_host}{path}", data=data,
                           headers=headers, method=method)
         try:
@@ -91,7 +92,7 @@ class P2AWorkspaceChatTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(response["outcome"], "invalid_citations")
         self.assertTrue(response["abstained"])
-        self.assertEqual(response["citations"][0]["source_status"], "active_document")
+        self.assertEqual(response["evidence"][0]["source_status"], "active_document")
         self.assertFalse(response["candidate_creation_allowed"])
 
     def test_no_evidence_abstains_without_invoking_provider(self):
@@ -117,6 +118,109 @@ class P2AWorkspaceChatTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             make_server(0, generator=self.provider, model="test-model", actor_id="alice",
                         database_path=self.base / "missing.sqlite3")
+
+    def test_candidate_requires_explicit_review_and_snapshot_bound_approval(self):
+        _, _, chat_body = self.request("POST", f"{API_PREFIX}/chat", {"message": "room code?"})
+        chat = json.loads(chat_body)
+        status, _, body = self.request("POST", f"{API_PREFIX}/memory-candidates", {
+            "content": "The fictional room code was Amber-7.",
+            "evidence_request_id": chat["evidence_request_id"], "citation_labels": ["D1"],
+        })
+        self.assertEqual(status, 201)
+        candidate = json.loads(body)["candidate"]
+        path = f"{API_PREFIX}/memory-candidates/{candidate['id']}"
+
+        stale = {"expected_revision": candidate["revision"],
+                 "content_sha256": "0" * 64, "evidence_sha256": candidate["evidence_sha256"],
+                 "confirmed_snapshot": True}
+        status, _, _ = self.request("POST", path + "/approve", stale)
+        self.assertEqual(status, 409)
+        unconfirmed = {"expected_revision": candidate["revision"],
+                       "content_sha256": candidate["content_sha256"],
+                       "evidence_sha256": candidate["evidence_sha256"]}
+        status, _, body = self.request("POST", path + "/approve", unconfirmed)
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error"], "explicit_review_required")
+
+        reviewed = dict(unconfirmed, confirmed_snapshot=True)
+        status, _, body = self.request("POST", path + "/approve", reviewed)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["state"], "approved")
+        self.assertTrue(json.loads(body)["memory_id"])
+
+        status, _, body = self.request("POST", path + "/approve", reviewed)
+        self.assertEqual(status, 409)
+        status, _, body = self.request("GET", f"{API_PREFIX}/memory-candidates")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["candidates"], [])
+
+    def test_candidate_edit_rebinds_provenance_and_stale_snapshot_cannot_approve(self):
+        _, _, chat_body = self.request("POST", f"{API_PREFIX}/chat", {"message": "room code?"})
+        chat = json.loads(chat_body)
+        status, _, body = self.request("POST", f"{API_PREFIX}/memory-candidates", {
+            "content": "Draft memory.", "evidence_request_id": chat["evidence_request_id"],
+            "citation_labels": ["D1"],
+        })
+        candidate = json.loads(body)["candidate"]
+        path = f"{API_PREFIX}/memory-candidates/{candidate['id']}"
+        status, _, body = self.request("PUT", path, {
+            "expected_revision": candidate["revision"], "content": "Reviewed memory.",
+            "evidence_request_id": chat["evidence_request_id"], "citation_labels": ["D1"],
+        })
+        self.assertEqual(status, 200)
+        edited = json.loads(body)["candidate"]
+        self.assertEqual(edited["revision"], candidate["revision"] + 1)
+        self.assertEqual(edited["evidence"], candidate["evidence"])
+        old_decision = {"expected_revision": candidate["revision"],
+                        "content_sha256": candidate["content_sha256"],
+                        "evidence_sha256": candidate["evidence_sha256"],
+                        "confirmed_snapshot": True}
+        status, _, _ = self.request("POST", path + "/approve", old_decision)
+        self.assertEqual(status, 409)
+
+    def test_candidate_cannot_be_created_from_memory_labels_or_other_workspace(self):
+        self.db.create_workspace("Read only", WorkspaceKind.PERSONAL, "bob", "ws-read")
+        self.db.grant_permission("bob", "ws-read", "alice", Permission.READ)
+        status, _, body = self.request("PUT", f"{API_PREFIX}/session/workspace",
+                                       {"workspace_id": "ws-b"})
+        self.assertEqual(status, 404)
+        _, _, chat_body = self.request("POST", f"{API_PREFIX}/chat", {"message": "room code?"})
+        chat = json.loads(chat_body)
+        status, _, body = self.request("POST", f"{API_PREFIX}/memory-candidates", {
+            "content": "No M labels may become document provenance.",
+            "evidence_request_id": chat["evidence_request_id"], "citation_labels": ["M1"],
+        })
+        self.assertEqual(status, 400)
+        status, _, body = self.request("PUT", f"{API_PREFIX}/session/workspace",
+                                       {"workspace_id": "ws-read"})
+        self.assertEqual(status, 200)
+        status, _, body = self.request("POST", f"{API_PREFIX}/memory-candidates", {
+            "content": "WRITE access is required.", "user_authored": True,
+        })
+        self.assertEqual(status, 403)
+        self.assertEqual(json.loads(body), {"error": "write_permission_required"})
+
+    def test_rejection_is_explicit_authenticated_and_not_replayable(self):
+        status, _, body = self.request("POST", f"{API_PREFIX}/memory-candidates", {
+            "content": "A user-authored synthetic preference.", "user_authored": True,
+        }, include_csrf=False)
+        self.assertEqual(status, 403)
+        self.assertEqual(json.loads(body), {"error": "csrf_rejected"})
+        status, _, body = self.request("POST", f"{API_PREFIX}/memory-candidates", {
+            "content": "A user-authored synthetic preference.", "user_authored": True,
+        })
+        candidate = json.loads(body)["candidate"]
+        decision = {"expected_revision": candidate["revision"],
+                    "content_sha256": candidate["content_sha256"],
+                    "evidence_sha256": candidate["evidence_sha256"],
+                    "confirmed_snapshot": True}
+        path = f"{API_PREFIX}/memory-candidates/{candidate['id']}/reject"
+        status, _, body = self.request("POST", path, decision)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["state"], "rejected")
+        status, _, body = self.request("POST", path, decision)
+        self.assertEqual(status, 409)
+        self.assertEqual(json.loads(body)["error"], "candidate_changed")
 
 
 if __name__ == "__main__":

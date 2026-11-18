@@ -150,6 +150,7 @@ class SessionRecord:
     chat_times: deque[float] = field(default_factory=deque)
     in_flight: bool = False
     evidence_requests: deque = field(default_factory=deque)
+    memory_times: deque[float] = field(default_factory=deque)
 
 
 class SessionStore:
@@ -582,7 +583,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not_found"})
             return
         session_id = self._cookie_session_id()
-        record = self.server.sessions.resolve(session_id)
+        record = self.server.sessions.resolve(session_id, touch=True)
         if record is None:
             self._json(401, {"error": "authentication_required"})
             return
@@ -614,7 +615,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not_found"})
             return
         session_id = self._cookie_session_id()
-        record = self.server.sessions.resolve(session_id)
+        record = self.server.sessions.resolve(session_id, touch=True)
         if record is None or session_id is None:
             self._discard_bounded_request_body(WORKSPACE_MAX_REQUEST_BYTES)
             self._json(401, {"error": "authentication_required"})
@@ -679,11 +680,11 @@ class LocalChatHandler(BaseHTTPRequestHandler):
 
     def _authenticated_workspace(self, *, write: bool = False):
         session_id = self._cookie_session_id()
-        record = self.server.sessions.resolve(session_id)
+        record = self.server.sessions.resolve(session_id, touch=True)
         if record is None or session_id is None:
             self._json(401, {"error": "authentication_required"})
             return None
-        if not _secret_matches(self.headers.get("X-Jarvis-CSRF", ""), record.csrf_token):
+        if write and not _secret_matches(self.headers.get("X-Jarvis-CSRF", ""), record.csrf_token):
             self._json(403, {"error": "csrf_rejected"})
             return None
         if (record.actor_id is None or self.server.database is None
@@ -696,13 +697,26 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             self.server.database.require_access(record.actor_id, record.active_workspace_id,
                                                 Permission.WRITE if write else Permission.READ)
         except AccessDenied:
-            self.server.sessions.clear_active_workspace(session_id)
-            self._json(404, {"error": "workspace_unavailable"})
+            if write:
+                self._json(403, {"error": "write_permission_required"})
+            else:
+                self.server.sessions.clear_active_workspace(session_id)
+                self._json(404, {"error": "workspace_unavailable"})
             return None
         except Exception:
             self._json(503, {"error": "workspace_service_unavailable"})
             return None
         return session_id, record, record.actor_id, record.active_workspace_id
+
+    def _memory_operation_allowed(self, session_id: str, record: SessionRecord) -> bool:
+        now = time.monotonic()
+        while record.memory_times and now - record.memory_times[0] >= 60:
+            record.memory_times.popleft()
+        if len(record.memory_times) >= 20:
+            self._json(429, {"error": "rate_limited"})
+            return False
+        record.memory_times.append(now)
+        return True
 
     @staticmethod
     def _candidate_payload(candidate) -> dict:
@@ -754,48 +768,61 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             return None
         return value
 
+    def _resolve_memory_evidence(self, session_id: str, workspace: str,
+                                 value: dict) -> list[str] | None:
+        user_authored = value.get("user_authored", False)
+        request_id = value.get("evidence_request_id")
+        labels = value.get("citation_labels", [])
+        if (type(user_authored) is not bool or not isinstance(labels, list)
+                or len(labels) > 5 or any(not isinstance(item, str) for item in labels)):
+            self._json(400, {"error": "invalid_candidate"})
+            return None
+        if user_authored:
+            if labels or request_id is not None:
+                self._json(400, {"error": "invalid_candidate"})
+                return None
+            return []
+        self._session_evidence_expired(session_id, time.monotonic())
+        record = self.server.sessions.resolve(session_id)
+        if record is None:
+            self._json(401, {"error": "authentication_required"})
+            return None
+        cache = [entry for entry in record.evidence_requests
+                 if entry["expires"] > time.monotonic() and entry["workspace"] == workspace]
+        evidence = next((entry for entry in cache if entry["id"] == request_id), None)
+        if evidence is None or not labels or len(set(labels)) != len(labels):
+            self._json(400, {"error": "evidence_selection_required"})
+            return None
+        label_map = evidence["labels"]
+        if any(label not in label_map or not label.startswith("D") for label in labels):
+            self._json(400, {"error": "evidence_selection_invalid"})
+            return None
+        return [label_map[label] for label in labels]
+
     def _propose_memory_candidate(self) -> None:
         context = self._authenticated_workspace(write=True)
         if context is None:
             self._discard_bounded_request_body(8192)
             return
-        session_id, _, actor, workspace = context
+        session_id, record, actor, workspace = context
+        if not self._memory_operation_allowed(session_id, record):
+            self._discard_bounded_request_body(8192)
+            return
         value = self._memory_json()
         if value is None:
             return
         content = value.get("content")
-        user_authored = value.get("user_authored", False)
-        request_id = value.get("evidence_request_id")
-        labels = value.get("citation_labels", [])
-        if (not isinstance(content, str) or not content.strip() or len(content) > 4000
-                or "\x00" in content or type(user_authored) is not bool
-                or not isinstance(labels, list) or len(labels) > 5
-                or any(not isinstance(item, str) for item in labels)):
+        if not isinstance(content, str) or not content.strip() or len(content) > 4000 or "\x00" in content:
             self._json(400, {"error": "invalid_candidate"})
             return
-        document_ids = []
-        if user_authored:
-            if labels or request_id is not None:
-                self._json(400, {"error": "invalid_candidate"})
-                return
-        else:
-            now = time.monotonic()
-            self._session_evidence_expired(session_id, now)
-            cache = [entry for entry in self.server.sessions.resolve(session_id).evidence_requests
-                     if entry["expires"] > now and entry["workspace"] == workspace]
-            evidence = next((entry for entry in cache if entry["id"] == request_id), None)
-            if evidence is None or not labels or len(set(labels)) != len(labels):
-                self._json(400, {"error": "evidence_selection_required"})
-                return
-            label_map = evidence["labels"]
-            if any(label not in label_map or not label.startswith("D") for label in labels):
-                self._json(400, {"error": "evidence_selection_invalid"})
-                return
-            document_ids = [label_map[label] for label in labels]
+        document_ids = self._resolve_memory_evidence(session_id, workspace, value)
+        if document_ids is None:
+            return
         try:
             candidate = self.server.memory_service.propose(
                 actor, workspace, content, evidence_document_ids=document_ids,
-                user_authored=user_authored, request_key=secrets.token_urlsafe(18),
+                user_authored=value.get("user_authored", False),
+                request_key=secrets.token_urlsafe(18),
             )
         except AccessDenied:
             self._json(403, {"error": "write_permission_required"})
@@ -818,19 +845,27 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         if context is None:
             self._discard_bounded_request_body(8192)
             return
-        _, _, actor, workspace = context
+        session_id, record, actor, workspace = context
+        if not self._memory_operation_allowed(session_id, record):
+            self._discard_bounded_request_body(8192)
+            return
         value = self._memory_json()
         if value is None:
             return
         try:
             current = self.server.memory_service.inspect_candidate(actor, workspace, candidate_id)
-            if value.get("expected_revision") != current.revision:
+            if type(value.get("expected_revision")) is not int or value["expected_revision"] != current.revision:
                 raise LifecycleConflict("stale revision")
+            if not isinstance(value.get("content"), str):
+                self._json(400, {"error": "invalid_candidate"})
+                return
+            document_ids = self._resolve_memory_evidence(session_id, workspace, value)
+            if document_ids is None:
+                return
             candidate = self.server.memory_service.edit_candidate(
                 actor, workspace, candidate_id, expected_revision=current.revision,
-                content=value.get("content"),
-                evidence_document_ids=[item.document_id for item in current.evidence],
-                user_authored=current.provenance_kind == "user_authored",
+                content=value["content"], evidence_document_ids=document_ids,
+                user_authored=value.get("user_authored", False),
             )
         except LifecycleConflict:
             self._json(409, {"error": "candidate_changed"})
@@ -846,7 +881,10 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         if context is None:
             self._discard_bounded_request_body(8192)
             return
-        _, _, actor, workspace = context
+        session_id, record, actor, workspace = context
+        if not self._memory_operation_allowed(session_id, record):
+            self._discard_bounded_request_body(8192)
+            return
         value = self._memory_json()
         if value is None:
             return
@@ -855,6 +893,9 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             expected = (candidate.revision, candidate.content_sha256, candidate.evidence_sha256)
             supplied = (value.get("expected_revision"), value.get("content_sha256"),
                         value.get("evidence_sha256"))
+            if type(supplied[0]) is not int or value.get("confirmed_snapshot") is not True:
+                self._json(400, {"error": "explicit_review_required"})
+                return
             if supplied != expected:
                 raise LifecycleConflict("reviewed snapshot is stale")
             decision = DecisionContextIssuer(self.server.decision_key).issue(
@@ -948,7 +989,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                 "reply": "I can't return an answer because the model used an invalid citation.",
                 "model": self.server.model, "provider": self.server.provider_name,
                 "outcome": "invalid_citations", "abstained": True,
-                "citations": [{"label": item.citation_id, "type": item.source_type,
+                "citations": [], "evidence": [{"label": item.citation_id, "type": item.source_type,
                                "source_status": item.source_status,
                                "provenance_kind": item.provenance_kind,
                                "document_id": item.document_id, "memory_id": item.memory_id,
@@ -977,16 +1018,19 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             self._json(502, {"error": "generation_failed"})
         else:
             if rag_result is not None:
-                request_id = secrets.token_urlsafe(18)
-                label_map = {item.citation_id: item.document_id for item in rag_result.evidence
-                             if item.source_type == "document" and item.document_id}
-                record.evidence_requests.append({
-                    "id": request_id, "workspace": record.active_workspace_id,
-                    "labels": label_map, "expires": time.monotonic() + 600,
-                })
-                while len(record.evidence_requests) > 8:
-                    record.evidence_requests.popleft()
                 evidence_by_label = {item.citation_id: item for item in rag_result.evidence}
+                label_map = {citation.citation_id: citation.document_id
+                             for citation in rag_result.citations
+                             if citation.source_type == "document" and citation.document_id}
+                request_id = None
+                if rag_result.outcome.value == "valid_citations" and label_map:
+                    request_id = secrets.token_urlsafe(18)
+                    record.evidence_requests.append({
+                        "id": request_id, "workspace": record.active_workspace_id,
+                        "labels": label_map, "expires": time.monotonic() + 600,
+                    })
+                    while len(record.evidence_requests) > 8:
+                        record.evidence_requests.popleft()
                 source_cards = []
                 for citation in rag_result.citations:
                     evidence = evidence_by_label.get(citation.citation_id)
@@ -1008,6 +1052,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                     "reply": rag_result.answer, "model": self.server.model,
                     "provider": self.server.provider_name, "outcome": rag_result.outcome.value,
                     "abstained": rag_result.abstained, "citations": source_cards,
+                    "evidence": [],
                     "evidence_request_id": request_id,
                     "candidate_creation_allowed": bool(label_map),
                 })
