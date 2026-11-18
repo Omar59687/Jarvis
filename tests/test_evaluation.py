@@ -6,24 +6,19 @@ import tempfile
 import unittest
 
 from eval.runner import DATASET, MODEL, evaluate, load_dataset
-from jarvis_core.ollama import GenerationSettings
 from jarvis_core.rag import RAGOutcome
 from jarvis_core import GenerationResult
 
 
 class InvalidCitationLiveClient:
-    allowed_models = frozenset({MODEL})
-
-    def generate(self, prompt, model, *, system_prompt=None, settings=GenerationSettings()):
+    def generate(self, prompt, model, *, system_prompt=None, temperature=0.0, max_output_tokens=192):
         return GenerationResult(model=model,
                                 text="The invented project codename is Cedar Lantern [D99].",
                                 done=True)
 
 
 class HistoricalDiagnosticClient:
-    allowed_models = frozenset({MODEL})
-
-    def generate(self, prompt, model, *, system_prompt=None, settings=GenerationSettings()):
+    def generate(self, prompt, model, *, system_prompt=None, temperature=0.0, max_output_tokens=192):
         self.prompt = prompt
         self.system_prompt = system_prompt
         return GenerationResult(
@@ -35,9 +30,7 @@ class HistoricalDiagnosticClient:
 
 
 class WrongLabelHistoricalDiagnosticClient:
-    allowed_models = frozenset({MODEL})
-
-    def generate(self, prompt, model, *, system_prompt=None, settings=GenerationSettings()):
+    def generate(self, prompt, model, *, system_prompt=None, temperature=0.0, max_output_tokens=192):
         self.prompt = prompt
         self.system_prompt = system_prompt
         return GenerationResult(

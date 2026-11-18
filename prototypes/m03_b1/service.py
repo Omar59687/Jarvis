@@ -235,6 +235,7 @@ class SessionStore:
                 self._records.pop(key, None)
                 return False
             record.active_workspace_id = workspace_id
+            record.evidence_requests.clear()
             record.last_seen = now
             return True
 
@@ -247,6 +248,7 @@ class SessionStore:
                 self._records.pop(key, None)
                 return False
             record.active_workspace_id = None
+            record.evidence_requests.clear()
             if touch:
                 record.last_seen = now
             return True
@@ -579,6 +581,20 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         if self._reject_host() or self._reject_origin():
             return
         path, query = self._request_path()
+        if not query and path == f"{API_PREFIX}/session/workspace":
+            session_id = self._cookie_session_id()
+            record = self.server.sessions.resolve(session_id)
+            if record is None or session_id is None:
+                self._json(401, {"error": "authentication_required"})
+                return
+            if not _secret_matches(self.headers.get("X-Jarvis-CSRF", ""), record.csrf_token):
+                self._json(403, {"error": "csrf_rejected"})
+                return
+            if not self.server.sessions.clear_active_workspace(session_id, touch=True):
+                self._json(401, {"error": "authentication_required"})
+                return
+            self._json(200, {"active_workspace_id": None})
+            return
         if query or path != f"{API_PREFIX}/session":
             self._json(404, {"error": "not_found"})
             return
@@ -741,7 +757,8 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         except Exception:
             self._json(503, {"error": "memory_service_unavailable"})
             return
-        self._json(200, {"candidates": [self._candidate_payload(item) for item in candidates]})
+        self._json(200, {"workspace_id": workspace,
+                         "candidates": [self._candidate_payload(item) for item in candidates]})
 
     def _get_memory_candidate(self, candidate_id: str) -> None:
         context = self._authenticated_workspace()
@@ -811,6 +828,9 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         value = self._memory_json()
         if value is None:
             return
+        if value.get("expected_workspace_id") != workspace:
+            self._json(409, {"error": "workspace_selection_changed"})
+            return
         content = value.get("content")
         if not isinstance(content, str) or not content.strip() or len(content) > 4000 or "\x00" in content:
             self._json(400, {"error": "invalid_candidate"})
@@ -840,6 +860,16 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             record.evidence_requests.popleft()
         return False
 
+    def _chat_workspace_is_current(self, session_id: str, expected_workspace_id: str | None) -> bool:
+        current = self.server.sessions.resolve(session_id)
+        if current is None:
+            self._json(401, {"error": "authentication_required"})
+            return False
+        if current.active_workspace_id != expected_workspace_id:
+            self._json(409, {"error": "workspace_selection_changed"})
+            return False
+        return True
+
     def _edit_memory_candidate(self, candidate_id: str) -> None:
         context = self._authenticated_workspace(write=True)
         if context is None:
@@ -852,6 +882,9 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         value = self._memory_json()
         if value is None:
             return
+        if value.get("expected_workspace_id") != workspace:
+            self._json(409, {"error": "workspace_selection_changed"})
+            return
         try:
             current = self.server.memory_service.inspect_candidate(actor, workspace, candidate_id)
             if type(value.get("expected_revision")) is not int or value["expected_revision"] != current.revision:
@@ -859,13 +892,22 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             if not isinstance(value.get("content"), str):
                 self._json(400, {"error": "invalid_candidate"})
                 return
-            document_ids = self._resolve_memory_evidence(session_id, workspace, value)
-            if document_ids is None:
-                return
+            if value.get("retain_existing_sources") is True:
+                if set(value) - {"expected_revision", "content", "retain_existing_sources",
+                                 "expected_workspace_id"}:
+                    self._json(400, {"error": "invalid_candidate"})
+                    return
+                document_ids = [item.document_id for item in current.evidence]
+                user_authored = current.provenance_kind == "user_authored"
+            else:
+                document_ids = self._resolve_memory_evidence(session_id, workspace, value)
+                if document_ids is None:
+                    return
+                user_authored = value.get("user_authored", False)
             candidate = self.server.memory_service.edit_candidate(
                 actor, workspace, candidate_id, expected_revision=current.revision,
                 content=value["content"], evidence_document_ids=document_ids,
-                user_authored=value.get("user_authored", False),
+                user_authored=user_authored,
             )
         except LifecycleConflict:
             self._json(409, {"error": "candidate_changed"})
@@ -887,6 +929,9 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             return
         value = self._memory_json()
         if value is None:
+            return
+        if value.get("expected_workspace_id") != workspace:
+            self._json(409, {"error": "workspace_selection_changed"})
             return
         try:
             candidate = self.server.memory_service.inspect_candidate(actor, workspace, candidate_id)
@@ -959,6 +1004,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         if state == "rate_limited":
             self._json(429, {"error": "rate_limited"})
             return
+        workspace_id = record.active_workspace_id
         try:
             if record.active_workspace_id is None:
                 result = self.server.generator.generate(
@@ -970,7 +1016,6 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                 if self.server.rag is None or self.server.memory_service is None:
                     self._json(503, {"error": "workspace_service_unavailable"})
                     return
-                workspace_id = record.active_workspace_id
                 actor_id = record.actor_id
                 # Check before retrieval; SearchIndex and MemoryService each check
                 # again before access, and this final check prevents returning an
@@ -983,11 +1028,16 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                 )
                 self.server.database.require_access(actor_id, workspace_id, Permission.READ)
                 result = None
+            if not self._chat_workspace_is_current(session_id, workspace_id):
+                return
         except InvalidCitationError as exc:
+            if not self._chat_workspace_is_current(session_id, workspace_id):
+                return
             evidence = exc.evidence
             self._json(200, {
                 "reply": "I can't return an answer because the model used an invalid citation.",
                 "model": self.server.model, "provider": self.server.provider_name,
+                "workspace_id": workspace_id,
                 "outcome": "invalid_citations", "abstained": True,
                 "citations": [], "evidence": [{"label": item.citation_id, "type": item.source_type,
                                "source_status": item.source_status,
@@ -1001,7 +1051,9 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                 "evidence_request_id": None, "candidate_creation_allowed": False,
             })
         except AccessDenied:
-            self.server.sessions.clear_active_workspace(session_id)
+            current = self.server.sessions.resolve(session_id)
+            if current is not None and current.active_workspace_id == workspace_id:
+                self.server.sessions.clear_active_workspace(session_id)
             self._json(404, {"error": "workspace_unavailable"})
         except (SearchIndexUnavailable, FTS5Unavailable, MemorySearchUnavailable):
             self._json(503, {"error": "evidence_unavailable"})
@@ -1051,6 +1103,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                 self._json(200, {
                     "reply": rag_result.answer, "model": self.server.model,
                     "provider": self.server.provider_name, "outcome": rag_result.outcome.value,
+                    "workspace_id": workspace_id,
                     "abstained": rag_result.abstained, "citations": source_cards,
                     "evidence": [],
                     "evidence_request_id": request_id,

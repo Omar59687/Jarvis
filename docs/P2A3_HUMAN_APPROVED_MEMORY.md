@@ -2,7 +2,7 @@
 
 ## Lifecycle
 
-Candidate endpoints reuse the existing `MemoryService`; the HTTP layer does not duplicate candidate storage or approval logic. A paired session supplies a server-bound actor and selected workspace. Mutations require exact Host/Origin, same-origin CSRF, current READ and WRITE grants, bounded JSON, and a per-session mutation limit. The core repeats permission checks in its write transactions.
+Candidate endpoints reuse the existing `MemoryService`; the HTTP layer does not duplicate candidate storage or approval logic. A paired session supplies a server-bound actor and selected workspace. Mutations require exact Host/Origin, same-origin CSRF, current READ and WRITE grants, bounded JSON, and a per-session mutation limit. The optional `expected_workspace_id` request field is a stale-tab consistency guard only; the service compares it to the session-bound selection and never treats it as identity or authorization. The core repeats permission checks in its write transactions.
 
 - `POST /api/v1/memory-candidates` creates a pending candidate only after a user submits the editor. Evidence-backed proposals require an unexpired evidence request from the same session and active workspace. Only exact `[D#]` labels from a valid-citation chat response resolve to document IDs. `[M#]`, unknown, repeated, stale, or cross-workspace labels fail. A user-authored proposal must be explicitly marked and cannot include document citation fields.
 - `GET /api/v1/memory-candidates` lists at most 50 pending candidates; `GET /api/v1/memory-candidates/{id}` inspects one pending candidate. Cross-workspace, missing, and unavailable candidate IDs remain indistinguishable.

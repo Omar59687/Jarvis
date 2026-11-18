@@ -52,13 +52,13 @@ $selected
 Invoke-RestMethod -Uri "$base/api/v1/session" -Method Get -WebSession $web
 ```
 
-Expected: the workspace list contains only READ-authorized workspaces; selection returns the chosen ID; session status returns it as active. Then revoke READ permission through the existing trusted database administration workflow and query session status again: the active ID must become `null`, and selecting the revoked workspace must return `workspace_unavailable`. Do not use a client-supplied actor field. The Knowledge Galaxy still labels its synthetic workspace preview as unconnected; this slice does not wire the UI to these APIs.
+Expected: the workspace list contains only READ-authorized workspaces; selection returns the chosen ID; session status returns it as active. Then revoke READ permission through the existing trusted database administration workflow and query session status again: the active ID must become `null`, and selecting the revoked workspace must return `workspace_unavailable`. Do not use a client-supplied actor field. P2-A4 connects the selector to these APIs; the galaxy nodes remain synthetic and are never populated from workspace data.
 
 ## Tests and limits
 
 Focused API integration tests are in `tests/test_m03_p2a_identity.py`. They use a temporary SQLite database, synthetic principals/workspaces, and a deterministic fake generator. They cover session binding, identity spoofing, READ-only listing/selection, cross-workspace denial, CSRF/Origin rejection, permission revocation, no-actor legacy chat behavior, and inconsistent configuration.
 
-Run the verification on Windows from the repository root:
+For P2-A1-only regression verification on Windows from the repository root:
 
 ```powershell
 py -3.14 -m unittest tests.test_m03_p2a_identity tests.test_m03_b1_local_chat tests.test_storage -v

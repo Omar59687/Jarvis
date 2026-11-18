@@ -18,10 +18,13 @@ class FakeProvider:
     def __init__(self, text="The code is Amber-7 [D1]."):
         self.text = text
         self.calls = []
+        self.on_generate = None
 
     def generate(self, prompt, model, *, system_prompt=None, temperature=0.3,
                  max_output_tokens=192):
         self.calls.append((prompt, model, system_prompt, temperature, max_output_tokens))
+        if self.on_generate:
+            self.on_generate()
         return GenerationResult(model, self.text, True)
 
 
@@ -66,6 +69,8 @@ class P2AWorkspaceChatTests(unittest.TestCase):
             headers["Content-Type"] = "application/json"
             if include_csrf:
                 headers["X-Jarvis-CSRF"] = getattr(self, "csrf", "")
+        elif method == "DELETE" and include_csrf:
+            headers["X-Jarvis-CSRF"] = getattr(self, "csrf", "")
         request = Request(f"http://{self.server.expected_host}{path}", data=data,
                           headers=headers, method=method)
         try:
@@ -84,6 +89,9 @@ class P2AWorkspaceChatTests(unittest.TestCase):
         self.assertNotIn(str(self.root_path), body.decode("utf-8"))
         self.assertEqual(self.provider.calls[0][3:], (0.0, 192))
         self.assertIn("untrusted", self.provider.calls[0][2])
+        status, _, body = self.request("GET", f"{API_PREFIX}/memory-candidates")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["candidates"], [])
 
     def test_invalid_citation_is_rejected_and_evidence_status_is_retained(self):
         self.provider.text = "The code is Amber-7 [M1]."
@@ -124,6 +132,7 @@ class P2AWorkspaceChatTests(unittest.TestCase):
         chat = json.loads(chat_body)
         status, _, body = self.request("POST", f"{API_PREFIX}/memory-candidates", {
             "content": "The fictional room code was Amber-7.",
+            "expected_workspace_id": "ws-a",
             "evidence_request_id": chat["evidence_request_id"], "citation_labels": ["D1"],
         })
         self.assertEqual(status, 201)
@@ -132,12 +141,13 @@ class P2AWorkspaceChatTests(unittest.TestCase):
 
         stale = {"expected_revision": candidate["revision"],
                  "content_sha256": "0" * 64, "evidence_sha256": candidate["evidence_sha256"],
-                 "confirmed_snapshot": True}
+                 "confirmed_snapshot": True, "expected_workspace_id": "ws-a"}
         status, _, _ = self.request("POST", path + "/approve", stale)
         self.assertEqual(status, 409)
         unconfirmed = {"expected_revision": candidate["revision"],
                        "content_sha256": candidate["content_sha256"],
-                       "evidence_sha256": candidate["evidence_sha256"]}
+                       "evidence_sha256": candidate["evidence_sha256"],
+                       "expected_workspace_id": "ws-a"}
         status, _, body = self.request("POST", path + "/approve", unconfirmed)
         self.assertEqual(status, 400)
         self.assertEqual(json.loads(body)["error"], "explicit_review_required")
@@ -158,13 +168,15 @@ class P2AWorkspaceChatTests(unittest.TestCase):
         _, _, chat_body = self.request("POST", f"{API_PREFIX}/chat", {"message": "room code?"})
         chat = json.loads(chat_body)
         status, _, body = self.request("POST", f"{API_PREFIX}/memory-candidates", {
-            "content": "Draft memory.", "evidence_request_id": chat["evidence_request_id"],
+            "content": "Draft memory.", "expected_workspace_id": "ws-a",
+            "evidence_request_id": chat["evidence_request_id"],
             "citation_labels": ["D1"],
         })
         candidate = json.loads(body)["candidate"]
         path = f"{API_PREFIX}/memory-candidates/{candidate['id']}"
         status, _, body = self.request("PUT", path, {
             "expected_revision": candidate["revision"], "content": "Reviewed memory.",
+            "expected_workspace_id": "ws-a",
             "evidence_request_id": chat["evidence_request_id"], "citation_labels": ["D1"],
         })
         self.assertEqual(status, 200)
@@ -174,7 +186,7 @@ class P2AWorkspaceChatTests(unittest.TestCase):
         old_decision = {"expected_revision": candidate["revision"],
                         "content_sha256": candidate["content_sha256"],
                         "evidence_sha256": candidate["evidence_sha256"],
-                        "confirmed_snapshot": True}
+                        "confirmed_snapshot": True, "expected_workspace_id": "ws-a"}
         status, _, _ = self.request("POST", path + "/approve", old_decision)
         self.assertEqual(status, 409)
 
@@ -188,7 +200,14 @@ class P2AWorkspaceChatTests(unittest.TestCase):
         chat = json.loads(chat_body)
         status, _, body = self.request("POST", f"{API_PREFIX}/memory-candidates", {
             "content": "No M labels may become document provenance.",
+            "expected_workspace_id": "ws-a",
             "evidence_request_id": chat["evidence_request_id"], "citation_labels": ["M1"],
+        })
+        self.assertEqual(status, 400)
+        status, _, body = self.request("POST", f"{API_PREFIX}/memory-candidates", {
+            "content": "Actor identity must come from the session.", "user_authored": True,
+            "expected_workspace_id": "ws-a",
+            "actor_id": "bob",
         })
         self.assertEqual(status, 400)
         status, _, body = self.request("PUT", f"{API_PREFIX}/session/workspace",
@@ -196,24 +215,65 @@ class P2AWorkspaceChatTests(unittest.TestCase):
         self.assertEqual(status, 200)
         status, _, body = self.request("POST", f"{API_PREFIX}/memory-candidates", {
             "content": "WRITE access is required.", "user_authored": True,
+            "expected_workspace_id": "ws-read",
         })
         self.assertEqual(status, 403)
         self.assertEqual(json.loads(body), {"error": "write_permission_required"})
 
+    def test_workspace_change_invalidates_prior_chat_evidence_handles(self):
+        self.db.create_workspace("Second", WorkspaceKind.PROJECT, "bob", "ws-second")
+        self.db.grant_permission("bob", "ws-second", "alice", Permission.READ)
+        self.db.grant_permission("bob", "ws-second", "alice", Permission.WRITE)
+        _, _, chat_body = self.request("POST", f"{API_PREFIX}/chat", {"message": "room code?"})
+        chat = json.loads(chat_body)
+        status, _, body = self.request("PUT", f"{API_PREFIX}/session/workspace",
+                                       {"workspace_id": "ws-second"})
+        self.assertEqual(status, 200)
+        status, _, body = self.request("POST", f"{API_PREFIX}/memory-candidates", {
+            "content": "Cannot cite the prior workspace.",
+            "expected_workspace_id": "ws-second",
+            "evidence_request_id": chat["evidence_request_id"], "citation_labels": ["D1"],
+        })
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error"], "evidence_selection_required")
+
+    def test_workspace_switch_during_generation_discards_old_workspace_answer(self):
+        self.db.create_workspace("Second", WorkspaceKind.PROJECT, "bob", "ws-second")
+        self.db.grant_permission("bob", "ws-second", "alice", Permission.READ)
+        self.db.grant_permission("bob", "ws-second", "alice", Permission.WRITE)
+        started = threading.Event()
+        resume = threading.Event()
+        self.provider.on_generate = lambda: (started.set(), resume.wait(timeout=3))
+        result = []
+        worker = threading.Thread(target=lambda: result.append(
+            self.request("POST", f"{API_PREFIX}/chat", {"message": "room code?"})))
+        worker.start()
+        self.assertTrue(started.wait(timeout=3))
+        status, _, body = self.request("PUT", f"{API_PREFIX}/session/workspace",
+                                       {"workspace_id": "ws-second"})
+        self.assertEqual(status, 200)
+        resume.set()
+        worker.join(timeout=4)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result[0][0], 409)
+        self.assertEqual(json.loads(result[0][2]), {"error": "workspace_selection_changed"})
+
     def test_rejection_is_explicit_authenticated_and_not_replayable(self):
         status, _, body = self.request("POST", f"{API_PREFIX}/memory-candidates", {
             "content": "A user-authored synthetic preference.", "user_authored": True,
+            "expected_workspace_id": "ws-a",
         }, include_csrf=False)
         self.assertEqual(status, 403)
         self.assertEqual(json.loads(body), {"error": "csrf_rejected"})
         status, _, body = self.request("POST", f"{API_PREFIX}/memory-candidates", {
             "content": "A user-authored synthetic preference.", "user_authored": True,
+            "expected_workspace_id": "ws-a",
         })
         candidate = json.loads(body)["candidate"]
         decision = {"expected_revision": candidate["revision"],
                     "content_sha256": candidate["content_sha256"],
                     "evidence_sha256": candidate["evidence_sha256"],
-                    "confirmed_snapshot": True}
+                    "confirmed_snapshot": True, "expected_workspace_id": "ws-a"}
         path = f"{API_PREFIX}/memory-candidates/{candidate['id']}/reject"
         status, _, body = self.request("POST", path, decision)
         self.assertEqual(status, 200)
@@ -221,6 +281,17 @@ class P2AWorkspaceChatTests(unittest.TestCase):
         status, _, body = self.request("POST", path, decision)
         self.assertEqual(status, 409)
         self.assertEqual(json.loads(body)["error"], "candidate_changed")
+
+    def test_workspace_can_be_cleared_to_return_to_general_chat(self):
+        status, _, body = self.request("DELETE", f"{API_PREFIX}/session/workspace")
+        self.assertEqual(status, 200)
+        self.assertIsNone(json.loads(body)["active_workspace_id"])
+        status, _, body = self.request("POST", f"{API_PREFIX}/chat", {"message": "How are you?"})
+        self.assertEqual(status, 200)
+        response = json.loads(body)
+        self.assertEqual(response["reply"], self.provider.text)
+        self.assertNotIn("outcome", response)
+        self.assertIn("no access to the user's memories", self.provider.calls[-1][2])
 
 
 if __name__ == "__main__":

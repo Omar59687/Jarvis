@@ -20,12 +20,11 @@
       <div class="prototype-badge"><span class="status-dot"></span><span data-en="LOCAL CHAT ALPHA · SYNTHETIC GALAXY" data-ar="دردشة محلية تجريبية · مجرة اصطناعية">LOCAL CHAT ALPHA · SYNTHETIC GALAXY</span></div>
 
       <div class="space-picker">
-        <span class="eyebrow" data-en="ACTIVE SPACE" data-ar="المساحة النشطة">ACTIVE SPACE</span>
-        <button class="space-button" type="button" aria-label="Synthetic Atlas workspace">
-          <span class="space-avatar">A</span>
-          <span class="space-copy"><strong data-en="Atlas workspace" data-ar="مساحة أطلس">Atlas workspace</strong><small data-en="Sample · not connected" data-ar="عينة · غير متصلة">Sample · not connected</small></span>
-          <span class="chevron" aria-hidden="true">⌄</span>
-        </button>
+        <label class="eyebrow" for="workspace-select" data-en="ACTIVE WORKSPACE" data-ar="مساحة العمل النشطة">ACTIVE WORKSPACE</label>
+        <select id="workspace-select" class="workspace-select" disabled aria-label="Select an authorized workspace" data-en-aria-label="Select an authorized workspace" data-ar-aria-label="اختر مساحة عمل مصرحًا بها">
+          <option value="" data-en="Pair browser to load workspaces" data-ar="اربط المتصفح لتحميل مساحات العمل">Pair browser to load workspaces</option>
+        </select>
+        <p id="workspace-state" class="hint" role="status" aria-live="polite" data-en="No workspace selected · general chat only" data-ar="لم تُحدد مساحة · دردشة عامة فقط">No workspace selected · general chat only</p>
       </div>
 
       <label class="eyebrow search-label" for="graph-search" data-en="SEARCH SAMPLE GRAPH" data-ar="ابحث في الرسم التجريبي">SEARCH SAMPLE GRAPH</label>
@@ -36,7 +35,7 @@
                aria-describedby="search-hint">
         <kbd>/</kbd>
       </div>
-      <p id="search-hint" class="hint" data-en="Filters this sample only. No workspace search is connected." data-ar="يصفّي هذه العينة فقط. بحث مساحات العمل غير متصل.">Filters this sample only. No workspace search is connected.</p>
+      <p id="search-hint" class="hint" data-en="Filters this synthetic galaxy only. Ask in the command dock to search the selected workspace." data-ar="يصفّي هذه المجرة الاصطناعية فقط. اسأل في شريط الأوامر للبحث في مساحة العمل المحددة.">Filters this synthetic galaxy only. Ask in the command dock to search the selected workspace.</p>
 
       <nav class="primary-nav" aria-label="Prototype navigation">
         <a class="nav-item active" href="#galaxy"><span class="nav-icon" aria-hidden="true">◉</span><span data-en="Knowledge galaxy" data-ar="مجرة المعرفة">Knowledge galaxy</span><span class="nav-count">08</span></a>
@@ -88,6 +87,10 @@
       </div>
       <section id="chat-transcript" class="chat-transcript" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Chat messages" data-en-aria-label="Chat messages" data-ar-aria-label="رسائل الدردشة" hidden></section>
       <p id="chat-status-line" class="chat-status-line" role="status" aria-live="polite" hidden></p>
+      <section id="evidence-panel" class="evidence-panel" aria-label="Answer evidence" data-en-aria-label="Answer evidence" data-ar-aria-label="أدلة الإجابة" hidden>
+        <div class="evidence-heading"><span class="eyebrow" data-en="ANSWER EVIDENCE" data-ar="أدلة الإجابة">ANSWER EVIDENCE</span><span id="evidence-outcome" class="evidence-outcome"></span></div>
+        <div id="citation-list" class="citation-list"></div>
+      </section>
     </main>
 
     <aside id="details-panel" class="details-panel" aria-label="Selected node details">
@@ -112,6 +115,12 @@
         <div id="connection-list" class="connection-list"></div>
         <p class="details-disclaimer" data-en="Connections and descriptions are fictional sample content." data-ar="الروابط والأوصاف محتوى تجريبي خيالي.">Connections and descriptions are fictional sample content.</p>
       </div>
+      <section id="memory-panel" class="memory-panel" aria-labelledby="memory-heading">
+        <div class="memory-heading"><span class="eyebrow" id="memory-heading" data-en="APPROVED MEMORY" data-ar="الذاكرة المعتمدة">APPROVED MEMORY</span><button id="candidate-create-open" class="small-action" type="button" disabled data-en="Propose" data-ar="اقترح">Propose</button></div>
+        <p class="memory-note" data-en="Proposals stay pending until you review and approve them. Chat never writes memories automatically." data-ar="تبقى المقترحات معلّقة حتى تراجعها وتوافق عليها. لا تنشئ الدردشة ذكريات تلقائيًا.">Proposals stay pending until you review and approve them. Chat never writes memories automatically.</p>
+        <div id="pending-candidates" class="pending-candidates" aria-live="polite"></div>
+        <p id="memory-status" class="memory-status" role="status" aria-live="polite"></p>
+      </section>
       <div class="language-control">
         <label class="eyebrow" for="language" data-en="LANGUAGE" data-ar="اللغة">LANGUAGE</label>
         <select id="language" aria-label="Language">
@@ -140,7 +149,7 @@
         <p class="eyebrow pair-eyebrow" data-en="LOCAL SESSION PAIRING" data-ar="ربط الجلسة المحلية">LOCAL SESSION PAIRING</p>
         <h2 id="pair-title" data-en="Connect this browser" data-ar="اربط هذا المتصفح">Connect this browser</h2>
         <p data-en="Enter the one-time code shown in the trusted PowerShell window. It expires after 5 minutes, works once per server launch, and is never saved in this page. Restart the service to pair a new browser later." data-ar="أدخل الرمز لمرة واحدة الظاهر في نافذة PowerShell الموثوقة. تنتهي صلاحيته بعد 5 دقائق ويُستخدم مرة واحدة لكل تشغيل للخدمة ولا تحفظه هذه الصفحة. أعد تشغيل الخدمة لربط متصفح جديد لاحقًا.">Enter the one-time code shown in the trusted PowerShell window. It expires after 5 minutes, works once per server launch, and is never saved in this page. Restart the service to pair a new browser later.</p>
-        <p data-en="Chat uses only the locally configured model. No memory, workspace, file, browser, or tool access is connected." data-ar="تستخدم الدردشة النموذج المحلي الذي تم ضبطه فقط. لا يوجد اتصال بالذاكرة أو مساحات العمل أو الملفات أو المتصفح أو الأدوات.">Chat uses only the locally configured model. No memory, workspace, file, browser, or tool access is connected.</p>
+        <p data-en="With no workspace selected, chat is general conversation. Selecting an authorized workspace enables document and approved-memory evidence. No tools or external actions are available." data-ar="عند عدم تحديد مساحة، تكون الدردشة عامة. يتيح اختيار مساحة مصرح بها استخدام أدلة المستندات والذكريات المعتمدة. لا تتوفر أدوات أو إجراءات خارجية.">With no workspace selected, chat is general conversation. Selecting an authorized workspace enables document and approved-memory evidence. No tools or external actions are available.</p>
         <form id="pair-form">
           <label for="pair-code" data-en="One-time pairing code" data-ar="رمز الربط لمرة واحدة">One-time pairing code</label>
           <input id="pair-code" type="password" autocomplete="one-time-code" spellcheck="false" required maxlength="128" dir="ltr">
@@ -150,6 +159,29 @@
           </div>
           <p id="pair-error" class="pair-error" role="alert" aria-live="assertive"></p>
         </form>
+      </div>
+    </dialog>
+    <dialog id="candidate-editor-dialog" class="pairing-dialog candidate-dialog" aria-labelledby="candidate-editor-title">
+      <form id="candidate-editor-form" class="pair-card">
+        <p class="eyebrow pair-eyebrow" data-en="PENDING MEMORY CANDIDATE" data-ar="مقترح ذاكرة معلّق">PENDING MEMORY CANDIDATE</p>
+        <h2 id="candidate-editor-title" data-en="Write a memory proposal" data-ar="اكتب مقترح ذاكرة">Write a memory proposal</h2>
+        <p data-en="This creates a pending proposal only. It is not saved as approved memory until a separate review and approval." data-ar="ينشئ هذا مقترحًا معلّقًا فقط. لن يُحفظ كذاكرة معتمدة قبل المراجعة والموافقة المنفصلتين.">This creates a pending proposal only. It is not saved as approved memory until a separate review and approval.</p>
+        <label for="candidate-content" data-en="Proposed memory" data-ar="الذاكرة المقترحة">Proposed memory</label>
+        <textarea id="candidate-content" maxlength="4000" required dir="auto"></textarea>
+        <label class="check-row"><input id="candidate-user-authored" type="checkbox"><span data-en="This is my own note (no document source)" data-ar="هذه ملاحظتي الشخصية (بلا مصدر مستند)">This is my own note (no document source)</span></label>
+        <fieldset id="candidate-sources" class="candidate-sources"><legend data-en="Use active document citations" data-ar="استخدم استشهادات المستندات النشطة">Use active document citations</legend><div id="candidate-source-options"></div></fieldset>
+        <p id="candidate-editor-status" class="chat-status-line" role="status" aria-live="polite"></p>
+        <div class="pair-actions"><button id="candidate-editor-cancel" class="small-action" type="button" data-en="Cancel" data-ar="إلغاء">Cancel</button><button id="candidate-editor-submit" class="pair-button" type="submit" data-en="Save as pending" data-ar="احفظ كمقترح معلّق">Save as pending</button></div>
+      </form>
+    </dialog>
+    <dialog id="candidate-review-dialog" class="pairing-dialog candidate-dialog" aria-labelledby="candidate-review-title">
+      <div class="pair-card">
+        <p class="eyebrow pair-eyebrow" data-en="EXPLICIT HUMAN REVIEW" data-ar="مراجعة بشرية صريحة">EXPLICIT HUMAN REVIEW</p>
+        <h2 id="candidate-review-title" data-en="Review this exact candidate" data-ar="راجع هذا المقترح بعينه">Review this exact candidate</h2>
+        <p id="review-candidate-content" class="review-content" dir="auto"></p>
+        <div id="review-candidate-sources" class="review-sources"></div>
+        <p id="candidate-review-status" class="chat-status-line" role="status" aria-live="polite"></p>
+        <div class="pair-actions"><button id="candidate-review-close" class="small-action" type="button" data-en="Close" data-ar="إغلاق">Close</button><button id="candidate-reject" class="small-action reject-action" type="button" data-en="Reject" data-ar="ارفض">Reject</button><button id="candidate-approve" class="pair-button" type="button" data-en="Approve this version" data-ar="وافق على هذه النسخة">Approve this version</button></div>
       </div>
     </dialog>
   </div>

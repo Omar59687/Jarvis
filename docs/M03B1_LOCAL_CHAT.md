@@ -10,7 +10,7 @@
 - Accept a single message and return one response from the explicitly selected, already-installed `gemma3:4b` through `jarvis_core.ollama.OllamaClient`.
 - Keep all session state and displayed chat in process/browser memory. The next request does not include previous turns; no conversation is persisted.
 
-The chat prompt describes general conversation only. It explicitly says the model has no access to memories, workspaces, files, browser, tools, or the wider computer. The service has no retrieval, SQLite, memory creation, workspace authorization, cloud provider, Tauri bridge, filesystem action, voice, or tool execution route. Do not interpret this alpha as a working knowledge assistant.
+In the M03-B1 baseline, the chat prompt described general conversation only and the service had no retrieval or workspace authorization. P2-A adds a separately selected workspace path to this service; see [P2-A2](P2A2_EVIDENCE_CHAT.md) and [P2-A4](P2A4_CONNECTED_UI.md). General chat still tells the model it has no memory, workspace, file, browser, tool, or wider-computer access. This alpha adds no cloud provider, Tauri bridge, filesystem action, voice, or tool execution route.
 
 ## Windows launch and pairing
 

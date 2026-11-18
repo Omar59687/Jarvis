@@ -23,6 +23,42 @@
 .pair-card p { color: var(--muted); font-size: 13px; line-height: 1.55; }
 .pair-card label { display: block; margin: 20px 0 7px; color: #b8c8da; font-size: 12px; }
 .pair-card input { width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: #080e18; font: 13px ui-monospace, Consolas, monospace; }
+.workspace-select { width: 100%; min-height: 40px; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: #101927; font-size: 13px; }
+.details-panel { min-height: 0; overflow-y: auto; }
+.command-dock .chat-form input { font-size: 14px; }
+.workspace-select:disabled { opacity: .62; }
+.evidence-panel { margin-top: 14px; padding: 12px; border: 1px solid rgba(114,221,244,.14); border-radius: 8px; background: rgba(9,16,26,.82); }
+.evidence-panel[hidden] { display: none; }
+.evidence-heading,.memory-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.evidence-outcome { color: var(--muted); font-size: 12px; }
+.citation-list { display: grid; gap: 8px; margin-top: 8px; }
+.citation-card { padding: 9px 10px; border-inline-start: 2px solid rgba(114,221,244,.56); background: rgba(255,255,255,.025); }
+.citation-meta { display: flex; flex-wrap: wrap; gap: 8px; color: #a7bfd2; font-size: 12px; }
+.citation-path { color: var(--cyan); direction: ltr; unicode-bidi: isolate; overflow-wrap: anywhere; }
+.citation-excerpt { margin: 6px 0 0; color: #cbd8e7; font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.memory-panel { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--line); }
+.memory-note { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.small-action { min-height: 34px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; color: #c4d5e5; background: rgba(255,255,255,.04); font-size: 13px; }
+.small-action:disabled,.pair-button:disabled { cursor: not-allowed; opacity: .48; }
+.reject-action { color: #ffb4c0; border-color: rgba(250,143,168,.3); }
+.pending-candidates { display: grid; gap: 9px; margin-top: 12px; }
+.candidate-card { padding: 10px; border: 1px solid var(--line); border-radius: 7px; background: rgba(255,255,255,.025); }
+.candidate-card p { color: #d6e3f0; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.candidate-card textarea,.candidate-dialog textarea { width: 100%; min-height: 90px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: #080e18; font: inherit; line-height: 1.5; resize: vertical; }
+.candidate-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+.memory-status { min-height: 18px; color: var(--muted); font-size: 12px; }
+.candidate-dialog { max-height: min(88vh, 780px); overflow-y: auto; }
+.candidate-dialog .pair-card { padding: 22px; }
+.candidate-dialog textarea { min-height: 130px; margin-bottom: 12px; }
+.candidate-dialog label:not(.check-row) { display: block; margin: 15px 0 7px; color: #b8c8da; font-size: 13px; }
+.candidate-sources { margin: 13px 0; padding: 10px; border: 1px solid var(--line); border-radius: 6px; }
+.candidate-sources legend { color: #b8c8da; font-size: 13px; }
+.source-option,.check-row { display: flex; align-items: flex-start; gap: 8px; margin: 8px 0; color: #cbd8e7; font-size: 13px; line-height: 1.45; }
+.source-option input,.check-row input { flex: none; margin-top: 3px; accent-color: #72ddf4; }
+.review-content { padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: rgba(255,255,255,.025); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+.review-source { margin: 8px 0; color: #cbd8e7; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.chat-state[data-state="checking"] i { background: #8295aa; }
+.chat-state[data-state="unavailable"] i { background: #fa8fa8; }
 .pair-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
 .pair-error { min-height: 20px; margin: 12px 0 0; color: #ffabba !important; font-size: 12px !important; }
 .chat-status-line { min-height: 17px; color: var(--muted); font-size: 11px; }
@@ -31,6 +67,10 @@ html[dir="rtl"] .chat-state, html[dir="rtl"] .chat-signout,
 html[dir="rtl"] .chat-form button, html[dir="rtl"] .pair-card label,
 html[dir="rtl"] .pair-error, html[dir="rtl"] .chat-status-line { font-size: 12px; letter-spacing: 0; }
 html[dir="rtl"] .pair-card h2 { font-size: 23px; }
+html[dir="rtl"] .workspace-select, html[dir="rtl"] .memory-note,
+html[dir="rtl"] .small-action, html[dir="rtl"] .candidate-card p,
+html[dir="rtl"] .citation-meta, html[dir="rtl"] .citation-excerpt,
+html[dir="rtl"] .candidate-dialog label, html[dir="rtl"] .review-source { font-size: 14px; letter-spacing: 0; line-height: 1.55; }
 @media (max-width: 760px) {
   .chat-transcript { max-height: 210px; }
   .command-dock { align-items: stretch; }
@@ -43,4 +83,5 @@ html[dir="rtl"] .pair-card h2 { font-size: 23px; }
   .chat-form { flex-wrap: wrap; }
   .chat-form input { flex-basis: 100%; }
   .dock-copy { min-width: 0; }
+  .candidate-dialog .pair-card { padding: 17px; }
 }

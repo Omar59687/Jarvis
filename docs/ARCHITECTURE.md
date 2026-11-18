@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Proposed Architecture
 
-**Status:** the logical product architecture below remains proposed. The stated baseline implements M01-A through M01-E, M02-A through M02-D, Q01, and an M03-A synthetic visual prototype. This branch starts from the P2-A design commit and implements only P2-A1 trusted session identity and workspace list/select APIs. No production desktop, connected workspace UI, retrieval integration, voice, or external integration is implemented. See [M03-B2](M03B2_LOCAL_PROVIDER.md), [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md), and [P2-A1 implementation notes](P2A1_TRUSTED_WORKSPACE_SESSION.md).
+**Status:** the logical product architecture below remains proposed. The stated baseline implements M01-A through M01-E, M02-A through M02-D, Q01, M03-A, and P2-A1. This branch implements P2-A2/A3/A4: one-workspace evidence-backed chat, pending memory lifecycle with explicit human decisions, and a connected English/Arabic UI. It remains a loopback development alpha, not a production desktop or multi-user dashboard. See [M03-B2](M03B2_LOCAL_PROVIDER.md), [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md), and the [P2-A4 implementation and Windows smoke steps](P2A4_CONNECTED_UI.md).
 
 ## 1. Architecture goals
 
@@ -84,7 +84,7 @@ The signing context verifies that a trusted host issued a decision for the exact
 
 ## 8. Security and privacy requirements for implementation
 
-M03-B2 extends the M03-B1 single-turn alpha with a provider-neutral generation contract and explicit Ollama/Bionic adapters. Loopback binding, exact Host and Origin checks, terminal one-time pairing, process-local cookie sessions, CSRF, bounded requests, and generic error handling remain in the service. Provider HTTP accepts numeric loopback destinations only, disables proxies, and rejects redirects. P2-A1 adds an optional explicitly configured server principal, session binding, and permission-checked workspace list/select APIs; it does not connect general chat to a workspace or expose retrieval/memory operations. The prototype uses plain HTTP on numeric loopback and is not a production multi-user authentication design. See [P2-A1](P2A1_TRUSTED_WORKSPACE_SESSION.md) for configuration and verification.
+M03-B2 extends the M03-B1 single-turn alpha with a provider-neutral generation contract and explicit Ollama/Bionic adapters. Loopback binding, exact Host and Origin checks, terminal one-time pairing, process-local cookie sessions, CSRF, bounded requests, and generic error handling remain in the service. Provider HTTP accepts numeric loopback destinations only, disables proxies, and rejects redirects. P2-A binds the configured server principal to the paired session, applies permission-filtered document and approved-memory RAG, and exposes pending-memory operations that recheck READ/WRITE in core services. The prototype uses plain HTTP on numeric loopback and is not a production multi-user authentication design. See [P2-A1](P2A1_TRUSTED_WORKSPACE_SESSION.md), [P2-A2](P2A2_EVIDENCE_CHAT.md), [P2-A3](P2A3_HUMAN_APPROVED_MEMORY.md), and [P2-A4](P2A4_CONNECTED_UI.md).
 
 - Bind the local service to loopback by default. Do not assume a local port is secret or trusted.
 - Use per-install random session tokens or equivalent protection for browser clients; protect against cross-site requests and hostile origins.
@@ -98,7 +98,7 @@ M03-B2 extends the M03-B1 single-turn alpha with a provider-neutral generation c
 
 ### P2-A proposal: one-workspace memory chat
 
-The P2-A architecture proposes binding a paired browser session to a server-configured principal, selecting one workspace only after `Database` READ authorization, and calling the existing document and approved-memory search/RAG services. P2-A1 implements only the trusted identity and workspace selection foundation. Retrieval/RAG, evidence UI, candidate proposals, and explicit memory approval are still unimplemented; see [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md), [acceptance/test plan](P2A_ACCEPTANCE_AND_TEST_PLAN.md), and [P2-A1 implementation notes](P2A1_TRUSTED_WORKSPACE_SESSION.md).
+P2-A implements the selected one-workspace path: the service reads actor/workspace only from its paired session, calls the existing READ-checked document and approved-memory services, validates issued citations, and drops factual model text when validation fails. Candidate proposals remain pending until an authenticated user edits/reviews a snapshot and separately approves or rejects it. The chat UI is single-turn and page-memory-only; no model action can write memory. See [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md), [acceptance/test plan](P2A_ACCEPTANCE_AND_TEST_PLAN.md), and implementation notes [A1](P2A1_TRUSTED_WORKSPACE_SESSION.md), [A2](P2A2_EVIDENCE_CHAT.md), [A3](P2A3_HUMAN_APPROVED_MEMORY.md), and [A4](P2A4_CONNECTED_UI.md).
 
 ## 9. Proposed component diagram
 

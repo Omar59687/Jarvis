@@ -21,6 +21,21 @@ const pairSubmit = $("#pair-submit");
 const pairError = $("#pair-error");
 const pairStatus = $("#pair-status");
 const signOut = $("#chat-signout");
+const workspaceSelect = $("#workspace-select");
+const workspaceState = $("#workspace-state");
+const evidencePanel = $("#evidence-panel");
+const citationList = $("#citation-list");
+const evidenceOutcome = $("#evidence-outcome");
+const createCandidateOpen = $("#candidate-create-open");
+const candidateEditorDialog = $("#candidate-editor-dialog");
+const candidateReviewDialog = $("#candidate-review-dialog");
+const candidateEditorForm = $("#candidate-editor-form");
+const candidateContent = $("#candidate-content");
+const candidateUserAuthored = $("#candidate-user-authored");
+const candidateSources = $("#candidate-sources");
+const candidateSourceOptions = $("#candidate-source-options");
+const pendingCandidates = $("#pending-candidates");
+const memoryStatus = $("#memory-status");
 let language = "en";
 let selectedId = null;
 let visibleIds = searchNodeIds(NODES, "", language);
@@ -32,6 +47,12 @@ let configuredModel = null;
 let configuredProvider = null;
 let sending = false;
 let chatStateKey = "checking";
+let activeWorkspaceId = null;
+let workspaceServiceUnavailable = false;
+let latestEvidenceRequestId = null;
+let latestCitations = [];
+let reviewCandidate = null;
+let latestEvidenceResponse = null;
 
 const CHAT_STATUS = {
   checking: ["Checking local session…", "جارٍ التحقق من الجلسة المحلية…"],
@@ -40,6 +61,7 @@ const CHAT_STATUS = {
   sending: ["Waiting for the configured local model…", "بانتظار النموذج المحلي المضبوط…"],
   unavailable: ["Local chat service is unavailable", "خدمة الدردشة المحلية غير متاحة"],
   expired: ["Local session expired · pair again", "انتهت الجلسة المحلية · أعد الربط"],
+  restart_required: ["Session ended · restart the service to pair again", "انتهت الجلسة · أعد تشغيل الخدمة للربط مجددًا"],
   failed: ["Chat request failed · no data was saved", "فشل طلب الدردشة · لم تُحفظ البيانات"]
 };
 const CHAT_ERRORS = {
@@ -49,6 +71,21 @@ const CHAT_ERRORS = {
   rate_limited: ["Too many requests. Wait a moment before sending another message.", "طلبات كثيرة. انتظر قليلًا قبل إرسال رسالة أخرى."],
   chat_in_progress: ["A local response is already being generated.", "يجري إنشاء رد محلي بالفعل."],
   generation_failed: ["The local model could not complete this request.", "تعذر على النموذج المحلي إكمال هذا الطلب."],
+  workspace_unavailable: ["This workspace is no longer available to this account. Choose another workspace.", "لم تعد مساحة العمل متاحة لهذا الحساب. اختر مساحة أخرى."],
+  workspace_selection_required: ["Choose a workspace or use general chat.", "اختر مساحة عمل أو استخدم الدردشة العامة."],
+  workspace_selection_changed: ["Workspace selection changed while this request was running. Send it again in the selected workspace.", "تغيّر اختيار مساحة العمل أثناء تنفيذ الطلب. أرسله مجددًا في المساحة المحددة."],
+  evidence_unavailable: ["Workspace evidence is temporarily unavailable.", "أدلة مساحة العمل غير متاحة مؤقتًا."],
+  write_permission_required: ["This workspace does not allow memory changes.", "لا تسمح مساحة العمل هذه بتعديل الذاكرة."],
+  invalid_candidate: ["The memory proposal is invalid or too large.", "مقترح الذاكرة غير صالح أو كبير جدًا."],
+  candidate_rejected: ["The memory proposal was rejected. Check its source and workspace permissions.", "رُفض مقترح الذاكرة. تحقق من مصدره وصلاحيات مساحة العمل."],
+  candidate_unavailable: ["This memory candidate is unavailable.", "مقترح الذاكرة هذا غير متاح."],
+  memory_service_unavailable: ["The memory review service is unavailable.", "خدمة مراجعة الذاكرة غير متاحة."],
+  csrf_rejected: ["The local session check failed. Reload and reconnect.", "فشل التحقق من الجلسة المحلية. أعد التحميل والاتصال."],
+  candidate_changed: ["This candidate changed or is no longer pending. Reload the review list.", "تغيّر هذا المقترح أو لم يعد معلّقًا. أعد تحميل قائمة المراجعة."],
+  explicit_review_required: ["Review the displayed candidate before confirming.", "راجع المقترح المعروض قبل التأكيد."],
+  evidence_selection_invalid: ["Choose active document citations from the latest answer.", "اختر استشهادات مستندات نشطة من أحدث إجابة."],
+  evidence_selection_required: ["Select an active document source or mark this as your own note.", "اختر مصدر مستند نشطًا أو حدّد أنها ملاحظتك الشخصية."],
+  workspace_list_unavailable: ["Workspace authorization is temporarily unavailable. Clear the selection or reload before asking a question.", "تفويض مساحة العمل غير متاح مؤقتًا. امسح الاختيار أو أعد التحميل قبل طرح سؤال."],
   default: ["The request was rejected. Reload this page and pair again if needed.", "رُفض الطلب. أعد تحميل الصفحة وأعد الربط إذا لزم الأمر."]
 };
 
@@ -77,7 +114,17 @@ function applyLanguage(next) {
   renderDetails();
   renderFallback();
   setChatState(chatStateKey, chatState.dataset.state || "checking");
-  setStatusLine(chatStatusLine.textContent, chatStatusLine.classList.contains("error"));
+  if (workspaceState.dataset[language]) workspaceState.textContent = workspaceState.dataset[language];
+  if (chatStatusLine.dataset.en || chatStatusLine.dataset.ar) {
+    setStatusLine([chatStatusLine.dataset.en ?? "", chatStatusLine.dataset.ar ?? ""],
+      chatStatusLine.classList.contains("error"));
+  }
+  if (workspaceSelect.options.length && workspaceSelect.options[0].value === "") {
+    workspaceSelect.options[0].textContent = language === "ar" ? "دردشة عامة · بلا مساحة عمل" : "General chat · no workspace";
+  }
+  if (latestEvidenceResponse) renderEvidence(latestEvidenceResponse);
+  if (activeWorkspaceId) loadPendingCandidates();
+  if (memoryStatus.textContent) memoryStatus.textContent = "";
   if (sceneState) sceneState.refreshLabels();
 }
 
@@ -96,9 +143,42 @@ function setChatState(key, state = "checking") {
 }
 
 function setStatusLine(message = "", isError = false) {
+  if (Array.isArray(message)) {
+    chatStatusLine.dataset.en = message[0];
+    chatStatusLine.dataset.ar = message[1];
+    message = message[language === "ar" ? 1 : 0];
+  } else if (message) {
+    chatStatusLine.dataset[language] = message;
+  } else {
+    delete chatStatusLine.dataset.en;
+    delete chatStatusLine.dataset.ar;
+  }
   chatStatusLine.hidden = !message;
   chatStatusLine.textContent = message;
   chatStatusLine.classList.toggle("error", isError);
+}
+
+function setWorkspaceState(en, ar) {
+  workspaceState.dataset.en = en;
+  workspaceState.dataset.ar = ar;
+  workspaceState.textContent = language === "ar" ? ar : en;
+}
+
+function clearEphemeralWorkspaceView() {
+  if (candidateEditorDialog.open) candidateEditorDialog.close();
+  if (candidateReviewDialog.open) candidateReviewDialog.close();
+  reviewCandidate = null;
+  chatTranscript.replaceChildren();
+  chatTranscript.hidden = true;
+  setStatusLine("");
+  citationList.replaceChildren();
+  evidencePanel.hidden = true;
+  latestEvidenceRequestId = null;
+  latestCitations = [];
+  latestEvidenceResponse = null;
+  pendingCandidates.replaceChildren();
+  memoryStatus.textContent = "";
+  createCandidateOpen.disabled = !authenticated || !activeWorkspaceId;
 }
 
 function setPairError(message = "") {
@@ -106,7 +186,7 @@ function setPairError(message = "") {
   pairError.hidden = !message;
 }
 
-function setAuthenticated(value, token = null, model = null, provider = null) {
+function setAuthenticated(value, token = null, model = null, provider = null, showPairing = true) {
   authenticated = Boolean(value);
   csrfToken = authenticated && typeof token === "string" ? token : null;
   configuredModel = authenticated && typeof model === "string" ? model : null;
@@ -114,6 +194,14 @@ function setAuthenticated(value, token = null, model = null, provider = null) {
   chatInput.disabled = !authenticated || sending;
   chatSend.disabled = !authenticated || sending;
   signOut.hidden = !authenticated;
+  workspaceSelect.disabled = !authenticated;
+  if (!authenticated) {
+    activeWorkspaceId = null;
+    workspaceServiceUnavailable = false;
+    workspaceSelect.replaceChildren();
+    clearEphemeralWorkspaceView();
+    setWorkspaceState("Pair this browser to load authorized workspaces.", "اربط هذا المتصفح لتحميل مساحات العمل المصرح بها.");
+  }
   if (authenticated) {
     setChatState("ready", "ready");
     if (pairingDialog.open) pairingDialog.close();
@@ -121,16 +209,28 @@ function setAuthenticated(value, token = null, model = null, provider = null) {
     chatTranscript.replaceChildren();
     chatTranscript.hidden = true;
     setStatusLine("");
-    setChatState("pairing", "checking");
-    if (!pairingDialog.open) pairingDialog.showModal();
-    queueMicrotask(() => pairCode.focus());
+    if (showPairing) {
+      setChatState("pairing", "checking");
+      if (!pairingDialog.open) pairingDialog.showModal();
+      queueMicrotask(() => pairCode.focus());
+    }
   }
+}
+
+function markSessionExpired() {
+  setAuthenticated(false, null, null, null, false);
+  setChatState("restart_required", "error");
+  setStatusLine([
+    "Session expired. Restart the PowerShell service, then reload to pair again.",
+    "انتهت الجلسة. أعد تشغيل خدمة PowerShell ثم أعد تحميل الصفحة للربط مجددًا."
+  ], true);
 }
 
 function appendChatEntry(kind, text) {
   const entry = document.createElement("div");
   entry.className = `chat-entry ${kind}`;
   entry.textContent = text;
+  entry.dir = "auto";
   chatTranscript.append(entry);
   chatTranscript.hidden = false;
   chatTranscript.scrollTop = chatTranscript.scrollHeight;
@@ -142,12 +242,441 @@ function errorMessage(code) {
   return translations[language === "ar" ? 1 : 0];
 }
 
+function outcomeText(outcome) {
+  const text = {
+    valid_citations: ["Sources are linked to this answer.", "المصادر مرتبطة بهذه الإجابة."],
+    no_authorized_evidence: ["No authorized evidence was found; Jarvis abstained.", "لم يُعثر على دليل مصرّح به؛ امتنع جارفس عن الإجابة."],
+    model_abstention: ["The model could not answer from the available evidence.", "لم يتمكن النموذج من الإجابة استنادًا إلى الأدلة المتاحة."],
+    missing_citation: ["The model response was withheld because it had no citation.", "حُجبت إجابة النموذج لأنها لم تتضمن استشهادًا."],
+    invalid_citations: ["The model response was withheld because a citation was invalid.", "حُجبت إجابة النموذج بسبب استشهاد غير صالح."]
+  };
+  const values = text[outcome] ?? ["Workspace answer", "إجابة مساحة العمل"];
+  return values[language === "ar" ? 1 : 0];
+}
+
+function renderEvidence(value = null) {
+  citationList.replaceChildren();
+  latestEvidenceRequestId = value?.evidence_request_id ?? null;
+  latestCitations = Array.isArray(value?.citations) ? value.citations : [];
+  if (!value || typeof value.outcome !== "string") {
+    evidencePanel.hidden = true;
+    return;
+  }
+  evidencePanel.hidden = false;
+  evidenceOutcome.textContent = outcomeText(value.outcome);
+  const sources = value.outcome === "invalid_citations"
+    ? (Array.isArray(value.evidence) ? value.evidence : []) : latestCitations;
+  if (!sources.length) {
+    const empty = document.createElement("p");
+    empty.className = "memory-note";
+    empty.textContent = language === "ar" ? "لا توجد مصادر لعرضها." : "No sources to display.";
+    citationList.append(empty);
+    return;
+  }
+  for (const source of sources) {
+    const card = document.createElement("article");
+    card.className = "citation-card";
+    const meta = document.createElement("div");
+    meta.className = "citation-meta";
+    const label = document.createElement("strong");
+    label.textContent = `[${source.label ?? "?"}]`;
+    const kind = document.createElement("span");
+    const isMemory = source.type === "memory";
+    kind.textContent = isMemory
+      ? (language === "ar" ? "ذاكرة معتمدة" : "Approved memory")
+      : (language === "ar" ? "مستند نشط" : "Active document");
+    meta.append(label, kind);
+    if (source.source_status) {
+      const status = document.createElement("span");
+      const statuses = {
+        historical_sources: language === "ar" ? "مصدر تاريخي" : "Historical source",
+        active_sources: language === "ar" ? "مصدر نشط" : "Active source",
+        active_document: language === "ar" ? "مستند نشط" : "Active document",
+        user_authored: language === "ar" ? "مكتوبة من المستخدم" : "User-authored"
+      };
+      status.textContent = statuses[source.source_status] ?? source.source_status;
+      meta.append(status);
+    }
+    if (source.relative_path) {
+      const path = document.createElement("span");
+      path.className = "citation-path";
+      path.dir = "ltr";
+      path.textContent = source.relative_path;
+      meta.append(path);
+    }
+    card.append(meta);
+    if (source.excerpt) {
+      const excerpt = document.createElement("p");
+      excerpt.className = "citation-excerpt";
+      excerpt.dir = "auto";
+      excerpt.textContent = source.excerpt;
+      card.append(excerpt);
+    }
+    for (const linked of source.memory_sources ?? []) {
+      const provenance = document.createElement("p");
+      provenance.className = "citation-excerpt";
+      provenance.textContent = `${language === "ar" ? "لقطة المصدر" : "Source snapshot"}: ${linked.relative_path ?? ""}`;
+      provenance.dir = "auto";
+      card.append(provenance);
+    }
+    citationList.append(card);
+  }
+}
+
+async function loadPendingCandidates() {
+  pendingCandidates.replaceChildren();
+  if (!authenticated || !activeWorkspaceId) return;
+  try {
+    const response = await fetch("/api/v1/memory-candidates", { credentials: "same-origin", cache: "no-store" });
+    const value = await responseJson(response);
+    if (response.status === 401) {
+      markSessionExpired();
+      return;
+    }
+    if (!response.ok || !Array.isArray(value.candidates)) throw new Error(value.error || "candidate_unavailable");
+    if (value.workspace_id !== activeWorkspaceId) {
+      await restoreSession();
+      return;
+    }
+    if (!value.candidates.length) {
+      const empty = document.createElement("p");
+      empty.className = "memory-note";
+      empty.textContent = language === "ar" ? "لا توجد مقترحات معلّقة." : "No pending proposals.";
+      pendingCandidates.append(empty);
+      return;
+    }
+    for (const candidate of value.candidates) renderCandidateCard(candidate);
+  } catch (error) {
+    memoryStatus.textContent = errorMessage(error.message);
+    if (error.message === "workspace_unavailable") {
+      activeWorkspaceId = null;
+      clearEphemeralWorkspaceView();
+      await loadWorkspaces(null).catch(() => {});
+    }
+  }
+}
+
+function renderCandidateCard(candidate) {
+  if (!candidate || typeof candidate.id !== "string" || typeof candidate.content !== "string") return;
+  const card = document.createElement("article");
+  card.className = "candidate-card";
+  const content = document.createElement("p");
+  content.dir = "auto";
+  content.textContent = candidate.content;
+  card.append(content);
+  const meta = document.createElement("p");
+  meta.className = "memory-note";
+  meta.textContent = `${candidate.provenance_kind} · ${language === "ar" ? "الإصدار" : "revision"} ${candidate.revision}`;
+  card.append(meta);
+  for (const source of candidate.evidence ?? []) {
+    const path = document.createElement("p");
+    path.className = "citation-path";
+    path.dir = "ltr";
+    path.textContent = source.relative_path;
+    card.append(path);
+  }
+  const actions = document.createElement("div");
+  actions.className = "candidate-actions";
+  const review = document.createElement("button");
+  review.type = "button";
+  review.className = "small-action";
+  review.textContent = language === "ar" ? "راجع" : "Review";
+  review.addEventListener("click", () => openCandidateReview(candidate.id));
+  const edit = document.createElement("button");
+  edit.type = "button";
+  edit.className = "small-action";
+  edit.textContent = language === "ar" ? "حرّر" : "Edit";
+  edit.addEventListener("click", () => showCandidateEditor(card, candidate));
+  actions.append(edit, review);
+  card.append(actions);
+  pendingCandidates.append(card);
+}
+
+function showCandidateEditor(card, candidate) {
+  const form = document.createElement("form");
+  form.className = "candidate-edit-form";
+  const textarea = document.createElement("textarea");
+  textarea.maxLength = 4000;
+  textarea.required = true;
+  textarea.dir = "auto";
+  textarea.value = candidate.content;
+  const save = document.createElement("button");
+  save.type = "submit";
+  save.className = "small-action";
+  save.textContent = language === "ar" ? "احفظ التعديل" : "Save edit";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "small-action";
+  cancel.textContent = language === "ar" ? "إلغاء" : "Cancel";
+  cancel.addEventListener("click", () => form.remove());
+  form.append(textarea, save, cancel);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    save.disabled = true;
+    try {
+      const response = await fetch(`/api/v1/memory-candidates/${encodeURIComponent(candidate.id)}`, {
+        method: "PUT", credentials: "same-origin", cache: "no-store",
+        headers: { "Content-Type": "application/json", "X-Jarvis-CSRF": csrfToken },
+        body: JSON.stringify({ expected_revision: candidate.revision, content: textarea.value,
+          retain_existing_sources: true, expected_workspace_id: activeWorkspaceId })
+      });
+      const value = await responseJson(response);
+      if (!response.ok) throw new Error(value.error || "candidate_changed");
+      form.remove();
+      await loadPendingCandidates();
+    } catch (error) {
+      memoryStatus.textContent = errorMessage(error.message);
+      save.disabled = false;
+    }
+  });
+  card.append(form);
+  textarea.focus();
+}
+
+async function openCandidateReview(candidateId) {
+  if (!authenticated || !activeWorkspaceId) return;
+  $("#candidate-review-status").textContent = "";
+  try {
+    const response = await fetch(`/api/v1/memory-candidates/${encodeURIComponent(candidateId)}`, {
+      credentials: "same-origin", cache: "no-store"
+    });
+    const value = await responseJson(response);
+    if (!response.ok || !value.candidate) throw new Error(value.error || "candidate_changed");
+    if (value.candidate.workspace_id !== activeWorkspaceId) {
+      await restoreSession();
+      return;
+    }
+    reviewCandidate = value.candidate;
+    $("#review-candidate-content").textContent = reviewCandidate.content;
+    const sources = $("#review-candidate-sources");
+    sources.replaceChildren();
+    const provenance = document.createElement("p");
+    provenance.className = "review-source";
+    provenance.textContent = `${language === "ar" ? "المنشأ" : "Provenance"}: ${reviewCandidate.provenance_kind}`;
+    sources.append(provenance);
+    for (const source of reviewCandidate.evidence ?? []) {
+      const row = document.createElement("p");
+      row.className = "review-source";
+      row.dir = "auto";
+      row.textContent = `${source.relative_path} · ${source.source_sha256.slice(0, 12)}`;
+      sources.append(row);
+    }
+    candidateReviewDialog.showModal();
+    $("#candidate-approve").focus();
+  } catch (error) {
+    memoryStatus.textContent = errorMessage(error.message);
+  }
+}
+
+async function decideCandidate(action) {
+  if (!reviewCandidate || !csrfToken) return;
+  const buttons = [$("#candidate-approve"), $("#candidate-reject")];
+  buttons.forEach((button) => { button.disabled = true; });
+  $("#candidate-review-status").textContent = language === "ar" ? "جارٍ حفظ القرار…" : "Saving your decision…";
+  try {
+    const response = await fetch(`/api/v1/memory-candidates/${encodeURIComponent(reviewCandidate.id)}/${action}`, {
+      method: "POST", credentials: "same-origin", cache: "no-store",
+      headers: { "Content-Type": "application/json", "X-Jarvis-CSRF": csrfToken },
+      body: JSON.stringify({ expected_revision: reviewCandidate.revision,
+        content_sha256: reviewCandidate.content_sha256,
+        evidence_sha256: reviewCandidate.evidence_sha256, confirmed_snapshot: true,
+        expected_workspace_id: activeWorkspaceId })
+    });
+    const value = await responseJson(response);
+    if (!response.ok) throw new Error(value.error || "candidate_changed");
+    candidateReviewDialog.close();
+    reviewCandidate = null;
+    memoryStatus.textContent = action === "approve"
+      ? (language === "ar" ? "تمت الموافقة على الذاكرة." : "Memory approved.")
+      : (language === "ar" ? "رُفض المقترح." : "Proposal rejected.");
+    await loadPendingCandidates();
+  } catch (error) {
+    $("#candidate-review-status").textContent = errorMessage(error.message);
+  } finally {
+    buttons.forEach((button) => { button.disabled = false; });
+  }
+}
+
+function openCandidateEditor() {
+  if (!authenticated || !activeWorkspaceId) return;
+  candidateEditorForm.reset();
+  $("#candidate-editor-status").textContent = "";
+  candidateContent.value = "";
+  const latestAssistant = [...chatTranscript.querySelectorAll(".chat-entry.assistant:not(.pending):not(.error)")].at(-1);
+  if (latestAssistant) candidateContent.value = latestAssistant.textContent.replace(/\[[DM][1-9][0-9]*\]/g, "").trim();
+  candidateSourceOptions.replaceChildren();
+  for (const citation of latestCitations.filter((item) => item.type === "document" && item.label)) {
+    const label = document.createElement("label");
+    label.className = "source-option";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = citation.label;
+    const description = document.createElement("span");
+    description.textContent = `[${citation.label}] ${citation.relative_path ?? citation.document_id ?? ""}`;
+    description.dir = "auto";
+    label.append(checkbox, description);
+    candidateSourceOptions.append(label);
+  }
+  candidateSources.hidden = candidateSourceOptions.childElementCount === 0;
+  candidateEditorDialog.showModal();
+  candidateContent.focus();
+}
+
+async function submitMemoryCandidate(event) {
+  event.preventDefault();
+  if (!authenticated || !activeWorkspaceId || !csrfToken) return;
+  const content = candidateContent.value.trim();
+  const labels = [...candidateSourceOptions.querySelectorAll("input:checked")].map((item) => item.value);
+  const userAuthored = candidateUserAuthored.checked;
+  if (!content || (!userAuthored && (!latestEvidenceRequestId || !labels.length))) {
+    $("#candidate-editor-status").textContent = errorMessage("evidence_selection_required");
+    return;
+  }
+  const submit = $("#candidate-editor-submit");
+  submit.disabled = true;
+  try {
+    const response = await fetch("/api/v1/memory-candidates", {
+      method: "POST", credentials: "same-origin", cache: "no-store",
+      headers: { "Content-Type": "application/json", "X-Jarvis-CSRF": csrfToken },
+      body: JSON.stringify({ content, user_authored,
+        expected_workspace_id: activeWorkspaceId,
+        ...(userAuthored ? {} : { evidence_request_id: latestEvidenceRequestId, citation_labels: labels }) })
+    });
+    const value = await responseJson(response);
+    if (!response.ok) throw new Error(value.error || "candidate_rejected");
+    candidateEditorDialog.close();
+    memoryStatus.textContent = language === "ar"
+      ? "أُنشئ مقترح معلّق. راجعه قبل الموافقة."
+      : "Pending proposal created. Review it before approval.";
+    await loadPendingCandidates();
+  } catch (error) {
+    $("#candidate-editor-status").textContent = errorMessage(error.message);
+  } finally {
+    submit.disabled = false;
+  }
+}
+
 async function responseJson(response) {
   try {
     const value = await response.json();
     return value && typeof value === "object" && !Array.isArray(value) ? value : {};
   } catch (_error) {
     return {};
+  }
+}
+
+async function loadWorkspaces(preferredWorkspaceId = null) {
+  workspaceSelect.disabled = true;
+  const response = await fetch("/api/v1/workspaces", { credentials: "same-origin", cache: "no-store" });
+  const value = await responseJson(response);
+  if (response.status === 401) {
+    markSessionExpired();
+    return;
+  }
+  if (response.status === 503) {
+    const general = document.createElement("option");
+    general.value = "";
+    general.textContent = language === "ar" ? "دردشة عامة · بلا مساحة عمل" : "General chat · no workspace";
+    workspaceSelect.replaceChildren(general);
+    workspaceSelect.disabled = false;
+    if (typeof preferredWorkspaceId === "string" && preferredWorkspaceId) {
+      const unavailable = document.createElement("option");
+      unavailable.value = preferredWorkspaceId;
+      unavailable.textContent = language === "ar" ? "المساحة النشطة · تعذر التحقق" : "Active workspace · authorization unavailable";
+      workspaceSelect.append(unavailable);
+      workspaceSelect.value = preferredWorkspaceId;
+      activeWorkspaceId = preferredWorkspaceId;
+      workspaceServiceUnavailable = true;
+      clearEphemeralWorkspaceView();
+      createCandidateOpen.disabled = true;
+      chatInput.disabled = true;
+      chatSend.disabled = true;
+      setWorkspaceState("Workspace authorization is unavailable. Clear the selection or reload before asking.", "تفويض مساحة العمل غير متاح. امسح الاختيار أو أعد التحميل قبل السؤال.");
+    } else {
+      workspaceSelect.value = "";
+      activeWorkspaceId = null;
+      workspaceServiceUnavailable = false;
+      chatInput.disabled = !authenticated;
+      chatSend.disabled = !authenticated;
+      createCandidateOpen.disabled = true;
+      setWorkspaceState("Workspace APIs are unavailable. General chat remains available.", "واجهات مساحات العمل غير متاحة. تظل الدردشة العامة متاحة.");
+    }
+    return;
+  }
+  if (!response.ok || !Array.isArray(value.workspaces)) throw new Error("workspace_list_unavailable");
+  const general = document.createElement("option");
+  general.value = "";
+  general.textContent = language === "ar" ? "دردشة عامة · بلا مساحة عمل" : "General chat · no workspace";
+  workspaceSelect.replaceChildren(general);
+  for (const workspace of value.workspaces) {
+    if (!workspace || typeof workspace.id !== "string" || typeof workspace.name !== "string") continue;
+    const option = document.createElement("option");
+    option.value = workspace.id;
+    option.textContent = workspace.name;
+    option.dir = "auto";
+    workspaceSelect.append(option);
+  }
+  const previousWorkspaceId = activeWorkspaceId;
+  const selected = typeof preferredWorkspaceId === "string"
+    && [...workspaceSelect.options].some((option) => option.value === preferredWorkspaceId)
+    ? preferredWorkspaceId : "";
+  workspaceSelect.value = selected;
+  workspaceSelect.disabled = false;
+  if (previousWorkspaceId !== (selected || null)) clearEphemeralWorkspaceView();
+  activeWorkspaceId = selected || null;
+  workspaceServiceUnavailable = false;
+  chatInput.disabled = !authenticated || sending;
+  chatSend.disabled = !authenticated || sending;
+  createCandidateOpen.disabled = !activeWorkspaceId;
+  if (activeWorkspaceId) {
+    setWorkspaceState("Workspace evidence and approved memories are enabled.", "أدلة مساحة العمل والذكريات المعتمدة مفعّلة.");
+    await loadPendingCandidates();
+  } else {
+    setWorkspaceState("No workspace selected · general chat only", "لم تُحدد مساحة · دردشة عامة فقط");
+    pendingCandidates.replaceChildren();
+  }
+}
+
+async function selectWorkspace() {
+  if (!authenticated || !csrfToken || sending) return;
+  workspaceSelect.disabled = true;
+  const selected = workspaceSelect.value;
+  try {
+    const response = await fetch(selected ? "/api/v1/session/workspace" : "/api/v1/session/workspace", {
+      method: selected ? "PUT" : "DELETE", credentials: "same-origin", cache: "no-store",
+      headers: selected
+        ? { "Content-Type": "application/json", "X-Jarvis-CSRF": csrfToken }
+        : { "X-Jarvis-CSRF": csrfToken },
+      ...(selected ? { body: JSON.stringify({ workspace_id: selected }) } : {})
+    });
+    const value = await responseJson(response);
+    if (response.status === 401) {
+      markSessionExpired();
+      return;
+    }
+    if (!response.ok) throw new Error(value.error || "workspace_unavailable");
+    activeWorkspaceId = selected || null;
+    workspaceServiceUnavailable = false;
+    clearEphemeralWorkspaceView();
+    chatInput.disabled = !authenticated || sending;
+    chatSend.disabled = !authenticated || sending;
+    if (activeWorkspaceId) {
+      setWorkspaceState("Workspace evidence and approved memories are enabled.", "أدلة مساحة العمل والذكريات المعتمدة مفعّلة.");
+      createCandidateOpen.disabled = false;
+      await loadPendingCandidates();
+    } else {
+      setWorkspaceState("General chat only · no workspace is selected.", "دردشة عامة فقط · لم تُحدد مساحة عمل.");
+    }
+  } catch (error) {
+    if (error.message === "workspace_selection_changed") {
+      await restoreSession();
+    } else {
+      setStatusLine(CHAT_ERRORS[error.message] ?? CHAT_ERRORS.default, true);
+      if (error.message === "workspace_unavailable") activeWorkspaceId = null;
+      await loadWorkspaces(activeWorkspaceId).catch(() => {});
+    }
+  } finally {
+    workspaceSelect.disabled = !authenticated;
   }
 }
 
@@ -168,8 +697,11 @@ async function restoreSession() {
       throw new Error("session_unavailable");
     }
     setAuthenticated(true, value.csrf_token, value.model, value.provider);
+    chatInput.disabled = true;
+    chatSend.disabled = true;
+    await loadWorkspaces(value.active_workspace_id);
   } catch (_error) {
-    setAuthenticated(false);
+    setAuthenticated(false, null, null, null, false);
     setChatState("unavailable", "error");
     setPairError(language === "ar" ? "تعذر الاتصال بخدمة جارفس المحلية. تحقق من نافذة PowerShell." : "Could not reach the local Jarvis service. Check the PowerShell window.");
   }
@@ -204,6 +736,9 @@ async function pairBrowser(event) {
       throw new Error("pairing_unavailable");
     }
     setAuthenticated(true, value.csrf_token, value.model, value.provider);
+    chatInput.disabled = true;
+    chatSend.disabled = true;
+    await loadWorkspaces(null);
     chatInput.focus();
   } catch (_error) {
     setPairError(language === "ar" ? "تعذر الاتصال بالخدمة المحلية." : "Could not connect to the local service.");
@@ -214,19 +749,20 @@ async function pairBrowser(event) {
 
 async function sendChat(event) {
   event.preventDefault();
-  if (!authenticated || sending || !csrfToken) return;
+  if (!authenticated || sending || !csrfToken || workspaceServiceUnavailable) return;
   const message = chatInput.value.trim();
   if (!message || message.length > 1000) return;
   sending = true;
   chatInput.disabled = true;
   chatSend.disabled = true;
+  workspaceSelect.disabled = true;
   setChatState("sending", "busy");
   setStatusLine("");
   appendChatEntry("user", message);
   const pending = appendChatEntry("assistant pending", language === "ar" ? "جارٍ إنشاء رد محلي…" : "Generating a local response…");
   chatInput.value = "";
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 150000);
+  const timeout = setTimeout(() => controller.abort(), 310000);
   try {
     const response = await fetch("/api/v1/chat", {
       method: "POST", credentials: "same-origin", cache: "no-store", signal: controller.signal,
@@ -236,19 +772,29 @@ async function sendChat(event) {
     const value = await responseJson(response);
     if (response.status === 401) {
       pending.remove();
-      setAuthenticated(false);
-      setChatState("expired", "error");
-      setPairError(language === "ar"
-        ? "انتهت الجلسة. أعد تشغيل الخدمة من PowerShell للحصول على رمز ربط جديد."
-        : "Session expired. Restart the PowerShell service to generate a new pairing code.");
-      setStatusLine(language === "ar" ? "انتهت الجلسة المحلية." : "The local session expired.", true);
+      markSessionExpired();
       return;
     }
     if (!response.ok) {
+      if (value.error === "workspace_selection_changed") {
+        pending.remove();
+        await restoreSession();
+        return;
+      }
       pending.classList.remove("pending");
       pending.classList.add("error");
       pending.textContent = errorMessage(value.error);
       setChatState("failed", "error");
+      if (value.error === "workspace_unavailable") {
+        activeWorkspaceId = null;
+        clearEphemeralWorkspaceView();
+        await loadWorkspaces(null).catch(() => {});
+      }
+      return;
+    }
+    if (activeWorkspaceId && value.workspace_id !== activeWorkspaceId) {
+      pending.remove();
+      await restoreSession();
       return;
     }
     if (value.model !== configuredModel || value.provider !== configuredProvider
@@ -257,6 +803,14 @@ async function sendChat(event) {
     }
     pending.classList.remove("pending");
     pending.textContent = value.reply;
+    if (activeWorkspaceId) {
+      latestEvidenceResponse = value;
+      renderEvidence(value);
+      createCandidateOpen.disabled = !activeWorkspaceId;
+    } else {
+      latestEvidenceResponse = null;
+      renderEvidence(null);
+    }
     setChatState("ready", "ready");
   } catch (error) {
     pending.classList.remove("pending");
@@ -270,6 +824,7 @@ async function sendChat(event) {
     sending = false;
     chatInput.disabled = !authenticated;
     chatSend.disabled = !authenticated;
+    workspaceSelect.disabled = !authenticated;
     if (authenticated) chatInput.focus();
   }
 }
@@ -286,8 +841,10 @@ async function disconnectBrowser() {
     // Clear local UI state even if the best-effort revoke response is lost.
   } finally {
     signOut.disabled = false;
-    setAuthenticated(false);
-    setPairError(language === "ar" ? "رمز الربط لمرة واحدة استُخدم. أعد تشغيل الخدمة لربط متصفح جديد." : "The one-time code was used. Restart the service to pair again.");
+    setAuthenticated(false, null, null, null, false);
+    setChatState("restart_required", "error");
+    setStatusLine(["Session disconnected. Restart the service, then reload to pair again.",
+      "أُبطلت الجلسة. أعد تشغيل الخدمة ثم أعد تحميل الصفحة للربط مجددًا."], true);
   }
 }
 
@@ -548,10 +1105,21 @@ function useFallback() {
 }
 
 languageSelect.addEventListener("change", () => applyLanguage(languageSelect.value));
+workspaceSelect.addEventListener("change", selectWorkspace);
 search.addEventListener("input", updateSearch);
 pairForm.addEventListener("submit", pairBrowser);
 chatForm.addEventListener("submit", sendChat);
 signOut.addEventListener("click", disconnectBrowser);
+createCandidateOpen.addEventListener("click", openCandidateEditor);
+candidateEditorForm.addEventListener("submit", submitMemoryCandidate);
+candidateUserAuthored.addEventListener("change", () => {
+  candidateSources.hidden = candidateUserAuthored.checked || candidateSourceOptions.childElementCount === 0;
+});
+$("#candidate-editor-cancel").addEventListener("click", () => candidateEditorDialog.close());
+$("#candidate-review-close").addEventListener("click", () => candidateReviewDialog.close());
+$("#candidate-approve").addEventListener("click", () => decideCandidate("approve"));
+$("#candidate-reject").addEventListener("click", () => decideCandidate("reject"));
+candidateReviewDialog.addEventListener("close", () => { reviewCandidate = null; });
 pairingDialog.addEventListener("cancel", (event) => event.preventDefault());
 $("#reset-view").addEventListener("click", () => { selectedId = null; renderNodeList(); renderDetails(); renderFallback(); sceneState?.reset(); });
 $("#motion-toggle").addEventListener("click", (event) => {

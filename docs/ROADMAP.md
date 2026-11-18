@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Roadmap
 
-**Status:** M01-A through M01-E, M02-A through M02-D, Q01, and M03-A are in the stated `main` baseline. This branch starts from the P2-A design commit and implements only P2-A1 trusted principal/session binding and workspace listing/selection; later P2-A stages remain unimplemented.
+**Status:** M01-A through M01-E, M02-A through M02-D, Q01, M03-A, and P2-A1 are in the stated baseline. This branch implements the remaining P2-A2/A3/A4 slices as separate commits; no PR or merge is included.
 
 ## Phase gates
 
@@ -27,6 +27,9 @@ For each milestone:
 | M08 | Mission Mode, Proactivity and Reliability | Opt-in proactive suggestions and bounded multi-step missions | Explicit goals, permission policy, budget/time limits, audit, stop control, failure recovery |
 | P2-A | Authenticated Memory and Evidence Chat | Proposed first memory-powered chat using one authorized workspace, citations, and explicit memory approval | Server-derived actor identity; READ/WRITE checks; one-workspace RAG; citation provenance; no transcript persistence; approval snapshot/replay tests |
 | P2-A1 | Trusted Principal and Workspace Session Binding | Bind paired sessions to one explicitly configured principal; expose READ-filtered workspace listing and validated session selection | Identity spoof rejection; exact Host/Origin/CSRF; cross-workspace denial; revocation clears selection; existing chat regressions |
+| P2-A2 | Evidence-backed Chat | Reuse provider-neutral RAG and permission-filtered documents plus approved memories | READ rechecks; strict citation validation; bounded provenance; abstention; no cross-workspace access |
+| P2-A3 | Human-approved Memory | Create editable pending candidates and explicit review/approval/rejection actions | Current WRITE; exact source/content snapshot; explicit UI confirmation; replay/stale/cross-workspace rejection |
+| P2-A4 | Connected Knowledge Galaxy UI | Bind workspace selection, evidence cards, candidate editing/review, and bilingual RTL to the local APIs | Same-origin CSRF; ephemeral transcript; general-chat mode; accessible controls; no automatic model action |
 
 ## Dependency notes
 
@@ -38,4 +41,4 @@ For each milestone:
 
 ## Current state and next task
 
-M01-A through M01-E, M02-A through M02-D, Q01, and M03-A are in the stated `main` baseline. M01's acceptance report retains unresolved cross-workspace consent and other documented limitations; aggregation remains unsupported and denied by default. This feature branch adds P2-A1 API-level trusted session identity and workspace selection; it does not add retrieval, memory integration, account provisioning, or a connected UI selector. P2-A2 onward remains gated for separate approval. See [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md), [P2-A acceptance/test plan](P2A_ACCEPTANCE_AND_TEST_PLAN.md), and [P2-A1 implementation notes](P2A1_TRUSTED_WORKSPACE_SESSION.md).
+M01's acceptance report retains unresolved cross-workspace consent and other documented limitations; aggregation remains unsupported and denied by default. This branch adds one-workspace authenticated evidence chat, explicitly human-approved memory candidates, and a connected bilingual UI. It does not provision accounts, persist conversation history, add tools, or route to cloud models. See the [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md), [acceptance/test plan](P2A_ACCEPTANCE_AND_TEST_PLAN.md), and implementation notes for [A1](P2A1_TRUSTED_WORKSPACE_SESSION.md), [A2](P2A2_EVIDENCE_CHAT.md), [A3](P2A3_HUMAN_APPROVED_MEMORY.md), and [A4](P2A4_CONNECTED_UI.md).
