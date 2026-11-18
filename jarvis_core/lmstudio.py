@@ -18,6 +18,7 @@ from jarvis_core.model_provider import (
     ProviderProtocolError,
     ProviderResponseTooLarge,
     ProviderTimeout,
+    validate_generation_options,
 )
 
 MAX_RESPONSE_BYTES = 2_000_000
@@ -105,7 +106,9 @@ class LMStudioBionicClient:
             raise ProviderConfigurationError("An explicit bounded model identifier is required")
 
     def generate(self, prompt: str, model: str, *, system_prompt: str | None = None,
+                 temperature: float = 0.3,
                  max_output_tokens: int = 192) -> GenerationResult:
+        validate_generation_options(temperature=temperature, max_output_tokens=max_output_tokens)
         self.validate_model(model)
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > MAX_PROMPT_CHARS or "\x00" in prompt:
             raise ProviderConfigurationError("prompt must be non-empty and within the input limit")
@@ -127,7 +130,7 @@ class LMStudioBionicClient:
             "reasoning": self.reasoning,
             "store": False,
             "max_output_tokens": max_output_tokens,
-            "temperature": 0.3,
+            "temperature": float(temperature),
         }
         if system_prompt:
             payload["system_prompt"] = system_prompt

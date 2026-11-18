@@ -25,14 +25,13 @@ SIGNING_KEY = b"synthetic-memory-search-key-with-more-than-32-bytes"
 
 
 class FakeGenerator:
-    allowed_models = frozenset({"synthetic-local:latest"})
-
     def __init__(self, text: str = "Answer [D1] [M1].") -> None:
         self.text = text
         self.calls: list[dict] = []
 
-    def generate(self, prompt, model, *, system_prompt=None, settings=None):
-        self.calls.append({"prompt": prompt, "system_prompt": system_prompt, "settings": settings})
+    def generate(self, prompt, model, *, system_prompt=None, temperature=0.3, max_output_tokens=192):
+        self.calls.append({"prompt": prompt, "system_prompt": system_prompt,
+                           "temperature": temperature, "max_output_tokens": max_output_tokens})
         return GenerationResult(model=model, text=self.text, done=True)
 
 

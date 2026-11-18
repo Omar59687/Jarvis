@@ -1,10 +1,10 @@
 # P2-A1 — Trusted Principal and Workspace Session Binding
 
-**Status:** Implemented on `feature/p2-a1-workspace-session-binding` as a server/API foundation. P2-A1 does not add retrieval, memory writes, or a connected workspace selector to the Knowledge Galaxy UI. P2-A2 and later stages remain unimplemented.
+**Status:** P2-A1 established the server/API foundation. P2-A2 now adds evidence-backed chat; A3 and A4 are tracked in their separate checkpoint documents.
 
 ## Behavior
 
-- The service accepts an optional trusted `actor_id` configuration. When present, it initializes the selected Jarvis SQLite database and binds that configured principal to each newly paired process-local session. The identity is never taken from browser JSON and is never returned to the browser.
+- The service accepts an optional trusted `actor_id` configuration. Workspace mode requires an explicit existing SQLite database (or injected `Database`) and a configured actor with READ access to at least one existing workspace. Startup initializes the schema and fails if that binding cannot be validated. The actor is bound to each newly paired process-local session; the identity is never taken from browser JSON or returned to the browser.
 - `GET /api/v1/workspaces` requires a valid session and returns only `Database.list_workspaces(session.actor_id)`, which filters to READ grants. It returns only workspace ID, display name, and kind.
 - `PUT /api/v1/session/workspace` requires exact Host and Origin, a valid session, CSRF, and bounded JSON. It calls `Database.get_workspace(session.actor_id, workspace_id)` before binding the workspace to that session. Missing and unauthorized IDs share `404 workspace_unavailable`.
 - `GET /api/v1/session` includes `active_workspace_id` or `null`, never actor identity. It rechecks the selected workspace and clears it if READ permission is revoked or the database cannot validate it. Listing also clears a selection absent from the current READ-filtered list.
@@ -28,7 +28,7 @@ py -3.14 -m prototypes.m03_b1.service `
   --database "$env:LOCALAPPDATA\Jarvis\jarvis.sqlite3"
 ```
 
-Replace the principal placeholder with the trusted local principal ID already represented in the selected database's workspace permission rows. The service does not create accounts, grant permissions, pick an owner, or seed workspaces. `--database` is optional when `--actor-id` is provided; it then uses `default_database_path()`. Supplying a database without an actor is rejected. Without `--actor-id`, workspace routes are disabled while M03-B2 chat remains available.
+Replace the principal placeholder with the trusted local principal ID already represented in the selected database's workspace permission rows. The service does not create accounts, grant permissions, pick an owner, or seed workspaces. `--database` is required when `--actor-id` is provided; the service verifies the path already exists and that the actor has READ access. Supplying a database without an actor is rejected. Without `--actor-id`, workspace routes are disabled while M03-B2 general chat remains available.
 
 ## Windows API smoke check
 

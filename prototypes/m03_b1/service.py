@@ -17,7 +17,13 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from jarvis_core.lmstudio import LMStudioBionicClient
-from jarvis_core.storage import AccessDenied, Database, default_database_path
+from jarvis_core.storage import AccessDenied, Database
+from jarvis_core.storage import Permission
+from jarvis_core.retrieval import SearchIndex, SearchIndexUnavailable, FTS5Unavailable
+from jarvis_core.memory import (
+    DecisionContextIssuer, InvalidDecision, LifecycleConflict, MemorySearchUnavailable, MemoryService,
+)
+from jarvis_core.rag import DocumentRAG, InvalidCitationError, IncompleteGenerationError
 from jarvis_core.model_provider import (
     ModelProvider,
     ProviderConnectionError,
@@ -143,6 +149,7 @@ class SessionRecord:
     active_workspace_id: str | None = None
     chat_times: deque[float] = field(default_factory=deque)
     in_flight: bool = False
+    evidence_requests: deque = field(default_factory=deque)
 
 
 class SessionStore:
@@ -271,8 +278,14 @@ class LocalChatServer(ThreadingHTTPServer):
             configured_actor = _trusted_actor_id(actor_id)
             if database is not None and database_path is not None:
                 raise ValueError("provide a database instance or database path, not both")
-            configured_database = database or Database(database_path or default_database_path())
+            if database is None and database_path is None:
+                raise ValueError("workspace mode requires an explicit database path or instance")
+            configured_database = database or Database(database_path)
+            if database_path is not None and (not Path(database_path).is_file()):
+                raise ValueError("configured workspace database must be an existing file")
             configured_database.initialize()
+            if not configured_database.list_workspaces(configured_actor):
+                raise ValueError("configured actor must have READ access to an existing workspace")
         super().__init__((HOST, port), LocalChatHandler)
         actual_port = self.server_address[1]
         self.expected_host = f"{HOST}:{actual_port}"
@@ -282,6 +295,10 @@ class LocalChatServer(ThreadingHTTPServer):
         self.provider_name = provider_name
         self.actor_id = configured_actor
         self.database = configured_database
+        self.search_index = SearchIndex(configured_database) if configured_database else None
+        self.decision_key = secrets.token_bytes(32) if configured_database else None
+        self.memory_service = MemoryService(configured_database, self.decision_key) if configured_database else None
+        self.rag = DocumentRAG(self.search_index, generator) if configured_database else None
         self.pairing = PairingAuthority(code=pairing_code, clock=clock)
         self.sessions = SessionStore(clock=clock)
         self._handler_slots = threading.BoundedSemaphore(MAX_HANDLER_THREADS)
@@ -512,6 +529,12 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                 for workspace in workspaces
             ]})
             return
+        if path == f"{API_PREFIX}/memory-candidates":
+            self._list_memory_candidates()
+            return
+        if path.startswith(f"{API_PREFIX}/memory-candidates/"):
+            self._get_memory_candidate(path.rsplit("/", 1)[-1])
+            return
         static = STATIC_FILES.get(path)
         if static is None:
             self._json(404, {"error": "not_found"})
@@ -525,7 +548,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         self._send(200, body, content_type)
 
     def do_POST(self) -> None:
-        post_body_limit = max(CHAT_MAX_REQUEST_BYTES, PAIR_MAX_REQUEST_BYTES)
+        post_body_limit = max(CHAT_MAX_REQUEST_BYTES, PAIR_MAX_REQUEST_BYTES, 8192)
         if (self._reject_host(discard_body_limit=post_body_limit)
                 or self._reject_origin(discard_body_limit=post_body_limit)):
             return
@@ -538,6 +561,15 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             self._pair()
         elif path == f"{API_PREFIX}/chat":
             self._chat()
+        elif path == f"{API_PREFIX}/memory-candidates":
+            self._propose_memory_candidate()
+        elif path.startswith(f"{API_PREFIX}/memory-candidates/"):
+            candidate_id, _, action = path[len(f"{API_PREFIX}/memory-candidates/"):].partition("/")
+            if action in {"approve", "reject"}:
+                self._decide_memory_candidate(candidate_id, action)
+            else:
+                self._discard_bounded_request_body(8192)
+                self._json(404, {"error": "not_found"})
         else:
             self._discard_bounded_request_body(post_body_limit)
             self._json(404, {"error": "not_found"})
@@ -564,12 +596,21 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         })
 
     def do_PUT(self) -> None:
-        if (self._reject_host(discard_body_limit=WORKSPACE_MAX_REQUEST_BYTES)
-                or self._reject_origin(discard_body_limit=WORKSPACE_MAX_REQUEST_BYTES)):
+        path, _ = self._request_path()
+        body_limit = 8192 if path.startswith(f"{API_PREFIX}/memory-candidates/") else WORKSPACE_MAX_REQUEST_BYTES
+        if (self._reject_host(discard_body_limit=body_limit)
+                or self._reject_origin(discard_body_limit=body_limit)):
             return
         path, query = self._request_path()
-        if query or path != f"{API_PREFIX}/session/workspace":
-            self._discard_bounded_request_body(WORKSPACE_MAX_REQUEST_BYTES)
+        if query:
+            self._discard_bounded_request_body(body_limit)
+            self._json(404, {"error": "not_found"})
+            return
+        if path.startswith(f"{API_PREFIX}/memory-candidates/"):
+            self._edit_memory_candidate(path.rsplit("/", 1)[-1])
+            return
+        if path != f"{API_PREFIX}/session/workspace":
+            self._discard_bounded_request_body(body_limit)
             self._json(404, {"error": "not_found"})
             return
         session_id = self._cookie_session_id()
@@ -636,6 +677,209 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                          "model": self.server.model, "provider": self.server.provider_name},
                    extra_headers={"Set-Cookie": cookie_header})
 
+    def _authenticated_workspace(self, *, write: bool = False):
+        session_id = self._cookie_session_id()
+        record = self.server.sessions.resolve(session_id)
+        if record is None or session_id is None:
+            self._json(401, {"error": "authentication_required"})
+            return None
+        if not _secret_matches(self.headers.get("X-Jarvis-CSRF", ""), record.csrf_token):
+            self._json(403, {"error": "csrf_rejected"})
+            return None
+        if (record.actor_id is None or self.server.database is None
+                or record.active_workspace_id is None):
+            self._json(409, {"error": "workspace_selection_required"})
+            return None
+        try:
+            self.server.database.require_access(record.actor_id, record.active_workspace_id,
+                                                Permission.READ)
+            self.server.database.require_access(record.actor_id, record.active_workspace_id,
+                                                Permission.WRITE if write else Permission.READ)
+        except AccessDenied:
+            self.server.sessions.clear_active_workspace(session_id)
+            self._json(404, {"error": "workspace_unavailable"})
+            return None
+        except Exception:
+            self._json(503, {"error": "workspace_service_unavailable"})
+            return None
+        return session_id, record, record.actor_id, record.active_workspace_id
+
+    @staticmethod
+    def _candidate_payload(candidate) -> dict:
+        return {
+            "id": candidate.id, "workspace_id": candidate.workspace_id,
+            "content": candidate.content, "provenance_kind": candidate.provenance_kind,
+            "revision": candidate.revision, "state": candidate.state,
+            "content_sha256": candidate.content_sha256,
+            "evidence_sha256": candidate.evidence_sha256,
+            "evidence": [{"document_id": item.document_id, "root_id": item.root_id,
+                          "relative_path": item.relative_path, "source_sha256": item.source_sha256,
+                          "observed_at": item.observed_at} for item in candidate.evidence],
+        }
+
+    def _list_memory_candidates(self) -> None:
+        context = self._authenticated_workspace()
+        if context is None:
+            return
+        _, _, actor, workspace = context
+        try:
+            candidates = self.server.memory_service.list_candidates(actor, workspace, limit=50)
+        except Exception:
+            self._json(503, {"error": "memory_service_unavailable"})
+            return
+        self._json(200, {"candidates": [self._candidate_payload(item) for item in candidates]})
+
+    def _get_memory_candidate(self, candidate_id: str) -> None:
+        context = self._authenticated_workspace()
+        if context is None:
+            return
+        _, _, actor, workspace = context
+        try:
+            candidate = self.server.memory_service.inspect_candidate(actor, workspace, candidate_id)
+        except AccessDenied:
+            self._json(404, {"error": "candidate_unavailable"})
+        except LifecycleConflict:
+            self._json(409, {"error": "candidate_changed"})
+        except Exception:
+            self._json(404, {"error": "candidate_unavailable"})
+        else:
+            self._json(200, {"candidate": self._candidate_payload(candidate)})
+
+    def _memory_json(self):
+        value = self._read_json(8192)
+        if value is None:
+            return None
+        if _contains_client_identity(value):
+            self._json(400, {"error": "invalid_request"})
+            return None
+        return value
+
+    def _propose_memory_candidate(self) -> None:
+        context = self._authenticated_workspace(write=True)
+        if context is None:
+            self._discard_bounded_request_body(8192)
+            return
+        session_id, _, actor, workspace = context
+        value = self._memory_json()
+        if value is None:
+            return
+        content = value.get("content")
+        user_authored = value.get("user_authored", False)
+        request_id = value.get("evidence_request_id")
+        labels = value.get("citation_labels", [])
+        if (not isinstance(content, str) or not content.strip() or len(content) > 4000
+                or "\x00" in content or type(user_authored) is not bool
+                or not isinstance(labels, list) or len(labels) > 5
+                or any(not isinstance(item, str) for item in labels)):
+            self._json(400, {"error": "invalid_candidate"})
+            return
+        document_ids = []
+        if user_authored:
+            if labels or request_id is not None:
+                self._json(400, {"error": "invalid_candidate"})
+                return
+        else:
+            now = time.monotonic()
+            self._session_evidence_expired(session_id, now)
+            cache = [entry for entry in self.server.sessions.resolve(session_id).evidence_requests
+                     if entry["expires"] > now and entry["workspace"] == workspace]
+            evidence = next((entry for entry in cache if entry["id"] == request_id), None)
+            if evidence is None or not labels or len(set(labels)) != len(labels):
+                self._json(400, {"error": "evidence_selection_required"})
+                return
+            label_map = evidence["labels"]
+            if any(label not in label_map or not label.startswith("D") for label in labels):
+                self._json(400, {"error": "evidence_selection_invalid"})
+                return
+            document_ids = [label_map[label] for label in labels]
+        try:
+            candidate = self.server.memory_service.propose(
+                actor, workspace, content, evidence_document_ids=document_ids,
+                user_authored=user_authored, request_key=secrets.token_urlsafe(18),
+            )
+        except AccessDenied:
+            self._json(403, {"error": "write_permission_required"})
+        except Exception:
+            self._json(400, {"error": "candidate_rejected"})
+        else:
+            self._json(201, {"candidate": self._candidate_payload(candidate),
+                             "requires_human_review": True})
+
+    def _session_evidence_expired(self, session_id: str, now: float) -> bool:
+        record = self.server.sessions.resolve(session_id)
+        if record is None:
+            return False
+        while record.evidence_requests and record.evidence_requests[0]["expires"] <= now:
+            record.evidence_requests.popleft()
+        return False
+
+    def _edit_memory_candidate(self, candidate_id: str) -> None:
+        context = self._authenticated_workspace(write=True)
+        if context is None:
+            self._discard_bounded_request_body(8192)
+            return
+        _, _, actor, workspace = context
+        value = self._memory_json()
+        if value is None:
+            return
+        try:
+            current = self.server.memory_service.inspect_candidate(actor, workspace, candidate_id)
+            if value.get("expected_revision") != current.revision:
+                raise LifecycleConflict("stale revision")
+            candidate = self.server.memory_service.edit_candidate(
+                actor, workspace, candidate_id, expected_revision=current.revision,
+                content=value.get("content"),
+                evidence_document_ids=[item.document_id for item in current.evidence],
+                user_authored=current.provenance_kind == "user_authored",
+            )
+        except LifecycleConflict:
+            self._json(409, {"error": "candidate_changed"})
+        except AccessDenied:
+            self._json(403, {"error": "write_permission_required"})
+        except Exception:
+            self._json(400, {"error": "candidate_rejected"})
+        else:
+            self._json(200, {"candidate": self._candidate_payload(candidate)})
+
+    def _decide_memory_candidate(self, candidate_id: str, action: str) -> None:
+        context = self._authenticated_workspace(write=True)
+        if context is None:
+            self._discard_bounded_request_body(8192)
+            return
+        _, _, actor, workspace = context
+        value = self._memory_json()
+        if value is None:
+            return
+        try:
+            candidate = self.server.memory_service.inspect_candidate(actor, workspace, candidate_id)
+            expected = (candidate.revision, candidate.content_sha256, candidate.evidence_sha256)
+            supplied = (value.get("expected_revision"), value.get("content_sha256"),
+                        value.get("evidence_sha256"))
+            if supplied != expected:
+                raise LifecycleConflict("reviewed snapshot is stale")
+            decision = DecisionContextIssuer(self.server.decision_key).issue(
+                action="approve_candidate" if action == "approve" else "reject_candidate",
+                actor_id=actor, workspace_id=workspace, resource_id=candidate_id,
+                resource_version=candidate.revision, content_sha256=candidate.content_sha256,
+                evidence_sha256=candidate.evidence_sha256,
+            )
+            if action == "approve":
+                result = self.server.memory_service.approve(actor, workspace, candidate_id, decision)
+            else:
+                self.server.memory_service.reject(actor, workspace, candidate_id, decision)
+                result = None
+        except LifecycleConflict:
+            self._json(409, {"error": "candidate_changed"})
+        except InvalidDecision:
+            self._json(409, {"error": "decision_rejected"})
+        except AccessDenied:
+            self._json(403, {"error": "write_permission_required"})
+        except Exception:
+            self._json(404, {"error": "candidate_unavailable"})
+        else:
+            self._json(200, {"state": "approved" if action == "approve" else "rejected",
+                             "memory_id": result.id if result is not None else None})
+
     def _chat(self) -> None:
         session_id = self._cookie_session_id()
         record = self.server.sessions.resolve(session_id)
@@ -675,10 +919,51 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             self._json(429, {"error": "rate_limited"})
             return
         try:
-            result = self.server.generator.generate(
-                message.strip(), self.server.model, system_prompt=GENERAL_CHAT_SYSTEM_PROMPT,
-                max_output_tokens=192,
-            )
+            if record.active_workspace_id is None:
+                result = self.server.generator.generate(
+                    message.strip(), self.server.model, system_prompt=GENERAL_CHAT_SYSTEM_PROMPT,
+                    max_output_tokens=192,
+                )
+                rag_result = None
+            else:
+                if self.server.rag is None or self.server.memory_service is None:
+                    self._json(503, {"error": "workspace_service_unavailable"})
+                    return
+                workspace_id = record.active_workspace_id
+                actor_id = record.actor_id
+                # Check before retrieval; SearchIndex and MemoryService each check
+                # again before access, and this final check prevents returning an
+                # answer if WRITE/READ permission was revoked during generation.
+                self.server.database.require_access(actor_id, workspace_id, Permission.READ)
+                rag_result = self.server.rag.answer_with_memories(
+                    actor_id, workspace_id, message.strip(), self.server.model,
+                    memory_service=self.server.memory_service,
+                    document_limit=3, memory_limit=3,
+                )
+                self.server.database.require_access(actor_id, workspace_id, Permission.READ)
+                result = None
+        except InvalidCitationError as exc:
+            evidence = exc.evidence
+            self._json(200, {
+                "reply": "I can't return an answer because the model used an invalid citation.",
+                "model": self.server.model, "provider": self.server.provider_name,
+                "outcome": "invalid_citations", "abstained": True,
+                "citations": [{"label": item.citation_id, "type": item.source_type,
+                               "source_status": item.source_status,
+                               "provenance_kind": item.provenance_kind,
+                               "document_id": item.document_id, "memory_id": item.memory_id,
+                               "relative_path": item.relative_path,
+                               "excerpt": item.excerpt[:1200],
+                               "memory_sources": [{"relative_path": source.relative_path}
+                                                  for source in item.memory_evidence]}
+                              for item in evidence],
+                "evidence_request_id": None, "candidate_creation_allowed": False,
+            })
+        except AccessDenied:
+            self.server.sessions.clear_active_workspace(session_id)
+            self._json(404, {"error": "workspace_unavailable"})
+        except (SearchIndexUnavailable, FTS5Unavailable, MemorySearchUnavailable):
+            self._json(503, {"error": "evidence_unavailable"})
         except (ProviderModelUnavailable, OllamaModelUnavailable):
             self._json(503, {"error": "model_not_installed"})
         except (ProviderTimeout, OllamaTimeout):
@@ -691,6 +976,42 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             # Never expose exception details, model output, local paths, or a traceback.
             self._json(502, {"error": "generation_failed"})
         else:
+            if rag_result is not None:
+                request_id = secrets.token_urlsafe(18)
+                label_map = {item.citation_id: item.document_id for item in rag_result.evidence
+                             if item.source_type == "document" and item.document_id}
+                record.evidence_requests.append({
+                    "id": request_id, "workspace": record.active_workspace_id,
+                    "labels": label_map, "expires": time.monotonic() + 600,
+                })
+                while len(record.evidence_requests) > 8:
+                    record.evidence_requests.popleft()
+                evidence_by_label = {item.citation_id: item for item in rag_result.evidence}
+                source_cards = []
+                for citation in rag_result.citations:
+                    evidence = evidence_by_label.get(citation.citation_id)
+                    if evidence is None:
+                        continue
+                    source_cards.append({
+                        "label": citation.citation_id, "type": citation.source_type,
+                        "source_status": citation.source_status,
+                        "provenance_kind": evidence.provenance_kind,
+                        "document_id": citation.document_id,
+                        "memory_id": citation.memory_id,
+                        "relative_path": citation.relative_path,
+                        "excerpt": evidence.excerpt[:1200],
+                        "memory_sources": [{"relative_path": source.relative_path,
+                                            "source_status": citation.source_status}
+                                           for source in evidence.memory_evidence],
+                    })
+                self._json(200, {
+                    "reply": rag_result.answer, "model": self.server.model,
+                    "provider": self.server.provider_name, "outcome": rag_result.outcome.value,
+                    "abstained": rag_result.abstained, "citations": source_cards,
+                    "evidence_request_id": request_id,
+                    "candidate_creation_allowed": bool(label_map),
+                })
+                return
             reply = getattr(result, "text", None)
             if (getattr(result, "done", None) is not True
                     or not isinstance(reply, str) or not reply.strip()
@@ -735,11 +1056,11 @@ class OllamaProvider:
         return self.client.timeout
 
     def generate(self, prompt: str, model: str, *, system_prompt: str | None = None,
-                 max_output_tokens: int = 192):
+                 temperature: float = 0.3, max_output_tokens: int = 192):
         try:
             return self.client.generate(
                 prompt, model, system_prompt=system_prompt,
-                settings=GenerationSettings(temperature=0.3, seed=0, num_ctx=4096,
+                settings=GenerationSettings(temperature=temperature, seed=0, num_ctx=4096,
                                             num_predict=max_output_tokens),
             )
         except OllamaModelUnavailable as exc:
