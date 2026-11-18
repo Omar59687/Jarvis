@@ -1,6 +1,6 @@
 # M03-B1 — Secure Local AI Chat Alpha
 
-**Status:** draft implementation for independent review. This slice makes the bottom command dock usable with the existing local Ollama adapter. It is a development alpha, not a production authenticated dashboard.
+**Status:** historical M03-B1 baseline. M03-B2 replaces the fixed Gemma/Ollama selection with explicit local provider configuration while retaining this service's pairing and security controls; see [M03-B2](M03B2_LOCAL_PROVIDER.md). This remains a development alpha, not a production authenticated dashboard.
 
 ## Scope
 

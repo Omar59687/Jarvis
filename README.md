@@ -4,7 +4,7 @@
 
 Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing, and retrieving information across personal and project workspaces. M01-A through M01-E, M02-A through M02-D, Q01, and M03-A are in the stated `main` baseline.
 
-> **Project status:** This branch proposes M03-B1, a restricted local single-turn chat alpha on the existing synthetic Knowledge Galaxy. It uses a terminal-paired loopback session and the existing local-only Ollama adapter. It is not a production authenticated dashboard and has no knowledge search, memory, file, tool, or cloud integration. A real Windows Gemma run remains owner verification.
+> **Project status:** This branch proposes M03-B2, a restricted local single-turn chat alpha on the existing synthetic Knowledge Galaxy. It uses an explicitly configured local model provider (LM Studio Bionic or Ollama) behind a terminal-paired loopback service. It is not a production authenticated dashboard and has no knowledge search, memory, file, tool, or cloud integration. A live Windows Bionic smoke test remains owner verification.
 
 ## Product goals
 
@@ -15,7 +15,7 @@ Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing,
 - Explicit confirmation before a suggested fact becomes permanent memory.
 - Personal and project workspaces with explicit approval for cross-workspace retrieval.
 - Reversible memory deletion.
-- Local Ollama inference with optional, user-configured cloud routing.
+- Explicit local model-provider selection; this chat alpha does not enable cloud routing.
 - Later voice, MCP/API, GitHub, OpenCode, browser automation, authorized reverse engineering, and multi-agent development workflows.
 - Proactive suggestions that never execute without approval; any future Mission Mode must be bounded and separately approved.
 - No required paid API or subscription.
@@ -26,7 +26,7 @@ Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing,
 |---|---|
 | M01 — Second Brain Foundation | M01-A through M01-E merged; see acceptance report for open criterion and limitations |
 | M02 — AI Intelligence Engine | M02-A through M02-D and Q01 merged; later slices remain gated |
-| M03 — Desktop, Dashboard and Voice | M03-A visual prototype merged; M03-B1 local chat alpha proposed on this branch; no production desktop or dashboard |
+| M03 — Desktop, Dashboard and Voice | M03-A visual prototype merged; M03-B1 local chat alpha baseline; M03-B2 provider abstraction proposed on this branch; no production desktop or dashboard |
 | M04 — Integration Platform | Planned |
 | M05 — Reverse Engineering | Planned; authorized targets only |
 | M06 — AI Software Factory | Planned |
@@ -52,12 +52,13 @@ Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing,
 - [Q01 model quality checkpoint](docs/M02_Q01_MODEL_QUALITY.md) — historical-memory diagnostic, Ollama timing metadata, and opt-in sequential local comparison.
 - [M03-A desktop foundation](docs/M03A_DESKTOP_FOUNDATION.md) — stack comparison, local-service trust boundary, Windows checks, and prototype acceptance criteria.
 - [M03-A mock prototype](prototypes/m03_a/README.md) — browser-only synthetic galaxy preview and harmless loopback health check.
-- [M03-B1 local chat alpha](docs/M03B1_LOCAL_CHAT.md) — scope, pairing/security boundary, Windows launch and cloud-off instructions, tests, and limitations.
+- [M03-B1 local chat alpha](docs/M03B1_LOCAL_CHAT.md) — original single-provider baseline and its pairing/security boundary.
+- [M03-B2 local provider abstraction](docs/M03B2_LOCAL_PROVIDER.md) — provider configuration, Bionic/Ollama adapters, security boundary, Windows startup, tests, and limitations.
 - [Agent and contributor instructions](AGENTS.md).
 
 ## Repository status
 
-The stated `main` baseline contains M01-A through M01-E, M02-A through M02-D, Q01, and the synthetic M03-A browser/service prototype. This branch adds an alpha authenticated local chat path; it does not implement a production dashboard, workspace search, or persistent conversations. See [M03-B1](docs/M03B1_LOCAL_CHAT.md) for exact limits and verification instructions.
+The stated `main` baseline contains M01-A through M01-E, M02-A through M02-D, Q01, and the synthetic M03-A browser/service prototype. This branch proposes an alpha authenticated local chat path with explicit local provider configuration; it does not implement a production dashboard, workspace search, or persistent conversations. See [M03-B2](docs/M03B2_LOCAL_PROVIDER.md) for exact limits and verification instructions.
 
 ## Development principles
 
@@ -69,4 +70,4 @@ The stated `main` baseline contains M01-A through M01-E, M02-A through M02-D, Q0
 
 ## Review status
 
-M01-E, M02-A through M02-D, Q01, and M03-A are in the stated baseline. Cross-workspace aggregation remains unsupported and denied by default; the acceptance report preserves this open requirement. M03-B1 is a review branch and is not merged. See [M01 Acceptance](docs/M01_ACCEPTANCE.md), [Q01](docs/M02_Q01_MODEL_QUALITY.md), [M03-A](docs/M03A_DESKTOP_FOUNDATION.md), and [M03-B1](docs/M03B1_LOCAL_CHAT.md).
+M01-E, M02-A through M02-D, Q01, and M03-A are in the stated baseline. Cross-workspace aggregation remains unsupported and denied by default; the acceptance report preserves this open requirement. M03-B1 is the stated branch baseline; M03-B2 is a review branch and is not merged. See [M01 Acceptance](docs/M01_ACCEPTANCE.md), [Q01](docs/M02_Q01_MODEL_QUALITY.md), [M03-A](docs/M03A_DESKTOP_FOUNDATION.md), and [M03-B2](docs/M03B2_LOCAL_PROVIDER.md).

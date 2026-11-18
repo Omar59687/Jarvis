@@ -28,21 +28,23 @@ let reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches
 let sceneState = null;
 let csrfToken = null;
 let authenticated = false;
+let configuredModel = null;
+let configuredProvider = null;
 let sending = false;
 let chatStateKey = "checking";
 
 const CHAT_STATUS = {
   checking: ["Checking local session…", "جارٍ التحقق من الجلسة المحلية…"],
   pairing: ["Pair this browser to start", "اربط هذا المتصفح للبدء"],
-  ready: ["Local gemma3:4b · single-turn · no history saved", "gemma3:4b محلي · محادثة مستقلة · لا يُحفظ السجل"],
-  sending: ["Waiting for local gemma3:4b…", "بانتظار gemma3:4b المحلي…"],
+  ready: ["Configured local model · single-turn · no history saved", "نموذج محلي مضبوط · محادثة مستقلة · لا يُحفظ السجل"],
+  sending: ["Waiting for the configured local model…", "بانتظار النموذج المحلي المضبوط…"],
   unavailable: ["Local chat service is unavailable", "خدمة الدردشة المحلية غير متاحة"],
   expired: ["Local session expired · pair again", "انتهت الجلسة المحلية · أعد الربط"],
   failed: ["Chat request failed · no data was saved", "فشل طلب الدردشة · لم تُحفظ البيانات"]
 };
 const CHAT_ERRORS = {
-  model_not_installed: ["gemma3:4b is not installed. Install it separately, then restart Jarvis.", "النموذج gemma3:4b غير مثبت. ثبّته بشكل منفصل ثم أعد تشغيل جارفس."],
-  model_unavailable: ["Could not reach the local Ollama service. Check that it is running locally.", "تعذر الوصول إلى خدمة Ollama المحلية. تحقق من تشغيلها محليًا."],
+  model_not_installed: ["The configured model is unavailable. Check its name and local installation, then restart Jarvis.", "النموذج المضبوط غير متاح. تحقق من اسمه وتثبيته محليًا ثم أعد تشغيل جارفس."],
+  model_unavailable: ["Could not reach the configured local model service. Check that it is running locally.", "تعذر الوصول إلى خدمة النموذج المحلية المضبوطة. تحقق من تشغيلها محليًا."],
   generation_timeout: ["Local model timed out. Try again when it is ready.", "انتهت مهلة النموذج المحلي. حاول مجددًا بعد جاهزيته."],
   rate_limited: ["Too many requests. Wait a moment before sending another message.", "طلبات كثيرة. انتظر قليلًا قبل إرسال رسالة أخرى."],
   chat_in_progress: ["A local response is already being generated.", "يجري إنشاء رد محلي بالفعل."],
@@ -82,7 +84,14 @@ function applyLanguage(next) {
 function setChatState(key, state = "checking") {
   chatStateKey = key;
   chatState.dataset.state = state;
-  const text = CHAT_STATUS[key] ?? CHAT_STATUS.failed;
+  let text = CHAT_STATUS[key] ?? CHAT_STATUS.failed;
+  if (configuredModel && configuredProvider && (key === "ready" || key === "sending")) {
+    text = key === "ready"
+      ? [`${configuredProvider} · ${configuredModel} · single-turn · no history saved`,
+        `${configuredProvider} · ${configuredModel} · محادثة مستقلة · لا يُحفظ السجل`]
+      : [`Waiting for ${configuredProvider} · ${configuredModel}…`,
+        `بانتظار ${configuredProvider} · ${configuredModel}…`];
+  }
   chatState.querySelector("span").textContent = text[language === "ar" ? 1 : 0];
 }
 
@@ -97,9 +106,11 @@ function setPairError(message = "") {
   pairError.hidden = !message;
 }
 
-function setAuthenticated(value, token = null) {
+function setAuthenticated(value, token = null, model = null, provider = null) {
   authenticated = Boolean(value);
   csrfToken = authenticated && typeof token === "string" ? token : null;
+  configuredModel = authenticated && typeof model === "string" ? model : null;
+  configuredProvider = authenticated && typeof provider === "string" ? provider : null;
   chatInput.disabled = !authenticated || sending;
   chatSend.disabled = !authenticated || sending;
   signOut.hidden = !authenticated;
@@ -153,7 +164,10 @@ async function restoreSession() {
     if (!response.ok || value.authenticated !== true || typeof value.csrf_token !== "string") {
       throw new Error("session_unavailable");
     }
-    setAuthenticated(true, value.csrf_token);
+    if (typeof value.model !== "string" || !value.model || typeof value.provider !== "string" || !value.provider) {
+      throw new Error("session_unavailable");
+    }
+    setAuthenticated(true, value.csrf_token, value.model, value.provider);
   } catch (_error) {
     setAuthenticated(false);
     setChatState("unavailable", "error");
@@ -186,7 +200,10 @@ async function pairBrowser(event) {
     pairForm.reset();
     pairStatus.textContent = "";
     setPairError("");
-    setAuthenticated(true, value.csrf_token);
+    if (typeof value.model !== "string" || !value.model || typeof value.provider !== "string" || !value.provider) {
+      throw new Error("pairing_unavailable");
+    }
+    setAuthenticated(true, value.csrf_token, value.model, value.provider);
     chatInput.focus();
   } catch (_error) {
     setPairError(language === "ar" ? "تعذر الاتصال بالخدمة المحلية." : "Could not connect to the local service.");
@@ -234,7 +251,8 @@ async function sendChat(event) {
       setChatState("failed", "error");
       return;
     }
-    if (value.model !== "gemma3:4b" || typeof value.reply !== "string" || !value.reply.trim() || value.reply.length > 16000) {
+    if (value.model !== configuredModel || value.provider !== configuredProvider
+        || typeof value.reply !== "string" || !value.reply.trim() || value.reply.length > 16000) {
       throw new Error("invalid_response");
     }
     pending.classList.remove("pending");

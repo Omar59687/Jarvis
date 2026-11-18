@@ -63,6 +63,12 @@ The product targets Arabic and English, Windows desktop, and a browser dashboard
 **Reason:** exercise the Knowledge Galaxy command dock with a real local model behind a small reviewable service boundary while preserving existing retrieval and authorization code.
 **Validation:** deterministic tests use a fake generator. The owner must verify Ollama cloud routing is disabled and perform the real Windows conversation after code review. See [M03-B1](M03B1_LOCAL_CHAT.md).
 
+### P-09 — Provider-neutral local chat with explicit Bionic option
+**Proposal:** M03-B2 places a small common generation contract in front of the existing Ollama adapter and an optional LM Studio Bionic native API adapter. The operator must explicitly supply provider, model, and numeric loopback URL at startup; no provider/model is selected by default and there is no fallback or model discovery. Bionic requests default to `reasoning: "off"` and `store: false`.
+**Reason:** keep the local chat UI and service independent of a specific runtime while allowing the owner to use the already available Bionic endpoint without installing Ollama.
+**Security boundary:** adapters reject non-loopback URLs, bypass system proxies, do not follow redirects, bound requests/responses, and expose no tool or integration fields. The local runtime must itself be configured for local-only inference.
+**Validation:** deterministic provider and service tests cover native request construction, response parsing, safe errors, and authenticated response delivery. Live Windows Bionic verification remains an owner task; see [M03-B2](M03B2_LOCAL_PROVIDER.md).
+
 ## Open decisions
 
 - Exact system RAM and supported Windows versions.

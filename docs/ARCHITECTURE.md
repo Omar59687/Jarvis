@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Proposed Architecture
 
-**Status:** the logical product architecture below remains proposed. The stated baseline implements M01-A through M01-E, M02-A through M02-D, Q01, and an M03-A synthetic visual prototype. This branch proposes an M03-B1 restricted local chat alpha; see [M03-B1](M03B1_LOCAL_CHAT.md). No production desktop, dashboard, voice or external integration is implemented.
+**Status:** the logical product architecture below remains proposed. The stated baseline implements M01-A through M01-E, M02-A through M02-D, Q01, and an M03-A synthetic visual prototype. This branch proposes an M03-B2 local-provider abstraction and Bionic integration; see [M03-B2](M03B2_LOCAL_PROVIDER.md). No production desktop, dashboard, voice or external integration is implemented.
 
 ## 1. Architecture goals
 
@@ -19,7 +19,7 @@
 | Local application service | API, authentication/session handling, orchestration, permission checks, audit events | Trusted policy enforcement point |
 | Memory and evidence store | SQLite database, migrations, separate document and approved-memory FTS5 indexes, evidence/source metadata, tombstones | Local user data boundary |
 | Approved-folder sync | Watch or scan configured roots, normalize paths, record provenance, report sync state | File access limited to revocable approved roots |
-| Model adapters | M02-A local Ollama adapter; M02-B1 document RAG and M02-B2 document/memory composition; optional cloud adapters are future, separately approved work | RAG passes bounded evidence from one authorized workspace and uses the explicit local model allowlist; future providers receive only data approved for a request |
+| Model adapters | Shared M03-B2 `ModelProvider` interface; local Ollama and LM Studio Bionic adapters; M02-B1 document RAG and M02-B2 document/memory composition; cloud adapters are future, separately approved work | Provider receives only the bounded request; M03-B2 accepts explicit numeric-loopback URLs and never falls back or discovers models |
 | Tool adapters | MCP/API, GitHub/OpenCode, browser automation, REA, and future agents | Each adapter has a narrow capability and approval policy |
 | Background workers | Sync, indexing, speech, and later bounded tasks | No implicit permission expansion or unlogged side effects |
 
@@ -34,7 +34,7 @@ The browser dashboard can use the same UI and API. If it runs in an ordinary bro
 1. The user chooses a workspace and asks a question or initiates a sync.
 2. The application service authenticates the local client and resolves its workspace/action scope.
 3. Retrieval queries only authorized workspace data and returns evidence IDs, source metadata, and permission-safe content.
-4. If a model is used, the routing policy selects local Ollama by default. Cloud routing requires a separate user setting and request-level data-sharing permission.
+4. If a model is used, the service selects only the provider and model explicitly configured for that deployment. This M03-B2 chat alpha has no cloud route or automatic fallback.
 5. The answer retains citations to evidence and indicates uncertainty or missing evidence.
 6. A proposed memory is staged for review. Permanent insertion occurs only after explicit approval.
 7. External tool calls and changes use the relevant connector policy and require approval unless a future reviewed policy explicitly grants a narrow, bounded action.
@@ -84,7 +84,7 @@ The signing context verifies that a trusted host issued a decision for the exact
 
 ## 8. Security and privacy requirements for implementation
 
-M03-B1 implements a narrow alpha boundary for single-turn local chat only: loopback binding, exact Host checks and exact Origin checks on state-changing requests, terminal one-time pairing, process-local cookie sessions, CSRF checks, bounded requests, and the existing fixed local Ollama adapter. It does not implement workspace authorization because it exposes no workspace data or operations. This development alpha uses plain HTTP on numeric loopback and is not a production authentication design. See [M03-B1](M03B1_LOCAL_CHAT.md) for the detailed lifecycle, limits, and residual risks.
+M03-B2 extends the M03-B1 single-turn alpha with a provider-neutral generation contract and explicit Ollama/Bionic adapters. Loopback binding, exact Host and Origin checks, terminal one-time pairing, process-local cookie sessions, CSRF, bounded requests, and generic error handling remain in the service. Provider HTTP accepts numeric loopback destinations only, disables proxies, and rejects redirects. The alpha exposes no workspace data or operations and does not implement workspace authorization. It uses plain HTTP on numeric loopback and is not a production authentication design. See [M03-B2](M03B2_LOCAL_PROVIDER.md) for configuration and residual risks.
 
 - Bind the local service to loopback by default. Do not assume a local port is secret or trusted.
 - Use per-install random session tokens or equivalent protection for browser clients; protect against cross-site requests and hostile origins.
@@ -103,7 +103,7 @@ flowchart TD
   UI["Tauri desktop and browser UI"] --> API["Local application service"]
   API --> Auth["Workspace and action authorization"]
   Auth --> DB["SQLite memory, evidence, audit"]
-  Auth --> Local["Ollama adapter"]
+  Auth --> Local["Configured local model provider"]
   Auth --> Cloud["Optional cloud adapter"]
   Auth --> Tools["Approved tool adapters"]
   Sync["Approved-folder sync"] --> API

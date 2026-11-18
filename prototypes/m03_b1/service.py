@@ -1,4 +1,4 @@
-"""M03-B1 restricted loopback chat alpha; no retrieval, persistence, or tools."""
+"""M03-B2 restricted loopback chat alpha; no retrieval, persistence, or tools."""
 from __future__ import annotations
 
 import argparse
@@ -16,6 +16,14 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit
 
+from jarvis_core.lmstudio import LMStudioBionicClient
+from jarvis_core.model_provider import (
+    ModelProvider,
+    ProviderConnectionError,
+    ProviderError,
+    ProviderModelUnavailable,
+    ProviderTimeout,
+)
 from jarvis_core.ollama import (
     GenerationSettings,
     OllamaClient,
@@ -26,8 +34,6 @@ from jarvis_core.ollama import (
 )
 
 HOST = "127.0.0.1"
-MODEL = "gemma3:4b"
-OLLAMA_URL = "http://127.0.0.1:11434"
 COOKIE_NAME = "jarvis_local_session"
 PAIR_TTL_SECONDS = 300
 SESSION_IDLE_SECONDS = 30 * 60
@@ -41,7 +47,7 @@ MAX_CHATS_PER_MINUTE = 6
 MAX_SESSIONS = 8
 MAX_HANDLER_THREADS = 16
 API_PREFIX = "/api/v1"
-OLLAMA_REQUEST_TIMEOUT_SECONDS = 120.0
+DEFAULT_PROVIDER_TIMEOUT_SECONDS = 120.0
 GENERAL_CHAT_SYSTEM_PROMPT = (
     "You are Jarvis, a helpful local conversational assistant. This request is a single-turn "
     "general conversation. Answer naturally and, when practical, in the language used by the "
@@ -207,13 +213,16 @@ class LocalChatServer(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 16
 
-    def __init__(self, port: int, *, generator, pairing_code: str | None = None,
+    def __init__(self, port: int, *, generator: ModelProvider, model: str, provider_name: str,
+                 pairing_code: str | None = None,
                  clock: Callable[[], float] = time.monotonic):
         super().__init__((HOST, port), LocalChatHandler)
         actual_port = self.server_address[1]
         self.expected_host = f"{HOST}:{actual_port}"
         self.expected_origin = f"http://{self.expected_host}"
         self.generator = generator
+        self.model = model
+        self.provider_name = provider_name
         self.pairing = PairingAuthority(code=pairing_code, clock=clock)
         self.sessions = SessionStore(clock=clock)
         self._handler_slots = threading.BoundedSemaphore(MAX_HANDLER_THREADS)
@@ -397,7 +406,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not_found"})
             return
         if path == "/health":
-            self._json(200, {"status": "ok", "service": "m03-b1", "data_connected": False})
+            self._json(200, {"status": "ok", "service": "m03-b2", "data_connected": False})
             return
         if path == f"{API_PREFIX}/session":
             session_id = self._cookie_session_id()
@@ -405,7 +414,8 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             if record is None:
                 self._json(401, {"error": "authentication_required"})
                 return
-            self._json(200, {"authenticated": True, "csrf_token": record.csrf_token, "model": MODEL})
+            self._json(200, {"authenticated": True, "csrf_token": record.csrf_token,
+                             "model": self.server.model, "provider": self.server.provider_name})
             return
         static = STATIC_FILES.get(path)
         if static is None:
@@ -475,7 +485,8 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             f"{COOKIE_NAME}={session_id}; HttpOnly; SameSite=Strict; "
             f"Path={API_PREFIX}; Max-Age={SESSION_ABSOLUTE_SECONDS}"
         )
-        self._json(200, {"authenticated": True, "csrf_token": record.csrf_token, "model": MODEL},
+        self._json(200, {"authenticated": True, "csrf_token": record.csrf_token,
+                         "model": self.server.model, "provider": self.server.provider_name},
                    extra_headers={"Set-Cookie": cookie_header})
 
     def _chat(self) -> None:
@@ -515,16 +526,16 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             return
         try:
             result = self.server.generator.generate(
-                message.strip(), MODEL, system_prompt=GENERAL_CHAT_SYSTEM_PROMPT,
-                settings=GenerationSettings(temperature=0.3, seed=0, num_ctx=4096, num_predict=192),
+                message.strip(), self.server.model, system_prompt=GENERAL_CHAT_SYSTEM_PROMPT,
+                max_output_tokens=192,
             )
-        except OllamaModelUnavailable:
+        except (ProviderModelUnavailable, OllamaModelUnavailable):
             self._json(503, {"error": "model_not_installed"})
-        except OllamaTimeout:
+        except (ProviderTimeout, OllamaTimeout):
             self._json(504, {"error": "generation_timeout"})
-        except OllamaConnectionError:
+        except (ProviderConnectionError, OllamaConnectionError):
             self._json(503, {"error": "model_unavailable"})
-        except OllamaError:
+        except (ProviderError, OllamaError):
             self._json(502, {"error": "generation_failed"})
         except Exception:
             # Never expose exception details, model output, local paths, or a traceback.
@@ -541,7 +552,8 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                 except UnicodeEncodeError:
                     self._json(502, {"error": "generation_failed"})
                 else:
-                    self._json(200, {"reply": reply, "model": MODEL})
+                    self._json(200, {"reply": reply, "model": self.server.model,
+                                     "provider": self.server.provider_name})
         finally:
             self.server.sessions.end_chat(session_id)
 
@@ -565,22 +577,73 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         self._json(405, {"error": "method_not_allowed"})
 
 
-def make_server(port: int = 8765, *, generator=None, pairing_code: str | None = None,
+class OllamaProvider:
+    """Adapt the existing Ollama client to the provider-neutral service contract."""
+
+    def __init__(self, client: OllamaClient):
+        self.client = client
+
+    @property
+    def timeout(self) -> float:
+        return self.client.timeout
+
+    def generate(self, prompt: str, model: str, *, system_prompt: str | None = None,
+                 max_output_tokens: int = 192):
+        try:
+            return self.client.generate(
+                prompt, model, system_prompt=system_prompt,
+                settings=GenerationSettings(temperature=0.3, seed=0, num_ctx=4096,
+                                            num_predict=max_output_tokens),
+            )
+        except OllamaModelUnavailable as exc:
+            raise ProviderModelUnavailable("Configured local model is unavailable") from exc
+        except OllamaTimeout as exc:
+            raise ProviderTimeout("Local model request timed out") from exc
+        except OllamaConnectionError as exc:
+            raise ProviderConnectionError("Could not connect to configured local model service") from exc
+        except OllamaError as exc:
+            raise ProviderError("Local model generation failed") from exc
+
+
+def make_server(port: int = 8765, *, provider: str | None = None, model: str | None = None,
+                base_url: str | None = None, timeout: float = DEFAULT_PROVIDER_TIMEOUT_SECONDS,
+                generator: ModelProvider | None = None, pairing_code: str | None = None,
                 clock: Callable[[], float] = time.monotonic) -> LocalChatServer:
     if type(port) is not int or not 0 <= port <= 65535:
         raise ValueError("port must be an integer between 0 and 65535")
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError("an explicit model is required")
     if generator is None:
-        generator = OllamaClient(OLLAMA_URL, (MODEL,), timeout=OLLAMA_REQUEST_TIMEOUT_SECONDS)
-    return LocalChatServer(port, generator=generator, pairing_code=pairing_code, clock=clock)
+        if not isinstance(base_url, str):
+            raise ValueError("an explicit numeric loopback base URL is required")
+        if provider == "ollama":
+            generator = OllamaProvider(OllamaClient(base_url, (model,), timeout=timeout))
+        elif provider == "lmstudio":
+            LMStudioBionicClient.validate_model(model)
+            generator = LMStudioBionicClient(base_url, timeout=timeout, reasoning="off")
+        else:
+            raise ValueError("provider must be explicitly set to 'ollama' or 'lmstudio'")
+    elif provider not in {"test", "ollama", "lmstudio"}:
+        provider = "test"
+    return LocalChatServer(port, generator=generator, model=model, provider_name=provider,
+                           pairing_code=pairing_code, clock=clock)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--provider", choices=("lmstudio", "ollama"), required=True)
+    parser.add_argument("--model", required=True,
+                        help="explicit installed local model identifier; no discovery or download")
+    parser.add_argument("--base-url", required=True,
+                        help="provider endpoint base URL on numeric loopback, including port")
+    parser.add_argument("--timeout", type=float, default=120.0,
+                        help="finite provider request timeout in seconds (0.1 to 300)")
     args = parser.parse_args()
-    server = make_server(args.port)
-    print(f"Jarvis M03-B1 local chat: http://{server.expected_host}/")
-    print("Local model: gemma3:4b (must already be installed; no model download will be attempted).")
+    server = make_server(args.port, provider=args.provider, model=args.model,
+                         base_url=args.base_url, timeout=args.timeout)
+    print(f"Jarvis M03-B2 local chat: http://{server.expected_host}/")
+    print(f"Local provider/model: {server.provider_name}/{server.model} (explicitly configured; no discovery or download).")
     print("Pairing code (valid for 5 minutes; one use; do not share):")
     print(server.pairing.terminal_code)
     print("This code is displayed only in this trusted terminal. Press Ctrl+C to stop.")

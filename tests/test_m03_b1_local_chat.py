@@ -10,13 +10,16 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from jarvis_core.ollama import GenerationResult, OllamaClient, OllamaModelUnavailable, OllamaTimeout
+from jarvis_core.lmstudio import LMStudioBionicClient
 from prototypes.m03_b1.service import (
     API_PREFIX,
     GENERAL_CHAT_SYSTEM_PROMPT,
-    MODEL,
     SESSION_IDLE_SECONDS,
     make_server,
 )
+
+
+MODEL = "prism-ml/bonsai-27b"
 
 
 class FakeGenerator:
@@ -28,8 +31,8 @@ class FakeGenerator:
         self.release = threading.Event()
         self.block = False
 
-    def generate(self, prompt, model, *, system_prompt=None, settings=None):
-        self.calls.append((prompt, model, system_prompt, settings))
+    def generate(self, prompt, model, *, system_prompt=None, max_output_tokens=192):
+        self.calls.append((prompt, model, system_prompt, max_output_tokens))
         self.entered.set()
         if self.block:
             self.release.wait(timeout=4)
@@ -49,7 +52,7 @@ class MutableClock:
 class M03B1LocalChatTests(unittest.TestCase):
     def setUp(self):
         self.generator = FakeGenerator()
-        self.server = make_server(0, generator=self.generator, pairing_code="test-pairing-code")
+        self.server = make_server(0, generator=self.generator, model=MODEL, pairing_code="test-pairing-code")
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.base = f"http://{self.server.expected_host}"
@@ -103,7 +106,7 @@ class M03B1LocalChatTests(unittest.TestCase):
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
         status, headers, body = self.request("/health", method="GET", origin=None)
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body), {"status": "ok", "service": "m03-b1", "data_connected": False})
+        self.assertEqual(json.loads(body), {"status": "ok", "service": "m03-b2", "data_connected": False})
         self.assertIsNone(headers.get("Access-Control-Allow-Origin"))
         status, _, body = self.request("/", method="GET", origin=None)
         self.assertEqual(status, 200)
@@ -138,7 +141,7 @@ class M03B1LocalChatTests(unittest.TestCase):
         })
         self.assertEqual(status, 401)
         clock = MutableClock(0)
-        other = make_server(0, generator=FakeGenerator(), pairing_code="expires", clock=clock)
+        other = make_server(0, generator=FakeGenerator(), model=MODEL, pairing_code="expires", clock=clock)
         thread = threading.Thread(target=other.serve_forever, daemon=True)
         thread.start()
         try:
@@ -161,7 +164,7 @@ class M03B1LocalChatTests(unittest.TestCase):
         cookie, csrf = self.pair()
         clock = MutableClock(10)
         other_generator = FakeGenerator()
-        other = make_server(0, generator=other_generator, pairing_code="expiry-code", clock=clock)
+        other = make_server(0, generator=other_generator, model=MODEL, pairing_code="expiry-code", clock=clock)
         thread = threading.Thread(target=other.serve_forever, daemon=True)
         thread.start()
         try:
@@ -214,16 +217,17 @@ class M03B1LocalChatTests(unittest.TestCase):
         for message in ("How are you?", "Please say hello in Arabic."):
             status, headers, body = self.chat(cookie=cookie, csrf=csrf, message=message)
             self.assertEqual(status, 200)
-            self.assertEqual(json.loads(body), {"reply": "I'm doing well, thanks!", "model": MODEL})
+            self.assertEqual(json.loads(body), {"reply": "I'm doing well, thanks!", "model": MODEL,
+                                                "provider": "test"})
             self.assertIsNone(headers.get("Access-Control-Allow-Origin"))
         self.assertEqual(len(self.generator.calls), 2)
-        prompt, model, system_prompt, settings = self.generator.calls[0]
+        prompt, model, system_prompt, max_output_tokens = self.generator.calls[0]
         self.assertEqual(prompt, "How are you?")
-        self.assertEqual(model, "gemma3:4b")
+        self.assertEqual(model, MODEL)
         self.assertEqual(system_prompt, GENERAL_CHAT_SYSTEM_PROMPT)
         self.assertIn("no access to the user's memories", system_prompt)
         self.assertNotIn("[D1]", system_prompt)
-        self.assertEqual(settings.num_predict, 192)
+        self.assertEqual(max_output_tokens, 192)
 
     def test_duplicate_generation_is_rejected_and_chat_rate_is_bounded(self):
         cookie, csrf = self.pair()
@@ -302,24 +306,81 @@ class M03B1LocalChatTests(unittest.TestCase):
             self.assertEqual(json.loads(body), {"error": "generation_failed"})
             self.assertNotIn(b"partial", body)
 
-    def test_production_factory_explicitly_allows_only_local_gemma_without_network_call(self):
-        server = make_server(0)
+    def test_factory_requires_explicit_provider_model_and_loopback_endpoint(self):
+        with self.assertRaises(ValueError):
+            make_server(0)
+        with self.assertRaises(ValueError):
+            make_server(0, provider="lmstudio", model=MODEL)
+        server = make_server(0, provider="lmstudio", model=MODEL,
+                             base_url="http://127.0.0.1:1235", timeout=120)
         try:
-            self.assertIsInstance(server.generator, OllamaClient)
-            self.assertEqual(server.generator.allowed_models, frozenset({"gemma3:4b"}))
-            self.assertEqual(server.generator._origin, "http://127.0.0.1:11434")
-            self.assertEqual(server.generator.timeout, 120.0)
+            self.assertIsInstance(server.generator, LMStudioBionicClient)
+            self.assertEqual(server.generator._endpoint, "http://127.0.0.1:1235/api/v1/chat")
+            self.assertEqual(server.generator.reasoning, "off")
+            self.assertEqual(server.model, MODEL)
+            self.assertEqual(server.provider_name, "lmstudio")
         finally:
             server.server_close()
+        ollama = make_server(0, provider="ollama", model="gemma3:4b",
+                             base_url="http://127.0.0.1:11434")
+        try:
+            self.assertIsInstance(ollama.generator.client, OllamaClient)
+            self.assertEqual(ollama.generator.client.allowed_models, frozenset({"gemma3:4b"}))
+            self.assertEqual(ollama.generator.client._origin, "http://127.0.0.1:11434")
+        finally:
+            ollama.server_close()
+
+    def test_authenticated_chat_returns_bionic_message_through_local_service(self):
+        class FakeBionicTransport:
+            def __init__(self):
+                self.requests = []
+
+            def request(self, url, body, timeout, max_response_bytes):
+                payload = json.loads(body.decode("utf-8"))
+                self.requests.append((url, payload, timeout))
+                return 200, json.dumps({"output": [{"type": "message", "content": "I’m well, thanks."}]}).encode()
+
+        transport = FakeBionicTransport()
+        provider = LMStudioBionicClient("http://127.0.0.1:1235", transport=transport)
+        other = make_server(0, provider="lmstudio", model=MODEL,
+                            base_url="http://127.0.0.1:1235", generator=provider,
+                            pairing_code="bionic-code")
+        thread = threading.Thread(target=other.serve_forever, daemon=True)
+        thread.start()
+        try:
+            status, headers, body = self.request_to(
+                other, f"{API_PREFIX}/session/pair", {"pairing_code": "bionic-code"},
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["provider"], "lmstudio")
+            cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+            csrf = json.loads(body)["csrf_token"]
+            status, _, body = self.request_to(
+                other, f"{API_PREFIX}/chat", {"message": "How are you?"},
+                cookie=cookie, csrf=csrf,
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body), {
+                "reply": "I’m well, thanks.", "model": MODEL, "provider": "lmstudio",
+            })
+            self.assertEqual(transport.requests[0][1]["reasoning"], "off")
+            self.assertIs(transport.requests[0][1]["store"], False)
+        finally:
+            other.shutdown()
+            other.server_close()
+            thread.join(timeout=2)
 
     def test_frontend_uses_same_origin_chat_and_never_persists_or_calls_ollama(self):
         app_js = (Path(__file__).parents[1] / "prototypes/m03_b1/app.js").read_text(encoding="utf-8")
         page = (Path(__file__).parents[1] / "prototypes/m03_b1/index.html").read_text(encoding="utf-8")
         self.assertIn('fetch("/api/v1/chat"', app_js)
         self.assertIn("setTimeout(() => controller.abort(), 150000)", app_js)
+        self.assertNotIn("gemma3:4b", app_js)
+        self.assertIn("value.model !== configuredModel", app_js)
         self.assertIn('"X-Jarvis-CSRF": csrfToken', app_js)
         self.assertIn("sending || !csrfToken", app_js)
         self.assertIn("autocomplete=\"one-time-code\"", page)
+        self.assertIn("locally configured model", page)
         self.assertNotIn("localStorage", app_js)
         self.assertNotIn("sessionStorage", app_js)
         self.assertNotIn("11434", app_js)

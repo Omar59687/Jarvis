@@ -10,7 +10,7 @@ Adopt a staged, evidence-first stack:
 
 - **M01 candidate:** SQLite with migrations; test whether the selected runtime build includes FTS5. Keep persistence behind a storage interface.
 - **Desktop/UI candidate:** evaluate Tauri 2 plus a shared TypeScript web UI, with narrow capabilities; compare packaging and security cost against a simpler browser-only local UI before locking it.
-- **Local model:** M02-A implements a standard-library adapter for a replaceable local Ollama endpoint. No model is selected or bundled. Ollama software licensing does not license every model it can run.
+- **Local model:** M03-B2 adds a standard-library `ModelProvider` contract with optional LM Studio Bionic and retained Ollama adapters. No runtime or model is bundled or selected by default. Runtime software and model weights have separate terms.
 - **3D visualization prototype:** Three.js 0.186.1 (release tag r186) is vendored locally for the M03-A synthetic knowledge-galaxy preview; production adoption remains unapproved.
 - **Voice candidates:** faster-whisper for local speech-to-text and openWakeWord for wake-word detection, both subject to Windows/hardware and model-asset checks.
 - **Integration candidates:** official MCP Python SDK, Playwright, OpenCode, and REA only in later milestones with version pinning, central approval policy, and isolation.
@@ -23,7 +23,7 @@ The M03-A visual prototype bundles the one pinned Three.js core module noted abo
 | Capability | Candidate and license | Reuse type | Fit and trade-offs | Security/licensing notes | Adoption |
 |---|---|---|---|---|---|
 | Local storage and text search | [SQLite](https://www.sqlite.org/copyright.html) is public domain; [FTS5](https://www.sqlite.org/fts5.html) is included in SQLite amalgamation | Runtime/library | Small local footprint; good M01 fit; FTS availability depends on shipped SQLite build | Check SQLite build options; use parameterized queries, migrations, backups, and secure-delete/retention design; wrappers have their own licenses | **Proposed for M01** |
-| Local model runtime | [Ollama](https://github.com/ollama/ollama), MIT software license | Runtime/service | M02-A adapter uses its local tags and chat APIs; model choice and memory fit remain open | Model weights have separate terms; review exact model card/license and source. Adapter restricts configured endpoint to numeric loopback, rejects redirects, and does not authenticate other local processes | **Adapter implemented; runtime separately installed; no model selected or bundled** |
+| Local model runtime | [Ollama](https://github.com/ollama/ollama), MIT software license; [LM Studio](https://lmstudio.ai/) runtime is separate | Runtime/service | Standard-library adapters support explicit Ollama or LM Studio Bionic local endpoints; provider/model are operator supplied | Models have separate terms. Adapter restricts destinations to numeric loopback, disables proxies, rejects redirects, and does not authenticate other local processes. Verify exact runtime settings and model license | **Adapters implemented; runtimes separately installed; no runtime or model bundled/defaulted** |
 | Windows desktop shell | [Tauri 2](https://github.com/tauri-apps/tauri), MIT/Apache-2.0 project licensing | Application framework | Reuses web UI and offers scoped native commands; Rust, C++ build tools, WebView2 and packaging add complexity | Scope capabilities by window/command; audit plugins and origin model; WebView2/build prerequisites documented upstream | **Leading conditional direction in M03-A review; no Tauri app/runtime installed or built** |
 | Shared web UI toolchain | [TypeScript](https://github.com/microsoft/TypeScript), Apache-2.0; [Node.js](https://github.com/nodejs/node), MIT | Proposed build-time language/toolchain | Could share typed screens across Tauri and an ordinary browser; introduces Node/npm packages, build scripts, lockfile and supply-chain maintenance | Pin runtime/tool versions; inspect npm scripts and full dependency closure; no frontend package is adopted by the prototype | **Proposed for review; not installed or added** |
 | Knowledge galaxy | [Three.js](https://github.com/mrdoob/three.js), MIT | Prototype visualization library | General-purpose WebGL 3D library; used to render the synthetic M03-A graph, with an accessible node list and simple fallback; graph layout, screen-reader behavior, and scale remain Jarvis work | Core ES module pair only; pinned r186 / 0.186.1, upstream commit and SHA-256 recorded in M03-A scope; matching MIT notice bundled; no CDN, add-ons, fonts, or textures | **Bundled for M03-A visual prototype only; production dependency not approved** |
@@ -48,7 +48,7 @@ The M03-A visual prototype bundles the one pinned Three.js core module noted abo
 
 1. **M01:** M01-A through M01-E are merged. Cross-workspace consent remains unresolved and denied by default; see the acceptance matrix.
 2. **M02-A:** local-only Ollama adapter implemented with no model download. Model selection and performance evaluation are open; target RAM and Windows version are now recorded in [M02-A adapter documentation](M02A_OLLAMA_ADAPTER.md), but CPU and free disk remain unknown.
-3. **M02-M03:** benchmark local model and speech candidates on the actual target Windows laptop before selecting models or claiming resource fit.
+3. **M02-M03:** benchmark local model and speech candidates on the actual target Windows laptop before selecting models or claiming resource fit. M03-B2 provider configuration remains explicit and does not approve one permanent model/runtime.
 3. **M04 onward:** integrate one connector at a time behind explicit policies; review security advisories and test least privilege.
 4. **M05-M07:** adopt REA, OpenCode, or Playwright only for user-authorized targets/tasks with isolation and an explicit approval path.
 
@@ -72,6 +72,7 @@ This audit consulted official project repositories and documentation linked abov
 
 - [SQLite copyright and FTS5](https://www.sqlite.org/copyright.html), [FTS5 docs](https://www.sqlite.org/fts5.html)
 - [Ollama repository and security policy](https://github.com/ollama/ollama)
+- [LM Studio Bionic API documentation](https://lmstudio.ai/docs/developer/core/server/bionic-api)
 - [Tauri capability model](https://v2.tauri.app/reference/acl/capability/) and [Windows prerequisites](https://v2.tauri.app/start/prerequisites/)
 - [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
 - [openWakeWord](https://github.com/dscripka/openWakeWord)
