@@ -65,7 +65,7 @@ Existing regression references: `tests/test_memory.py::test_propose_approve_retr
 1. Chat accepts one bounded message only; requests do not contain prior turns; process/browser restart clears displayed transcript and citation cache. Verify no `localStorage`, `sessionStorage`, database chat table, or body logging.
 2. Citation cache stores no prompt, answer, or excerpts; enforce TTL, per-session count limit, and invalidation on logout/workspace switch/restart.
 3. English and Arabic workspace selection, citation cards, candidate review and approval are keyboard accessible, RTL-correct, readable, and announce loading/error states. The user must see evidence type/status before approval.
-4. P2 itself adds no chat, transcript, or memory schema. Its tests must preserve the memory FTS lifecycle and backup behavior. P3 independently introduces schema v6 for the repository index, with its own v5→v6 rollback and backup/restore tests; P2 behavior remains covered against the migrated database.
+4. P2 itself adds no chat, transcript, or memory schema. Its tests must preserve the memory FTS lifecycle and backup behavior. P3 independently introduces schema v6 for the repository index and schema v7 parser-status metadata, with v5→v6 and v6→v7 rollback plus backup/restore tests; P2 behavior remains covered against the migrated database.
 
 ## G. Required implementation verification commands
 

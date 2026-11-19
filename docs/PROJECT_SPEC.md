@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Project Specification
 
-**Status:** M01-A through M01-E, M02-A through M02-D, Q01, and M03-A are merged. M03-B1 is proposed on a draft review branch; later product requirements remain unimplemented unless stated otherwise. Requirements below describe intended behavior, not automatically implementation facts.
+**Status:** M01-A through M01-E, M02-A through M02-D, Q01, M03-A and the P2-A implementation are present in the project history. P2 owner live acceptance remains open. P3 is implemented as a bounded, read-only developer-intelligence slice with documented partial language analysis; this branch extends it. P4 is design-only here. Product requirements below are not automatically implementation facts.
 **Date:** 2026-11-03
 
 ## 1. Purpose

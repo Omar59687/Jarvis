@@ -1,6 +1,6 @@
 # P2-A — Authenticated Memory and Evidence Chat Design
 
-**Status:** Architecture proposal. The P2-A1 trusted principal/session and workspace listing/selection subset is implemented on `feature/p2-a1-workspace-session-binding`; retrieval, evidence chat, memory writes, UI integration, and P2-A2+ remain unimplemented. This proposal is based on M03-B2 commit `346b7ceee4fcc0330ef59e8c1537e73c5df6cf3f`; it does not replace the existing M01/M02/M03 security decisions. See [P2-A1 implementation notes](P2A1_TRUSTED_WORKSPACE_SESSION.md).
+**Status:** Historical design snapshot. P2-A1 through P2-A4 implementation is present in project history; see the [P2 final engineering acceptance report](P2_FINAL_ENGINEERING_ACCEPTANCE.md) for owner acceptance gates and [P2-A4 connected UI notes](P2A4_CONNECTED_UI.md). This proposal was based on M03-B2 commit `346b7ceee4fcc0330ef59e8c1537e73c5df6cf3f`; it does not replace the existing M01/M02/M03 security decisions.
 
 **Goal:** let a paired Jarvis browser ask one question against one explicitly selected workspace's active documents and approved memories, receive an answer with request-scoped citations and provenance, and stage/approve durable memories only through an explicit authenticated human action.
 

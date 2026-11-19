@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Open-Source Stack Audit
 
-**Audit date:** 2026-11-05 (M03-A Windows desktop and shared UI screen; original component inventory from 2026-11-03)
+**Audit date:** 2026-11-20 (P4 coding-agent architecture research; original component inventory from 2026-11-03)
 **Repository inspected:** initial inventory covered `Omar59687/Jarvis` at `ac32b9c927ac71f897cbd49b4d463c95c3b5014b`; later milestone adoption states are updated below.  
 **Scope:** public upstream documentation and repository metadata; no downloaded code was executed and no dependency was installed.
 
@@ -32,7 +32,7 @@ The M03-A visual prototype bundles the one pinned Three.js core module noted abo
 | Wake word | [openWakeWord](https://github.com/dscripka/openWakeWord), Apache-2.0 code | Python library/model assets | Purpose-built phrase detection; separate audio pipeline and platform dependencies | Verify each included model/voice asset's terms and provenance; inspect native wheels and microphone consent/privacy | **Candidate for M03** |
 | MCP support | [Official Python SDK](https://github.com/modelcontextprotocol/python-sdk), MIT | Client/server SDK | Direct fit for Python tool integration; supports multiple transports | SDK support policy and security advisories change; pin a supported release, monitor advisories, validate tool schemas, isolate transport and require central authorization. MCP protocol support is not a permission system | **Candidate for M04** |
 | Browser automation | [Playwright](https://github.com/microsoft/playwright), Apache-2.0 | Automation library | Mature cross-browser automation; useful for later authorized, user-directed workflows | Browser sessions can contain account data and perform consequential actions; dedicated profile, domain policy, approval, and safe download handling required | **Candidate for M07** |
-| Coding-agent integration | [OpenCode](https://github.com/anomalyco/opencode), MIT | External agent application / API | Reuse an existing coding agent rather than rebuild coding loops; integrate through a narrow process/API boundary | Permission configuration is powerful and defaults can be permissive; run with explicit deny/ask policies in isolated worktrees. Model/provider terms are separate | **Candidate for M04/M06** |
+| Coding-agent integration | [OpenAI Codex CLI](https://github.com/openai/codex), Apache-2.0; [OpenCode](https://github.com/anomalyco/opencode), MIT; [T3 Code](https://t3.codes/) (license and exact deployed source must be rechecked before use) | External agent CLI/API or control plane | Candidates for an adapter behind Jarvis task supervision; Codex/OpenCode expose local agent workflows, while T3 Code is a separate multi-agent control surface | Local process does not imply local inference or OS isolation. Pin exact versions, confirm license/provenance, disable bypass/remote-control/push/PR tools, plugins, MCP, shell, write and network by default; independently test all boundaries. T3's control-plane and hosted features would need separate data-flow and auth review | **Evaluated for P4 design only; none installed, adopted, or authorized** |
 | Authorized reverse engineering | [REA](https://github.com/morluto/rea), MIT for REA-authored code | External tool + MCP server + instruction skills | Broad app/runtime/binary-analysis workflows may save substantial effort | Large dependency/tool surface; third-party material retains its licenses; commercial tools are separately licensed. Use only for owned/authorized targets and an isolated copy. Re-audit exact release and notices before adoption | **Evaluate in M05; not installed** |
 | Agent workflow instructions | [mattpocock/skills](https://github.com/mattpocock/skills), MIT repository license | Agent instruction files | Reusable methods/prompts can inform coding workflows; instructions do not implement tools or prove agent behavior | Review files as untrusted project content, remove conflicting or overbroad directions, pin a reviewed revision, and do not treat a skill as authorization enforcement | **Read/reference only; selectively adapt later** |
 
@@ -67,7 +67,7 @@ Before adding any dependency or external tool:
 
 ## 5. Evidence and limitations
 
-This audit consulted official project repositories and documentation linked above, plus upstream SQLite documentation. It is a point-in-time screen, not legal advice, a complete transitive-license audit, a penetration test, or a compatibility test. No candidate was installed, built, benchmarked, or executed. License labels must be reconfirmed against the exact revision and all shipped model/assets before redistribution or deployment.
+This audit consulted official project repositories and documentation linked above, plus upstream SQLite documentation. It is a point-in-time screen, not legal advice, a complete transitive-license audit, a penetration test, or a compatibility test. No P4 candidate was installed, built, benchmarked, or executed. License labels must be reconfirmed against the exact revision and all shipped model/assets before redistribution or deployment.
 
 ## 6. Primary references
 
@@ -80,5 +80,7 @@ This audit consulted official project repositories and documentation linked abov
 - [MCP Python SDK security policy and advisories](https://github.com/modelcontextprotocol/python-sdk/security)
 - [Playwright](https://github.com/microsoft/playwright)
 - [OpenCode permission documentation](https://opencode.ai/docs/permissions/)
+- [Codex CLI source/license](https://github.com/openai/codex), [CLI sandbox and approval options](https://github.com/openai/codex/blob/main/codex-rs/cli/src/cli.rs)
+- [T3 Code product](https://t3.codes/) (candidate only; verify exact license/source and hosting behavior before any integration)
 - [REA license and third-party notices](https://github.com/morluto/rea)
 - [Matt Pocock skills](https://github.com/mattpocock/skills)

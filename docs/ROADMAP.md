@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Roadmap
 
-**Status:** M01-A through M01-E, M02-A through M02-D, Q01, M03-A, and P2-A1 are in the specified base. This branch closes P2 engineering gaps and implements the first bounded P3 read-only developer-intelligence slice. P2 owner acceptance remains open; P3 is partial.
+**Status:** M01-A through M01-E, M02-A through M02-D, Q01, M03-A, and P2-A implementation are present in project history. P2 owner acceptance remains open. This branch extends the partial, bounded P3 read-only developer-intelligence slice and prepares P4 architecture only.
 
 ## Phase gates
 
@@ -31,6 +31,7 @@ For each milestone:
 | P2-A3 | Human-approved Memory | Create editable pending candidates and explicit review/approval/rejection actions | Current WRITE; exact source/content snapshot; explicit UI confirmation; replay/stale/cross-workspace rejection |
 | P2-A4 | Connected Knowledge Galaxy UI | Bind workspace selection, evidence cards, candidate editing/review, and bilingual RTL to the local APIs | Same-origin CSRF; ephemeral transcript; general-chat mode; accessible controls; no automatic model action |
 | P3 | Developer Intelligence | Understand explicitly registered local repositories through commit-bound, permission-filtered evidence | Explicit terminal approval; no code execution; bounded index; source citations; stale snapshot invalidation; local provider only |
+| P4 | Supervised Coding Agents | Future supervised coding tasks in isolated, disposable repository workspaces | Architecture only in this branch; distinct code-write authorization, OS isolation, deny-by-default capabilities, explicit human approval, cancellation and diff review must pass gates before implementation |
 
 ## Dependency notes
 
@@ -42,4 +43,4 @@ For each milestone:
 
 ## Current state and next task
 
-M01's acceptance report retains unresolved cross-workspace consent and other documented limitations; aggregation remains unsupported and denied by default. P2-A1 through A4 are implemented on this branch, with owner live acceptance and independent review still required. The P3 slice adds terminal-approved repositories under existing approved roots, commit-pinned Git-object indexing, scoped file/symbol search, source inspection, and local provider-backed answers in the browser. P3 semantic analysis is partial; no code execution or coding agents are present. See the [P2 acceptance report](P2_FINAL_ENGINEERING_ACCEPTANCE.md), [P3 implementation and limits](P3_DEVELOPER_INTELLIGENCE.md), [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md), and [acceptance/test plan](P2A_ACCEPTANCE_AND_TEST_PLAN.md).
+M01's acceptance report retains unresolved cross-workspace consent and other documented limitations; aggregation remains unsupported and denied by default. P2-A1 through A4 are implemented, with owner live acceptance and independent review still required. P3 includes terminal-approved repositories under existing approved roots, commit-pinned Git-object indexing, multi-language partial metadata, a bounded permission-scoped graph, commit changes, source citations, and the developer dashboard. P3 is not a complete semantic analyzer; it never executes repository code. P4 is design-only, with write authorization and target-Windows isolation still unresolved. See [P2 acceptance](P2_FINAL_ENGINEERING_ACCEPTANCE.md), [P3 implementation and limits](P3_DEVELOPER_INTELLIGENCE.md), [P4 architecture](P4_SUPERVISED_CODING_AGENTS_DESIGN.md), and [P4 acceptance plan](P4_SECURITY_AND_ACCEPTANCE_PLAN.md).

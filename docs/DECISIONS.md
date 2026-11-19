@@ -79,8 +79,13 @@ The product targets Arabic and English, Windows desktop, and a browser dashboard
 ### P-11 — Read-only repository intelligence
 
 **Proposal implemented as a first slice:** register local Git repositories only beneath existing approved roots, using the workspace's `MANAGE_SOURCES` permission and an interactive trusted-terminal confirmation. Index commit-pinned Git blobs into workspace-scoped tables and FTS5; expose authenticated search, source lines, and provider-backed source-grounded answers.
-**Security constraints:** no execution of repository code or scripts, no browser registration, no arbitrary path scanning, no cross-workspace fallback, no tools/edits, bounded indexing, and citations bind to a commit/path/line. Python AST is used only for Python symbols; other language symbols/call relations remain unknown.
-**Status:** partial P3 vertical slice. No incremental historical snapshot retention, commit diff analysis, comprehensive parsers, dependency graph, or semantic runtime call graph is implemented. Windows reparse/path replacement race limitations remain documented. See [P3 docs](P3_DEVELOPER_INTELLIGENCE.md).
+**Security constraints:** no execution of repository code or scripts, no browser registration, no arbitrary path scanning, no cross-workspace fallback, no tools/edits, bounded indexing, and citations bind to a commit/path/line. Python uses AST; other language extraction is explicitly partial lexical metadata. The derived graph and commit-diff evidence are bounded and permission-scoped.
+**Status:** partial P3 vertical slice implemented. It includes a derived snapshot graph, recent commit selectors, bounded commit diffs, and line-overlap hints for indexed Python AST symbols. It does not provide comprehensive parsers, semantic call graphs, historical indexed snapshots, or tested Windows path-race resistance. See [P3 docs](P3_DEVELOPER_INTELLIGENCE.md).
+
+### P-12 — P4 supervised coding agents (architecture only)
+**Proposal:** if P4 is approved, integrate one pinned agent behind a provider-independent Jarvis supervisor, task-specific deny-by-default manifest, disposable repository copy/worktree, OS-enforced process/filesystem/network isolation, explicit per-action approvals, bounded cancellation/audit, and human diff review. A local agent is not considered safe because it runs locally.
+**Open gate:** `MANAGE_SOURCES` and memory `WRITE` do not authorize source changes. Decide whether to add a distinct repository-scoped code-write permission and validate a practical isolation mechanism on the owner's exact Windows 11 Home device. Until then, P4 must remain read-only. No runtime, agent, skill, connector, or dependency is installed or adopted by this branch.
+**Status:** architecture and acceptance documents only; no P4 behavior is implemented. See [P4 architecture](P4_SUPERVISED_CODING_AGENTS_DESIGN.md) and [P4 security and acceptance plan](P4_SECURITY_AND_ACCEPTANCE_PLAN.md).
 
 ## Open decisions
 
