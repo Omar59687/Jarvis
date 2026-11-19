@@ -37,6 +37,16 @@ const candidateSources = $("#candidate-sources");
 const candidateSourceOptions = $("#candidate-source-options");
 const pendingCandidates = $("#pending-candidates");
 const memoryStatus = $("#memory-status");
+const developerRepoSelect = $("#developer-repo");
+const developerState = $("#developer-state");
+const developerSearchForm = $("#developer-search-form");
+const developerSearch = $("#developer-search");
+const developerResults = $("#developer-results");
+const developerSource = $("#developer-source");
+const developerChatForm = $("#developer-chat-form");
+const developerQuestion = $("#developer-question");
+const developerAsk = $("#developer-ask");
+const developerAnswer = $("#developer-answer");
 let language = "en";
 let selectedId = null;
 let visibleIds = searchNodeIds(NODES, "", language);
@@ -54,6 +64,10 @@ let latestEvidenceRequestId = null;
 let latestCitations = [];
 let reviewCandidate = null;
 let latestEvidenceResponse = null;
+let developerRepositories = [];
+let activeDeveloperRepoId = null;
+let developerBusy = false;
+let developerStatus = ["Pair and select a workspace to load repositories.", "اربط الجلسة واختر مساحة عمل لتحميل المستودعات."];
 
 const CHAT_STATUS = {
   checking: ["Checking local session…", "جارٍ التحقق من الجلسة المحلية…"],
@@ -115,6 +129,7 @@ function applyLanguage(next) {
     element.setAttribute("aria-label", element.dataset[`${language}AriaLabel`]);
   }
   updateChatInputPlaceholder();
+  setDeveloperState(...developerStatus);
   $("#motion-toggle").setAttribute("aria-pressed", String(!reduceMotion));
   $("#motion-label").textContent = language === "ar"
     ? (reduceMotion ? "الحركة مخفّضة" : "الحركة مفعّلة")
@@ -174,6 +189,210 @@ function setWorkspaceState(en, ar) {
   workspaceState.textContent = language === "ar" ? ar : en;
 }
 
+function setDeveloperState(en, ar = en) {
+  developerStatus = [en, ar];
+  developerState.dataset.en = en;
+  developerState.dataset.ar = ar;
+  developerState.textContent = language === "ar" ? ar : en;
+}
+
+function clearDeveloperResults() {
+  developerResults.replaceChildren();
+  developerSource.replaceChildren();
+  developerSource.hidden = true;
+  developerAnswer.replaceChildren();
+}
+
+function updateDeveloperControls() {
+  const readyRepo = developerRepositories.find((repo) => repo.id === activeDeveloperRepoId
+    && repo.index_status === "ready");
+  const enabled = authenticated && Boolean(activeWorkspaceId) && Boolean(readyRepo) && !developerBusy;
+  developerSearch.disabled = !enabled;
+  developerSearchForm.querySelector("button[type=submit]").disabled = !enabled;
+  developerQuestion.disabled = !enabled;
+  developerAsk.disabled = !enabled;
+  developerRepoSelect.disabled = !authenticated || !activeWorkspaceId || !developerRepositories.length;
+}
+
+async function loadDeveloperRepositories() {
+  clearDeveloperResults();
+  developerRepositories = [];
+  activeDeveloperRepoId = null;
+  developerRepoSelect.replaceChildren();
+  const initial = document.createElement("option");
+  initial.value = "";
+  initial.textContent = language === "ar" ? "لا توجد مستودعات" : "No repositories";
+  developerRepoSelect.append(initial);
+  if (!authenticated || !activeWorkspaceId) {
+    setDeveloperState("Pair and select a workspace to load repositories.", "اربط الجلسة واختر مساحة عمل لتحميل المستودعات.");
+    updateDeveloperControls();
+    return;
+  }
+  setDeveloperState("Loading authorized repositories…", "جارٍ تحميل المستودعات المصرح بها…");
+  try {
+    const response = await fetch("/api/v1/developer/repositories", {
+      credentials: "same-origin", cache: "no-store"
+    });
+    const value = await responseJson(response);
+    if (response.status === 401) {
+      markSessionExpired();
+      return;
+    }
+    if (!response.ok || value.workspace_id !== activeWorkspaceId || !Array.isArray(value.repositories)) {
+      throw new Error(value.error || "developer_service_unavailable");
+    }
+    developerRepositories = value.repositories.filter((repo) => repo && typeof repo.id === "string"
+      && typeof repo.name === "string" && repo.workspace_id === activeWorkspaceId);
+    developerRepoSelect.replaceChildren();
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = language === "ar" ? "اختر مستودعًا" : "Select a repository";
+    developerRepoSelect.append(empty);
+    for (const repo of developerRepositories) {
+      const option = document.createElement("option");
+      option.value = repo.id;
+      option.textContent = repo.name;
+      option.dir = "auto";
+      developerRepoSelect.append(option);
+    }
+    if (developerRepositories.length) {
+      setDeveloperState("Choose a registered repository.", "اختر مستودعًا مسجلًا.");
+    } else {
+      setDeveloperState("No repository is registered in this workspace. Use the trusted terminal registration steps.",
+        "لا يوجد مستودع مسجل في مساحة العمل. استخدم خطوات التسجيل من الطرفية الموثوقة.");
+    }
+  } catch (error) {
+    setDeveloperState("Developer repository service is unavailable.", "خدمة مستودعات المطورين غير متاحة.");
+  } finally {
+    updateDeveloperControls();
+  }
+}
+
+function selectDeveloperRepository() {
+  activeDeveloperRepoId = developerRepoSelect.value || null;
+  clearDeveloperResults();
+  const repo = developerRepositories.find((item) => item.id === activeDeveloperRepoId);
+  if (!repo) {
+    setDeveloperState("Choose a registered repository.", "اختر مستودعًا مسجلًا.");
+  } else if (repo.index_status !== "ready") {
+    setDeveloperState(`Index is ${repo.index_status}. Re-index from the trusted terminal.`,
+      `حالة الفهرس ${repo.index_status}. أعد الفهرسة من الطرفية الموثوقة.`);
+  } else {
+    const commit = typeof repo.commit_sha === "string" ? repo.commit_sha.slice(0, 12) : "unknown";
+    setDeveloperState(`Indexed ${repo.branch || "detached HEAD"} · ${commit}`,
+      `تمت الفهرسة · ${commit}`);
+  }
+  updateDeveloperControls();
+}
+
+async function searchDeveloperFiles(event) {
+  event.preventDefault();
+  if (!activeDeveloperRepoId || developerBusy) return;
+  const query = developerSearch.value.trim();
+  if (!query || query.length > 256) return;
+  clearDeveloperResults();
+  setDeveloperState("Searching the indexed snapshot…", "جارٍ البحث في النسخة المفهرسة…");
+  try {
+    const response = await fetch(`/api/v1/developer/repositories/${encodeURIComponent(activeDeveloperRepoId)}/files?q=${encodeURIComponent(query)}`,
+      { credentials: "same-origin", cache: "no-store" });
+    const value = await responseJson(response);
+    if (response.status === 401) return markSessionExpired();
+    if (response.status === 409 && value.error === "repository_index_stale") {
+      setDeveloperState("Repository changed. Re-index it from the trusted terminal before searching.",
+        "تغيّر المستودع. أعد فهرسته من الطرفية الموثوقة قبل البحث.");
+      return;
+    }
+    if (!response.ok || value.workspace_id !== activeWorkspaceId
+        || value.repository?.id && value.repository.id !== activeDeveloperRepoId
+        || !Array.isArray(value.results)) throw new Error("search_failed");
+    for (const result of value.results) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "developer-result";
+      const name = document.createElement("strong");
+      name.textContent = result.relative_path;
+      const detail = document.createElement("small");
+      const symbols = Array.isArray(result.symbols) ? result.symbols.map((symbol) => symbol.qualified_name).join(", ") : "";
+      detail.textContent = `${result.language}${symbols ? ` · ${symbols}` : " · symbols unknown"}`;
+      button.append(name, detail);
+      button.addEventListener("click", () => openDeveloperSource(result.id));
+      developerResults.append(button);
+    }
+    setDeveloperState(value.results.length ? "Select a result to view its indexed source." : "No indexed source matched this query.",
+      value.results.length ? "اختر نتيجة لعرض المصدر المفهرس." : "لم يطابق البحث أي مصدر مفهرس.");
+  } catch (_error) {
+    setDeveloperState("Repository search failed safely.", "تعذر البحث في المستودع بأمان.");
+  }
+}
+
+async function openDeveloperSource(fileId) {
+  if (!activeDeveloperRepoId || typeof fileId !== "string") return;
+  developerSource.hidden = true;
+  try {
+    const response = await fetch(`/api/v1/developer/repositories/${encodeURIComponent(activeDeveloperRepoId)}/files/${encodeURIComponent(fileId)}`,
+      { credentials: "same-origin", cache: "no-store" });
+    const value = await responseJson(response);
+    if (response.status === 401) return markSessionExpired();
+    if (!response.ok || value.workspace_id !== activeWorkspaceId || value.source?.id !== fileId) {
+      throw new Error("source_unavailable");
+    }
+    const source = value.source;
+    developerSource.textContent = `${source.relative_path} · ${source.commit_sha.slice(0, 12)} · lines ${source.start_line}-${source.end_line}\n${source.content}`;
+    developerSource.hidden = false;
+  } catch (_error) {
+    setDeveloperState("This indexed source is no longer available.", "لم يعد هذا المصدر المفهرس متاحًا.");
+  }
+}
+
+async function askDeveloper(event) {
+  event.preventDefault();
+  if (!authenticated || !csrfToken || !activeWorkspaceId || !activeDeveloperRepoId || developerBusy) return;
+  const message = developerQuestion.value.trim();
+  if (!message || message.length > 1000) return;
+  developerBusy = true;
+  updateDeveloperControls();
+  clearDeveloperResults();
+  developerAnswer.textContent = language === "ar" ? "جارٍ فحص الأدلة المحلية…" : "Checking local repository evidence…";
+  developerAnswer.dir = "auto";
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 310000);
+  try {
+    const response = await fetch("/api/v1/developer/chat", {
+      method: "POST", credentials: "same-origin", cache: "no-store", signal: controller.signal,
+      headers: { "Content-Type": "application/json", "X-Jarvis-CSRF": csrfToken },
+      body: JSON.stringify({ repository_id: activeDeveloperRepoId, message })
+    });
+    const value = await responseJson(response);
+    if (response.status === 401) return markSessionExpired();
+    if (response.status === 409 && value.error === "repository_index_stale") {
+      developerAnswer.textContent = language === "ar" ? "تغير المستودع. أعد فهرسته من الطرفية ثم أعد السؤال." : "Repository changed. Re-index it in the trusted terminal, then ask again.";
+      return;
+    }
+    if (!response.ok || value.workspace_id !== activeWorkspaceId || value.repository_id !== activeDeveloperRepoId
+        || value.model !== configuredModel || value.provider !== configuredProvider
+        || typeof value.reply !== "string" || value.reply.length > 12000 || !Array.isArray(value.citations)) {
+      throw new Error("developer_chat_failed");
+    }
+    developerAnswer.textContent = value.reply;
+    for (const citation of value.citations) {
+      if (citation.workspace_id !== activeWorkspaceId || citation.repository_id !== activeDeveloperRepoId
+          || typeof citation.relative_path !== "string" || typeof citation.commit_sha !== "string") continue;
+      const card = document.createElement("span");
+      card.className = "developer-citation";
+      card.textContent = `[${citation.label}] ${citation.evidence_type || "source"} · ${citation.relative_path} · ${citation.commit_sha.slice(0, 12)} · ${citation.start_line}-${citation.end_line}`;
+      developerAnswer.append(card);
+    }
+  } catch (error) {
+    developerAnswer.textContent = error.name === "AbortError"
+      ? (language === "ar" ? "انتهت مهلة سؤال المطور." : "Developer question timed out.")
+      : (language === "ar" ? "تعذر إكمال السؤال بأمان." : "The developer question could not be completed safely.");
+  } finally {
+    clearTimeout(timeout);
+    developerBusy = false;
+    updateDeveloperControls();
+  }
+}
+
 function clearEphemeralWorkspaceView() {
   if (candidateEditorDialog.open) candidateEditorDialog.close();
   if (candidateReviewDialog.open) candidateReviewDialog.close();
@@ -189,6 +408,9 @@ function clearEphemeralWorkspaceView() {
   pendingCandidates.replaceChildren();
   memoryStatus.textContent = "";
   createCandidateOpen.disabled = !authenticated || !activeWorkspaceId;
+  developerQuestion.value = "";
+  developerSearch.value = "";
+  clearDeveloperResults();
 }
 
 function setPairError(message = "") {
@@ -207,6 +429,11 @@ function setAuthenticated(value, token = null, model = null, provider = null, sh
   workspaceSelect.disabled = !authenticated;
   if (!authenticated) {
     activeWorkspaceId = null;
+    developerRepositories = [];
+    activeDeveloperRepoId = null;
+    developerRepoSelect.replaceChildren();
+    clearDeveloperResults();
+    setDeveloperState("Pair and select a workspace to load repositories.", "اربط الجلسة واختر مساحة عمل لتحميل المستودعات.");
     workspaceServiceUnavailable = false;
     workspaceSelect.replaceChildren();
     clearEphemeralWorkspaceView();
@@ -603,6 +830,7 @@ async function loadWorkspaces(preferredWorkspaceId = null) {
       chatInput.disabled = true;
       chatSend.disabled = true;
       setWorkspaceState("Workspace authorization is unavailable. Clear the selection or reload before asking.", "تفويض مساحة العمل غير متاح. امسح الاختيار أو أعد التحميل قبل السؤال.");
+      await loadDeveloperRepositories();
     } else {
       workspaceSelect.value = "";
       activeWorkspaceId = null;
@@ -611,6 +839,7 @@ async function loadWorkspaces(preferredWorkspaceId = null) {
       chatSend.disabled = !authenticated;
       createCandidateOpen.disabled = true;
       setWorkspaceState("Workspace APIs are unavailable. General chat remains available.", "واجهات مساحات العمل غير متاحة. تظل الدردشة العامة متاحة.");
+      await loadDeveloperRepositories();
     }
     return;
   }
@@ -647,6 +876,7 @@ async function loadWorkspaces(preferredWorkspaceId = null) {
     setWorkspaceState("No workspace selected · general chat only", "لم تُحدد مساحة · دردشة عامة فقط");
     pendingCandidates.replaceChildren();
   }
+  await loadDeveloperRepositories();
 }
 
 async function selectWorkspace() {
@@ -680,6 +910,7 @@ async function selectWorkspace() {
     } else {
       setWorkspaceState("General chat only · no workspace is selected.", "دردشة عامة فقط · لم تُحدد مساحة عمل.");
     }
+    await loadDeveloperRepositories();
   } catch (error) {
     if (error.message === "workspace_selection_changed") {
       await restoreSession();
@@ -1119,6 +1350,9 @@ function useFallback() {
 
 languageSelect.addEventListener("change", () => applyLanguage(languageSelect.value));
 workspaceSelect.addEventListener("change", selectWorkspace);
+developerRepoSelect.addEventListener("change", selectDeveloperRepository);
+developerSearchForm.addEventListener("submit", searchDeveloperFiles);
+developerChatForm.addEventListener("submit", askDeveloper);
 search.addEventListener("input", updateSearch);
 pairForm.addEventListener("submit", pairBrowser);
 chatForm.addEventListener("submit", sendChat);

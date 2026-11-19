@@ -27,6 +27,24 @@
 .details-panel { min-height: 0; overflow-y: auto; }
 .command-dock .chat-form input { font-size: 14px; }
 .workspace-select:disabled { opacity: .62; }
+.developer-panel { margin: 18px 0; padding: 12px 0 16px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.developer-panel h2 { margin: 0; }
+.developer-panel .hint { font-size: 12px; line-height: 1.45; }
+.developer-form { display: grid; gap: 7px; margin-top: 12px; }
+.developer-form input,.developer-form textarea { width: 100%; min-width: 0; padding: 9px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: #080e18; font: inherit; font-size: 13px; line-height: 1.45; }
+.developer-search-row { display: flex; gap: 6px; }
+.developer-search-row input { flex: 1; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: #080e18; }
+.developer-form button,.developer-search-row button { min-height: 34px; padding: 7px 9px; border: 1px solid rgba(114,221,244,.2); border-radius: 6px; color: #bcecf5; background: rgba(114,221,244,.08); font-size: 12px; }
+.developer-form button:disabled,.developer-search-row button:disabled { opacity: .5; cursor: not-allowed; }
+.developer-results { display: grid; gap: 6px; margin-top: 9px; }
+.developer-result { width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); background: rgba(255,255,255,.025); text-align: start; overflow-wrap: anywhere; }
+.developer-result strong,.developer-result small { display: block; }
+.developer-result small { margin-top: 3px; color: var(--muted); font-size: 11px; direction: ltr; unicode-bidi: isolate; text-align: start; }
+.developer-source { max-height: 240px; margin: 8px 0; overflow: auto; padding: 9px; border: 1px solid var(--line); border-radius: 5px; color: #d4e3f2; background: #070c13; font: 11px/1.5 Consolas, monospace; direction: ltr; text-align: left; white-space: pre; }
+.developer-answer { margin-top: 8px; color: #dce7f4; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.developer-answer[dir="auto"] { unicode-bidi: plaintext; }
+.developer-citation { display: block; margin-top: 6px; padding: 7px; border-inline-start: 2px solid rgba(114,221,244,.6); color: var(--cyan); font-size: 11px; direction: ltr; unicode-bidi: isolate; overflow-wrap: anywhere; }
+html[dir="rtl"] .developer-panel .hint,html[dir="rtl"] .developer-form input,html[dir="rtl"] .developer-form textarea,html[dir="rtl"] .developer-result,html[dir="rtl"] .developer-answer { font-size: 13px; line-height: 1.55; letter-spacing: 0; }
 .evidence-panel { margin-top: 14px; padding: 12px; border: 1px solid rgba(114,221,244,.14); border-radius: 8px; background: rgba(9,16,26,.82); }
 .evidence-panel[hidden] { display: none; }
 .evidence-heading,.memory-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }

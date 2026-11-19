@@ -4,7 +4,7 @@
 
 ## Test fixtures
 
-Use temporary SQLite databases initialized with existing schema v5, explicit workspaces `ws-a` and `ws-b`, principals `alice` and `bob`, and deterministic in-process fake providers. Use approved synthetic Markdown/text sources only. Never use personal files or a real model in automated tests. Keep the provider transport fake; no Ollama/LM Studio process, model download, or cloud endpoint is needed.
+Use temporary SQLite databases initialized with the existing memory schema (v5 at the time this P2 plan was written; the separate P3 slice now adds v6 developer-index tables), explicit workspaces `ws-a` and `ws-b`, principals `alice` and `bob`, and deterministic in-process fake providers. Use approved synthetic Markdown/text sources only. Never use personal files or a real model in automated tests. Keep the provider transport fake; no Ollama/LM Studio process, model download, or cloud endpoint is needed.
 
 ## A. Identity, pairing, and workspace authorization
 
@@ -65,7 +65,7 @@ Existing regression references: `tests/test_memory.py::test_propose_approve_retr
 1. Chat accepts one bounded message only; requests do not contain prior turns; process/browser restart clears displayed transcript and citation cache. Verify no `localStorage`, `sessionStorage`, database chat table, or body logging.
 2. Citation cache stores no prompt, answer, or excerpts; enforce TTL, per-session count limit, and invalidation on logout/workspace switch/restart.
 3. English and Arabic workspace selection, citation cards, candidate review and approval are keyboard accessible, RTL-correct, readable, and announce loading/error states. The user must see evidence type/status before approval.
-4. `Database.current_version` stays 5 and no chat tables are created. Run existing schema v4→v5 upgrade, backup/restore, and FTS trigger tests. If future scope adds schema, stop and design a separate migration plan before coding.
+4. P2 itself adds no chat, transcript, or memory schema. Its tests must preserve the memory FTS lifecycle and backup behavior. P3 independently introduces schema v6 for the repository index, with its own v5→v6 rollback and backup/restore tests; P2 behavior remains covered against the migrated database.
 
 ## G. Required implementation verification commands
 

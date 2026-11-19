@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Roadmap
 
-**Status:** M01-A through M01-E, M02-A through M02-D, Q01, M03-A, and P2-A1 are in the stated baseline. This branch implements the remaining P2-A2/A3/A4 slices as separate commits; no PR or merge is included.
+**Status:** M01-A through M01-E, M02-A through M02-D, Q01, M03-A, and P2-A1 are in the specified base. This branch closes P2 engineering gaps and implements the first bounded P3 read-only developer-intelligence slice. P2 owner acceptance remains open; P3 is partial.
 
 ## Phase gates
 
@@ -30,6 +30,7 @@ For each milestone:
 | P2-A2 | Evidence-backed Chat | Reuse provider-neutral RAG and permission-filtered documents plus approved memories | READ rechecks; strict citation validation; bounded provenance; abstention; no cross-workspace access |
 | P2-A3 | Human-approved Memory | Create editable pending candidates and explicit review/approval/rejection actions | Current WRITE; exact source/content snapshot; explicit UI confirmation; replay/stale/cross-workspace rejection |
 | P2-A4 | Connected Knowledge Galaxy UI | Bind workspace selection, evidence cards, candidate editing/review, and bilingual RTL to the local APIs | Same-origin CSRF; ephemeral transcript; general-chat mode; accessible controls; no automatic model action |
+| P3 | Developer Intelligence | Understand explicitly registered local repositories through commit-bound, permission-filtered evidence | Explicit terminal approval; no code execution; bounded index; source citations; stale snapshot invalidation; local provider only |
 
 ## Dependency notes
 
@@ -41,4 +42,4 @@ For each milestone:
 
 ## Current state and next task
 
-M01's acceptance report retains unresolved cross-workspace consent and other documented limitations; aggregation remains unsupported and denied by default. This branch adds one-workspace authenticated evidence chat, explicitly human-approved memory candidates, and a connected bilingual UI. It does not provision accounts, persist conversation history, add tools, or route to cloud models. See the [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md), [acceptance/test plan](P2A_ACCEPTANCE_AND_TEST_PLAN.md), and implementation notes for [A1](P2A1_TRUSTED_WORKSPACE_SESSION.md), [A2](P2A2_EVIDENCE_CHAT.md), [A3](P2A3_HUMAN_APPROVED_MEMORY.md), and [A4](P2A4_CONNECTED_UI.md).
+M01's acceptance report retains unresolved cross-workspace consent and other documented limitations; aggregation remains unsupported and denied by default. P2-A1 through A4 are implemented on this branch, with owner live acceptance and independent review still required. The P3 slice adds terminal-approved repositories under existing approved roots, commit-pinned Git-object indexing, scoped file/symbol search, source inspection, and local provider-backed answers in the browser. P3 semantic analysis is partial; no code execution or coding agents are present. See the [P2 acceptance report](P2_FINAL_ENGINEERING_ACCEPTANCE.md), [P3 implementation and limits](P3_DEVELOPER_INTELLIGENCE.md), [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md), and [acceptance/test plan](P2A_ACCEPTANCE_AND_TEST_PLAN.md).

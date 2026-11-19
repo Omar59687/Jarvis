@@ -27,6 +27,31 @@
         <p id="workspace-state" class="hint" role="status" aria-live="polite" data-en="No workspace selected · general chat only" data-ar="لم تُحدد مساحة · دردشة عامة فقط">No workspace selected · general chat only</p>
       </div>
 
+      <section class="developer-panel" aria-labelledby="developer-heading">
+        <h2 id="developer-heading" class="eyebrow" data-en="DEVELOPER INTELLIGENCE" data-ar="ذكاء المطورين">DEVELOPER INTELLIGENCE</h2>
+        <p class="hint" data-en="Read-only indexed repository sources. The galaxy above remains synthetic." data-ar="مصادر مستودع مفهرسة للقراءة فقط. تبقى المجرة أعلاه اصطناعية.">Read-only indexed repository sources. The galaxy above remains synthetic.</p>
+        <label class="eyebrow" for="developer-repo" data-en="AUTHORIZED REPOSITORY" data-ar="المستودع المصرح به">AUTHORIZED REPOSITORY</label>
+        <select id="developer-repo" class="workspace-select" disabled aria-label="Select an authorized repository" data-en-aria-label="Select an authorized repository" data-ar-aria-label="اختر مستودعًا مصرحًا به">
+          <option value="" data-en="Select a workspace first" data-ar="اختر مساحة عمل أولًا">Select a workspace first</option>
+        </select>
+        <p id="developer-state" class="hint" role="status" aria-live="polite" data-en="Pair and select a workspace to load repositories." data-ar="اربط الجلسة واختر مساحة عمل لتحميل المستودعات.">Pair and select a workspace to load repositories.</p>
+        <form id="developer-search-form" class="developer-form">
+          <label class="eyebrow" for="developer-search" data-en="SEARCH FILES AND SYMBOLS" data-ar="ابحث في الملفات والرموز">SEARCH FILES AND SYMBOLS</label>
+          <div class="developer-search-row">
+            <input id="developer-search" type="search" maxlength="256" disabled aria-label="Search repository" data-en-aria-label="Search repository" data-ar-aria-label="ابحث في المستودع">
+            <button type="submit" disabled data-en="Search" data-ar="بحث">Search</button>
+          </div>
+        </form>
+        <div id="developer-results" class="developer-results" aria-live="polite"></div>
+        <pre id="developer-source" class="developer-source" hidden></pre>
+        <form id="developer-chat-form" class="developer-form">
+          <label class="eyebrow" for="developer-question" data-en="ASK ABOUT THIS REPOSITORY" data-ar="اسأل عن هذا المستودع">ASK ABOUT THIS REPOSITORY</label>
+          <textarea id="developer-question" maxlength="1000" rows="3" disabled aria-label="Developer question" data-en-aria-label="Developer question" data-ar-aria-label="سؤال عن التطوير"></textarea>
+          <button id="developer-ask" type="submit" disabled data-en="Ask with source citations" data-ar="اسأل مع استشهادات المصدر">Ask with source citations</button>
+        </form>
+        <div id="developer-answer" class="developer-answer" role="status" aria-live="polite"></div>
+      </section>
+
       <label class="eyebrow search-label" for="graph-search" data-en="SEARCH SAMPLE GRAPH" data-ar="ابحث في الرسم التجريبي">SEARCH SAMPLE GRAPH</label>
       <div class="search-box">
         <span aria-hidden="true">⌕</span>

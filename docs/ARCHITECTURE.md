@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Proposed Architecture
 
-**Status:** the logical product architecture below remains proposed. The stated baseline implements M01-A through M01-E, M02-A through M02-D, Q01, M03-A, and P2-A1. This branch implements P2-A2/A3/A4: one-workspace evidence-backed chat, pending memory lifecycle with explicit human decisions, and a connected English/Arabic UI. It remains a loopback development alpha, not a production desktop or multi-user dashboard. See [M03-B2](M03B2_LOCAL_PROVIDER.md), [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md), and the [P2-A4 implementation and Windows smoke steps](P2A4_CONNECTED_UI.md).
+**Status:** the logical product architecture below remains proposed. The stated base implements M01-A through M01-E, M02-A through M02-D, Q01, M03-A, and P2-A1. This branch implements P2-A2/A3/A4 and a partial P3 Developer Intelligence slice. It remains a loopback development alpha, not a production desktop, multi-user dashboard, or autonomous coding agent. P2 live owner acceptance remains open. See [P2 acceptance](P2_FINAL_ENGINEERING_ACCEPTANCE.md), [P3 implementation and limits](P3_DEVELOPER_INTELLIGENCE.md), [M03-B2](M03B2_LOCAL_PROVIDER.md), and [P2-A4](P2A4_CONNECTED_UI.md).
 
 ## 1. Architecture goals
 
@@ -100,7 +100,11 @@ M03-B2 extends the M03-B1 single-turn alpha with a provider-neutral generation c
 
 P2-A implements the selected one-workspace path: the service reads actor/workspace only from its paired session, calls the existing READ-checked document and approved-memory services, validates issued citations, and drops factual model text when validation fails. Candidate proposals remain pending until an authenticated user edits/reviews a snapshot and separately approves or rejects it. The chat UI is single-turn and page-memory-only; no model action can write memory. See [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md), [acceptance/test plan](P2A_ACCEPTANCE_AND_TEST_PLAN.md), and implementation notes [A1](P2A1_TRUSTED_WORKSPACE_SESSION.md), [A2](P2A2_EVIDENCE_CHAT.md), [A3](P2A3_HUMAN_APPROVED_MEMORY.md), and [A4](P2A4_CONNECTED_UI.md).
 
-## 9. Proposed component diagram
+## 9. P3 Developer Intelligence slice
+
+The first P3 implementation reuses `Database` workspace permissions and approved roots, adds schema-v6 repository/file records plus a separate FTS5 index, and exposes authenticated repository APIs through the existing loopback service. Repository registration and indexing require an interactive trusted-terminal action and `MANAGE_SOURCES`; browser operations require the paired principal's current workspace READ permission. The index uses commit-pinned Git objects, bounded file and query limits, and Python AST only for Python symbol/import extraction. Other languages are lexical-only and semantic relationships remain unknown unless reliably extracted. Model evidence stays untrusted, provider-selected, and citation-validated. No repository code, hooks, tests, package scripts, or builds execute. See [P3 documentation](P3_DEVELOPER_INTELLIGENCE.md) for exact boundaries and the known Windows path-race limitation.
+
+## 10. Proposed component diagram
 
 ```mermaid
 flowchart TD
