@@ -527,6 +527,14 @@ class DeveloperRepositoryService:
             raise AccessDenied("repository unavailable")
         return Repository(*tuple(row))
 
+    def _recheck_snapshot(self, actor_id: str, workspace_id: str, expected: Repository) -> None:
+        """Fail closed if access, registration, or indexed HEAD changed mid-query."""
+        current = self._repository(actor_id, workspace_id, expected.id)
+        self.db.require_access(actor_id, workspace_id, Permission.READ)
+        if current.head_commit != expected.head_commit:
+            raise StaleRepository()
+        self._ensure_current(actor_id, workspace_id, current)
+
     def _repository_path(self, actor_id: str, workspace_id: str, repo: Repository) -> Path:
         roots = self.db.list_approved_roots(actor_id, workspace_id)
         root = next((r for r in roots if r.id == repo.root_id and r.revoked_at is None), None)
@@ -901,9 +909,11 @@ class DeveloperRepositoryService:
             nodes[node_id] = {"id": node_id, "type": node_type, "label": label, **metadata}
             return True
 
-        def add_edge(source: str, target: str, relation: str) -> None:
+        def add_edge(source: str, target: str, relation: str,
+                     confidence: str = "indexed") -> None:
             if source in nodes and target in nodes and len(edges) < limit * 3:
-                edges.append({"source": source, "target": target, "type": relation})
+                edges.append({"source": source, "target": target,
+                              "type": relation, "confidence": confidence})
 
         repository_node = "repo:" + repo.id
         add_node(repository_node, "repository", repo.name, commit_sha=repo.head_commit)
@@ -950,7 +960,8 @@ class DeveloperRepositoryService:
                             end_line=int(symbol.get("end_line", symbol.get("start_line", 1))),
                             confidence=symbol.get("confidence", "ast"),
                             analysis_status=row[6]):
-                    add_edge(source_id, symbol_id, "defines")
+                    add_edge(source_id, symbol_id, "defines",
+                             str(symbol.get("confidence", "ast")))
             for item in imports[:100]:
                 if not isinstance(item, dict) or not isinstance(item.get("module"), str):
                     continue
@@ -958,16 +969,22 @@ class DeveloperRepositoryService:
                 module_id = module_nodes.get(module)
                 if module_id is None:
                     module_id = "module:" + hashlib.sha256(module.encode("utf-8")).hexdigest()[:20]
-                    if not add_node(module_id, "module", module, confidence=item.get("confidence", "ast")):
+                    if not add_node(module_id, "module", module):
                         truncated = True
                         break
                     module_nodes[module] = module_id
-                add_edge(source_id, module_id, "imports")
+                confidence = str(item.get("confidence", "ast"))
+                add_edge(source_id, module_id, "imports", confidence)
                 target = self._resolve_import_path(row[1], module, row[2], paths)
-                if target in file_node_ids:
+                # Exact Python AST imports and explicit Markdown local links
+                # can be resolved to file references. Other language imports
+                # remain partial module hints, not asserted file relationships.
+                reliable_reference = confidence == "ast" or item.get("kind") == "documentation_reference"
+                if reliable_reference and target in file_node_ids:
                     reference_edges.append((source_id, file_node_ids[target]))
         for source, target in reference_edges:
-            add_edge(source, target, "references")
+            add_edge(source, target, "references", "resolved_local_reference")
+        self._recheck_snapshot(actor_id, workspace_id, repo)
         return {"workspace_id": workspace_id, "repository_id": repository_id,
                 "commit_sha": repo.head_commit, "nodes": list(nodes.values()),
                 "edges": edges, "truncated": truncated}
@@ -992,6 +1009,7 @@ class DeveloperRepositoryService:
                 subject = re.sub(r"(?i)(?:[a-z]:[\\/]|\\\\|/(?:[^\s/]+/)+)[^\s]*",
                                  "[local path]", subject)
             result.append({"commit_sha": fields[0], "date": fields[1][:10], "subject": subject})
+        self._recheck_snapshot(actor_id, workspace_id, repo)
         return result
 
     def changes(self, actor_id: str, workspace_id: str, repository_id: str,
@@ -1032,7 +1050,8 @@ class DeveloperRepositoryService:
             changes.append({"change_type": {"A": "added", "M": "modified", "D": "deleted", "T": "type_changed"}[status[0]],
                             "relative_path": safe, "commit_sha": base_commit if status[0] == "D" else target,
                             "evidence_type": "git_change", "start_line": 1, "end_line": 1,
-                            "excerpt": "", "base_commit": base_commit, "target_commit": target})
+                            "excerpt": "", "base_commit": base_commit, "target_commit": target,
+                            "symbol_hints": [], "symbol_status": "unavailable"})
             if len(changes) > limit:
                 changes.pop()
                 truncated = True
@@ -1052,22 +1071,46 @@ class DeveloperRepositoryService:
             hunks: list[str] = []
             lines: list[tuple[int, int]] = []
             for line in diff.splitlines():
-                match = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
+                match = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
                 if match:
-                    start = int(match.group(1))
-                    count = int(match.group(2) or "1")
+                    if item["change_type"] == "deleted":
+                        start = int(match.group(1))
+                        count = int(match.group(2) or "1")
+                    else:
+                        start = int(match.group(3))
+                        count = int(match.group(4) or "1")
                     lines.append((start, max(start, start + count - 1)))
                 if line.startswith(("@@", "+", "-", " ")) and not line.startswith(("+++", "---")):
                     hunks.append(line[:1000])
             item["start_line"] = lines[0][0] if lines else 1
             item["end_line"] = lines[-1][1] if lines else 1
             item["excerpt"] = "\n".join(hunks[:80])[:6000]
+            if target == repo.head_commit and item["change_type"] != "deleted":
+                with self.db._connection() as connection:
+                    Database._require_access(connection, actor_id, workspace_id, Permission.READ)
+                    indexed = connection.execute(
+                        "SELECT symbols_json,analysis_status FROM developer_files "
+                        "WHERE workspace_id=? AND repository_id=? AND commit_sha=? AND relative_path=?",
+                        (workspace_id, repository_id, target, item["relative_path"]),
+                    ).fetchone()
+                if indexed is not None:
+                    item["symbol_status"] = "ast_line_overlap" if indexed[1] == "complete" else "partial_line_overlap"
+                    if indexed[1] == "complete":
+                        try:
+                            symbols = json.loads(indexed[0])
+                        except (TypeError, json.JSONDecodeError):
+                            symbols = []
+                        item["symbol_hints"] = [str(symbol.get("qualified_name", symbol.get("name", "")))
+                            for symbol in symbols if isinstance(symbol, dict)
+                            and int(symbol.get("start_line", 0)) <= int(item["end_line"])
+                            and int(symbol.get("end_line", symbol.get("start_line", 0))) >= int(item["start_line"])]
             item["base_commit"] = base_commit
             item["target_commit"] = target
             detailed_changes.append(item)
         if len(detailed_changes) < len(changes):
             truncated = True
         changes = detailed_changes
+        self._recheck_snapshot(actor_id, workspace_id, repo)
         return {"workspace_id": workspace_id, "repository_id": repository_id,
                 "indexed_commit": repo.head_commit, "base_commit": base_commit,
                 "target_commit": target, "changes": changes, "truncated": truncated}
@@ -1120,11 +1163,14 @@ class DeveloperRepositoryService:
             label = f"R{len(evidence) + 1}"
             evidence.append(DeveloperEvidence(label, repository_id, workspace_id, repo.name,
                 "git_change", str(item["commit_sha"]), str(item["relative_path"]),
-                int(item["start_line"]), int(item["end_line"]), str(item["excerpt"]), None))
+                int(item["start_line"]), int(item["end_line"]), str(item["excerpt"]),
+                str(item["symbol_hints"][0]) if len(item.get("symbol_hints", [])) == 1 else None))
             records.append({"label": f"[{label}]", "evidence_type": "git_change",
                 "path": item["relative_path"], "commit_sha": item["commit_sha"],
                 "base_commit": item["base_commit"], "target_commit": item["target_commit"],
                 "start_line": item["start_line"], "end_line": item["end_line"],
+                "symbol_hints": item.get("symbol_hints", []),
+                "symbol_status": item.get("symbol_status", "unavailable"),
                 "untrusted_diff_hunk": item["excerpt"]})
         prompt = json.dumps({"question": question, "untrusted_repository_evidence": records},
                             ensure_ascii=False)

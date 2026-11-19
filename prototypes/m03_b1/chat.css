@@ -44,6 +44,25 @@
 .developer-answer { margin-top: 8px; color: #dce7f4; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .developer-answer[dir="auto"] { unicode-bidi: plaintext; }
 .developer-citation { display: block; margin-top: 6px; padding: 7px; border-inline-start: 2px solid rgba(114,221,244,.6); color: var(--cyan); font-size: 11px; direction: ltr; unicode-bidi: isolate; overflow-wrap: anywhere; }
+.developer-graph-panel,.developer-changes { margin-top: 14px; padding-top: 10px; border-top: 1px solid rgba(114,221,244,.12); }
+.developer-graph-panel h3,.developer-changes h3 { margin: 0 0 8px; }
+.developer-graph { display: block; width: 100%; max-height: 430px; margin: 8px 0; border: 1px solid var(--line); border-radius: 7px; background: rgba(4,10,18,.72); }
+.developer-graph[hidden] { display: none; }
+.developer-graph line { stroke: rgba(114,221,244,.22); stroke-width: 1.2; }
+.developer-graph line[data-edge="references"] { stroke: rgba(141,174,255,.52); stroke-dasharray: 4 3; }
+.developer-graph circle { fill: #101e2d; stroke: #72ddf4; stroke-width: 1.4; cursor: pointer; }
+.developer-graph circle[data-type="symbol"] { stroke: #9ce8bd; }
+.developer-graph circle[data-type="module"] { stroke: #c1a8fa; }
+.developer-graph circle[aria-pressed="true"] { fill: #1e5261; stroke-width: 3; }
+.developer-graph text { fill: #dbe8f6; font: 12px system-ui, sans-serif; pointer-events: none; }
+.developer-graph-list { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 5px; max-height: 190px; overflow: auto; padding: 0; margin: 8px 0; list-style: none; }
+.developer-graph-list button { width: 100%; min-height: 38px; padding: 7px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); background: rgba(255,255,255,.025); text-align: start; font-size: 13px; overflow-wrap: anywhere; }
+.developer-graph-list button[aria-pressed="true"] { border-color: rgba(114,221,244,.7); background: rgba(114,221,244,.12); }
+.developer-graph-list small { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.developer-changes .workspace-select { margin: 3px 0 8px; }
+.developer-changes pre { max-height: 240px; overflow: auto; padding: 10px; border: 1px solid var(--line); border-radius: 5px; background: rgba(4,10,18,.72); color: #dbe8f6; font: 12px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.developer-compare-check { margin: 3px 0; font-size: 12px; }
+html[dir="rtl"] .developer-graph-list button,html[dir="rtl"] .developer-graph-list small { font-size: 14px; letter-spacing: 0; }
 html[dir="rtl"] .developer-panel .hint,html[dir="rtl"] .developer-form input,html[dir="rtl"] .developer-form textarea,html[dir="rtl"] .developer-result,html[dir="rtl"] .developer-answer { font-size: 13px; line-height: 1.55; letter-spacing: 0; }
 .evidence-panel { margin-top: 14px; padding: 12px; border: 1px solid rgba(114,221,244,.14); border-radius: 8px; background: rgba(9,16,26,.82); }
 .evidence-panel[hidden] { display: none; }

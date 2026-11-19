@@ -47,6 +47,16 @@ const developerChatForm = $("#developer-chat-form");
 const developerQuestion = $("#developer-question");
 const developerAsk = $("#developer-ask");
 const developerAnswer = $("#developer-answer");
+const developerGraph = $("#developer-graph");
+const developerGraphState = $("#developer-graph-state");
+const developerGraphList = $("#developer-graph-list");
+const developerNodeDetail = $("#developer-node-detail");
+const developerCompareBase = $("#developer-compare-base");
+const developerCompareTarget = $("#developer-compare-target");
+const developerCompareButton = $("#developer-compare");
+const developerChangeState = $("#developer-change-state");
+const developerChangesList = $("#developer-changes-list");
+const developerIncludeChanges = $("#developer-include-changes");
 let language = "en";
 let selectedId = null;
 let visibleIds = searchNodeIds(NODES, "", language);
@@ -67,7 +77,13 @@ let latestEvidenceResponse = null;
 let developerRepositories = [];
 let activeDeveloperRepoId = null;
 let developerBusy = false;
+let developerGraphData = null;
+let developerCommits = [];
+let selectedDeveloperNodeId = null;
+let developerLoadGeneration = 0;
 let developerStatus = ["Pair and select a workspace to load repositories.", "اربط الجلسة واختر مساحة عمل لتحميل المستودعات."];
+let developerGraphStatus = ["Select a ready repository to load its indexed structure.", "اختر مستودعًا جاهزًا لتحميل بنيته المفهرسة."];
+let developerChangeStatus = ["", ""];
 
 const CHAT_STATUS = {
   checking: ["Checking local session…", "جارٍ التحقق من الجلسة المحلية…"],
@@ -130,6 +146,14 @@ function applyLanguage(next) {
   }
   updateChatInputPlaceholder();
   setDeveloperState(...developerStatus);
+  setDeveloperGraphState(...developerGraphStatus);
+  setDeveloperChangeState(...developerChangeStatus);
+  if (developerGraphData) {
+    renderDeveloperGraphList(developerGraphData);
+    renderDeveloperGraph(developerGraphData);
+    const selectedNode = developerGraphData.nodes.find((node) => node.id === selectedDeveloperNodeId);
+    if (selectedNode) renderDeveloperNodeDetail(selectedNode);
+  }
   $("#motion-toggle").setAttribute("aria-pressed", String(!reduceMotion));
   $("#motion-label").textContent = language === "ar"
     ? (reduceMotion ? "الحركة مخفّضة" : "الحركة مفعّلة")
@@ -203,6 +227,41 @@ function clearDeveloperResults() {
   developerAnswer.replaceChildren();
 }
 
+function clearDeveloperGraph() {
+  developerGraphData = null;
+  developerCommits = [];
+  selectedDeveloperNodeId = null;
+  developerGraph.replaceChildren();
+  developerGraph.hidden = true;
+  developerGraphList.replaceChildren();
+  developerNodeDetail.textContent = "";
+  developerCompareBase.replaceChildren();
+  developerCompareTarget.replaceChildren();
+  developerCompareBase.disabled = true;
+  developerCompareTarget.disabled = true;
+  developerCompareButton.disabled = true;
+  developerIncludeChanges.checked = false;
+  developerIncludeChanges.disabled = true;
+  developerChangesList.replaceChildren();
+  setDeveloperGraphState("Select a ready repository to load its indexed structure.",
+    "اختر مستودعًا جاهزًا لتحميل بنيته المفهرسة.");
+  setDeveloperChangeState("", "");
+}
+
+function setDeveloperGraphState(en, ar = en) {
+  developerGraphStatus = [en, ar];
+  developerGraphState.dataset.en = en;
+  developerGraphState.dataset.ar = ar;
+  developerGraphState.textContent = language === "ar" ? ar : en;
+}
+
+function setDeveloperChangeState(en, ar = en) {
+  developerChangeStatus = [en, ar];
+  developerChangeState.dataset.en = en;
+  developerChangeState.dataset.ar = ar;
+  developerChangeState.textContent = language === "ar" ? ar : en;
+}
+
 function updateDeveloperControls() {
   const readyRepo = developerRepositories.find((repo) => repo.id === activeDeveloperRepoId
     && repo.index_status === "ready");
@@ -212,10 +271,16 @@ function updateDeveloperControls() {
   developerQuestion.disabled = !enabled;
   developerAsk.disabled = !enabled;
   developerRepoSelect.disabled = !authenticated || !activeWorkspaceId || !developerRepositories.length;
+  developerCompareBase.disabled = !enabled || developerCommits.length === 0;
+  developerCompareTarget.disabled = !enabled || developerCommits.length === 0;
+  developerCompareButton.disabled = !enabled || developerCommits.length < 2;
+  developerIncludeChanges.disabled = !enabled || developerCommits.length < 2;
 }
 
 async function loadDeveloperRepositories() {
+  developerLoadGeneration += 1;
   clearDeveloperResults();
+  clearDeveloperGraph();
   developerRepositories = [];
   activeDeveloperRepoId = null;
   developerRepoSelect.replaceChildren();
@@ -269,8 +334,10 @@ async function loadDeveloperRepositories() {
 }
 
 function selectDeveloperRepository() {
+  developerLoadGeneration += 1;
   activeDeveloperRepoId = developerRepoSelect.value || null;
   clearDeveloperResults();
+  clearDeveloperGraph();
   const repo = developerRepositories.find((item) => item.id === activeDeveloperRepoId);
   if (!repo) {
     setDeveloperState("Choose a registered repository.", "اختر مستودعًا مسجلًا.");
@@ -281,8 +348,230 @@ function selectDeveloperRepository() {
     const commit = typeof repo.commit_sha === "string" ? repo.commit_sha.slice(0, 12) : "unknown";
     setDeveloperState(`Indexed ${repo.branch || "detached HEAD"} · ${commit}`,
       `تمت الفهرسة · ${commit}`);
+    loadDeveloperGraphAndCommits(repo);
   }
   updateDeveloperControls();
+}
+
+function renderDeveloperGraph(data) {
+  const svgNS = "http://www.w3.org/2000/svg";
+  developerGraph.replaceChildren();
+  const shown = data.nodes.slice(0, 30);
+  const visibleIds = new Set(shown.map((node) => node.id));
+  const positions = new Map();
+  shown.forEach((node, index) => positions.set(node.id, {
+    x: 55 + (index % 5) * 132,
+    y: 34 + Math.floor(index / 5) * 62
+  }));
+  const selected = selectedDeveloperNodeId;
+  const connected = new Set();
+  for (const edge of data.edges) {
+    if (edge.source === selected) connected.add(edge.target);
+    if (edge.target === selected) connected.add(edge.source);
+  }
+  for (const edge of data.edges) {
+    if (!visibleIds.has(edge.source) || !visibleIds.has(edge.target)) continue;
+    const from = positions.get(edge.source);
+    const to = positions.get(edge.target);
+    if (!from || !to) continue;
+    const line = document.createElementNS(svgNS, "line");
+    line.setAttribute("x1", String(from.x)); line.setAttribute("y1", String(from.y));
+    line.setAttribute("x2", String(to.x)); line.setAttribute("y2", String(to.y));
+    line.dataset.edge = edge.type;
+    if (selected && edge.source !== selected && edge.target !== selected) line.style.opacity = "0.2";
+    developerGraph.append(line);
+  }
+  for (const node of shown) {
+    const point = positions.get(node.id);
+    const group = document.createElementNS(svgNS, "g");
+    group.dataset.node = node.id;
+    const circle = document.createElementNS(svgNS, "circle");
+    circle.setAttribute("cx", String(point.x)); circle.setAttribute("cy", String(point.y));
+    circle.setAttribute("r", node.type === "repository" ? "13" : "9");
+    circle.dataset.type = node.type;
+    circle.setAttribute("aria-pressed", String(selected === node.id));
+    circle.addEventListener("click", () => focusDeveloperNode(node.id));
+    if (selected && node.id !== selected && !connected.has(node.id)) group.style.opacity = "0.35";
+    const title = document.createElementNS(svgNS, "title");
+    title.textContent = `${localizeDeveloperValue(node.type)}: ${node.label}`;
+    const label = document.createElementNS(svgNS, "text");
+    label.setAttribute("x", String(point.x + 13)); label.setAttribute("y", String(point.y + 3));
+    label.textContent = node.label.length > 20 ? `${node.label.slice(0, 19)}…` : node.label;
+    group.append(title, circle, label);
+    developerGraph.append(group);
+  }
+  developerGraph.hidden = false;
+}
+
+function focusDeveloperNode(nodeId) {
+  selectedDeveloperNodeId = nodeId;
+  const node = developerGraphData?.nodes.find((item) => item.id === nodeId);
+  if (!node) return;
+  renderDeveloperNodeDetail(node);
+  developerGraphList.querySelectorAll("button[data-node-id]").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.nodeId === nodeId));
+  });
+  if (node.file_id) openDeveloperSource(node.file_id);
+  renderDeveloperGraph(developerGraphData);
+}
+
+function renderDeveloperNodeDetail(node) {
+  const adjacent = developerGraphData.edges
+    .filter((edge) => edge.source === node.id || edge.target === node.id)
+    .map((edge) => `${localizeDeveloperValue(edge.type)}${edge.confidence === "lexical_partial"
+      ? (language === "ar" ? " (جزئي)" : " (partial)") : ""}`);
+  const relations = [...new Set(adjacent)];
+  const detail = `${localizeDeveloperValue(node.type)}: ${node.label}${node.relative_path ? ` · ${node.relative_path}` : ""}`
+    + (relations.length ? ` · ${relations.join(", ")}` : "");
+  developerNodeDetail.textContent = detail;
+}
+
+function renderDeveloperGraphList(data) {
+  developerGraphList.replaceChildren();
+  for (const node of data.nodes) {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.nodeId = node.id;
+    button.setAttribute("aria-pressed", String(selectedDeveloperNodeId === node.id));
+    const title = document.createElement("span");
+    title.textContent = `${localizeDeveloperValue(node.type)}: ${node.label}`;
+    const detail = document.createElement("small");
+    const analysisStatus = node.analysis_status ? localizeDeveloperValue(node.analysis_status) : "";
+    const confidence = node.confidence === "lexical_partial"
+      ? (language === "ar" ? "ثقة جزئية" : "partial confidence") : node.confidence || "";
+    detail.textContent = `${node.relative_path || node.commit_sha?.slice(0, 12) || ""}${analysisStatus ? ` · ${analysisStatus}` : ""}${confidence ? ` · ${confidence}` : ""}`;
+    button.append(title, detail);
+    button.addEventListener("click", () => focusDeveloperNode(node.id));
+    item.append(button);
+    developerGraphList.append(item);
+  }
+}
+
+function localizeDeveloperValue(value) {
+  if (language !== "ar") return value;
+  const labels = {
+    repository: "المستودع", directory: "مجلد", file: "ملف", symbol: "رمز", module: "وحدة",
+    contains: "يحتوي", defines: "يعرّف", imports: "يستورد", references: "يشير إلى",
+    complete: "مكتمل", partial: "جزئي", failed: "فشل التحليل", unsupported: "غير مدعوم", unknown: "غير معروف"
+  };
+  return labels[value] || value;
+}
+
+function populateDeveloperCommitSelect(select, commits, selected) {
+  select.replaceChildren();
+  for (const commit of commits) {
+    const option = document.createElement("option");
+    option.value = commit.commit_sha;
+    option.textContent = `${commit.commit_sha.slice(0, 12)} · ${commit.date} · ${commit.subject}`;
+    option.dir = "auto";
+    select.append(option);
+  }
+  if (selected) select.value = selected;
+}
+
+async function loadDeveloperGraphAndCommits(repo) {
+  const generation = developerLoadGeneration;
+  const workspace = activeWorkspaceId;
+  setDeveloperGraphState("Loading the authorized indexed graph…", "جارٍ تحميل الرسم المفهرس المصرح به…");
+  setDeveloperChangeState("Loading recent indexed commits…", "جارٍ تحميل الالتزامات المفهرسة الأخيرة…");
+  try {
+    const prefix = `/api/v1/developer/repositories/${encodeURIComponent(repo.id)}`;
+    const [graphResponse, commitsResponse] = await Promise.all([
+      fetch(`${prefix}/graph?limit=300`, { credentials: "same-origin", cache: "no-store" }),
+      fetch(`${prefix}/commits`, { credentials: "same-origin", cache: "no-store" })
+    ]);
+    const [graph, commitsValue] = await Promise.all([responseJson(graphResponse), responseJson(commitsResponse)]);
+    if (generation !== developerLoadGeneration || workspace !== activeWorkspaceId || repo.id !== activeDeveloperRepoId) return;
+    if (graphResponse.status === 401 || commitsResponse.status === 401) return markSessionExpired();
+    if (graphResponse.status === 409 || commitsResponse.status === 409) {
+      setDeveloperGraphState("Repository index is stale. Re-index it from the trusted terminal.",
+        "فهرس المستودع قديم. أعد فهرسته من الطرفية الموثوقة.");
+      setDeveloperChangeState("Re-index before viewing commits.", "أعد الفهرسة قبل عرض الالتزامات.");
+      return;
+    }
+    if (!graphResponse.ok || !commitsResponse.ok || graph.workspace_id !== workspace
+        || graph.repository_id !== repo.id || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)
+        || commitsValue.workspace_id !== workspace || commitsValue.repository_id !== repo.id
+        || !Array.isArray(commitsValue.commits)) throw new Error("graph_unavailable");
+    developerGraphData = graph;
+    developerCommits = commitsValue.commits.filter((item) => item && /^[0-9a-f]{40,64}$/.test(item.commit_sha));
+    renderDeveloperGraphList(graph);
+    renderDeveloperGraph(graph);
+    setDeveloperGraphState(`${graph.nodes.length} graph nodes · ${graph.edges.length} relationships · ${graph.commit_sha.slice(0, 12)}${graph.truncated ? " · limited view" : ""}`,
+      `${graph.nodes.length} عقدة · ${graph.edges.length} علاقة · ${graph.commit_sha.slice(0, 12)}${graph.truncated ? " · عرض محدود" : ""}`);
+    populateDeveloperCommitSelect(developerCompareTarget, developerCommits, developerCommits[0]?.commit_sha);
+    populateDeveloperCommitSelect(developerCompareBase, developerCommits,
+      developerCommits[1]?.commit_sha || developerCommits[0]?.commit_sha);
+    if (developerCommits.length > 1) {
+      setDeveloperChangeState("Choose a base and target commit to inspect changes.",
+        "اختر الالتزام الأساسي والهدف لفحص التغييرات.");
+    } else {
+      setDeveloperChangeState("Only one indexed-history commit is available for comparison.",
+        "يتوفر التزام واحد فقط من السجل المفهرس للمقارنة.");
+    }
+  } catch (_error) {
+    if (generation === developerLoadGeneration) {
+      setDeveloperGraphState("Repository graph is unavailable.", "رسم المستودع غير متاح.");
+      setDeveloperChangeState("Commit history is unavailable.", "سجل الالتزامات غير متاح.");
+    }
+  } finally {
+    if (generation === developerLoadGeneration) updateDeveloperControls();
+  }
+}
+
+async function compareDeveloperCommits() {
+  if (!activeDeveloperRepoId || developerBusy) return;
+  const generation = developerLoadGeneration;
+  const workspace = activeWorkspaceId;
+  const repositoryId = activeDeveloperRepoId;
+  const base = developerCompareBase.value;
+  const target = developerCompareTarget.value;
+  if (!base || !target) return;
+  developerChangesList.replaceChildren();
+  setDeveloperChangeState("Comparing commit snapshots…", "جارٍ مقارنة لقطات الالتزام…");
+  try {
+    const response = await fetch(`/api/v1/developer/repositories/${encodeURIComponent(repositoryId)}/changes?base=${encodeURIComponent(base)}&target=${encodeURIComponent(target)}`,
+      { credentials: "same-origin", cache: "no-store" });
+    const value = await responseJson(response);
+    if (generation !== developerLoadGeneration || workspace !== activeWorkspaceId
+        || repositoryId !== activeDeveloperRepoId) return;
+    if (response.status === 401) return markSessionExpired();
+    if (response.status === 409) {
+      setDeveloperChangeState("Repository index is stale. Re-index before comparing.",
+        "فهرس المستودع قديم. أعد الفهرسة قبل المقارنة.");
+      return;
+    }
+    if (!response.ok || value.workspace_id !== activeWorkspaceId || value.repository_id !== activeDeveloperRepoId
+        || value.base_commit !== base || value.target_commit !== target || !Array.isArray(value.changes)) {
+      throw new Error("comparison_failed");
+    }
+    for (const change of value.changes) {
+      const article = document.createElement("article");
+      article.className = "developer-result";
+      const title = document.createElement("strong");
+      title.textContent = `${change.change_type}: ${change.relative_path}`;
+      const meta = document.createElement("small");
+      const symbolHint = Array.isArray(change.symbol_hints) && change.symbol_hints.length
+        ? ` · changed lines overlap ${change.symbol_hints.join(", ")} (${change.symbol_status})` : "";
+      meta.textContent = `${change.commit_sha.slice(0, 12)} · ${change.start_line}-${change.end_line} · ${change.evidence_type}${symbolHint}`;
+      const excerpt = document.createElement("pre");
+      excerpt.textContent = change.excerpt;
+      excerpt.dir = "ltr";
+      article.append(title, meta, excerpt);
+      developerChangesList.append(article);
+    }
+    if (value.changes.length) {
+      setDeveloperChangeState(`${value.changes.length} changed files · commit-pinned diff evidence.${value.truncated ? " Limited by local bounds." : ""}`,
+        `${value.changes.length} ملفات متغيرة · دليل فرق مرتبط بالالتزام.${value.truncated ? " عُرضت نتيجة محدودة." : ""}`);
+    } else {
+      setDeveloperChangeState("No changes between these commits.", "لا توجد تغييرات بين هذين الالتزامين.");
+    }
+  } catch (_error) {
+    if (generation === developerLoadGeneration) {
+      setDeveloperChangeState("The comparison could not be completed safely.", "تعذر إكمال المقارنة بأمان.");
+    }
+  }
 }
 
 async function searchDeveloperFiles(event) {
@@ -290,12 +579,17 @@ async function searchDeveloperFiles(event) {
   if (!activeDeveloperRepoId || developerBusy) return;
   const query = developerSearch.value.trim();
   if (!query || query.length > 256) return;
+  const generation = developerLoadGeneration;
+  const workspace = activeWorkspaceId;
+  const repositoryId = activeDeveloperRepoId;
   clearDeveloperResults();
   setDeveloperState("Searching the indexed snapshot…", "جارٍ البحث في النسخة المفهرسة…");
   try {
-    const response = await fetch(`/api/v1/developer/repositories/${encodeURIComponent(activeDeveloperRepoId)}/files?q=${encodeURIComponent(query)}`,
+    const response = await fetch(`/api/v1/developer/repositories/${encodeURIComponent(repositoryId)}/files?q=${encodeURIComponent(query)}`,
       { credentials: "same-origin", cache: "no-store" });
     const value = await responseJson(response);
+    if (generation !== developerLoadGeneration || workspace !== activeWorkspaceId
+        || repositoryId !== activeDeveloperRepoId) return;
     if (response.status === 401) return markSessionExpired();
     if (response.status === 409 && value.error === "repository_index_stale") {
       setDeveloperState("Repository changed. Re-index it from the trusted terminal before searching.",
@@ -313,7 +607,9 @@ async function searchDeveloperFiles(event) {
       name.textContent = result.relative_path;
       const detail = document.createElement("small");
       const symbols = Array.isArray(result.symbols) ? result.symbols.map((symbol) => symbol.qualified_name).join(", ") : "";
-      detail.textContent = `${result.language}${symbols ? ` · ${symbols}` : " · symbols unknown"}`;
+      const analysis = result.analysis_status === "complete" ? "AST complete"
+        : result.analysis_status === "partial" ? "partial parser" : "metadata unknown";
+      detail.textContent = `${result.language} · ${analysis}${symbols ? ` · ${symbols}` : ""}`;
       button.append(name, detail);
       button.addEventListener("click", () => openDeveloperSource(result.id));
       developerResults.append(button);
@@ -321,17 +617,24 @@ async function searchDeveloperFiles(event) {
     setDeveloperState(value.results.length ? "Select a result to view its indexed source." : "No indexed source matched this query.",
       value.results.length ? "اختر نتيجة لعرض المصدر المفهرس." : "لم يطابق البحث أي مصدر مفهرس.");
   } catch (_error) {
-    setDeveloperState("Repository search failed safely.", "تعذر البحث في المستودع بأمان.");
+    if (generation === developerLoadGeneration) {
+      setDeveloperState("Repository search failed safely.", "تعذر البحث في المستودع بأمان.");
+    }
   }
 }
 
 async function openDeveloperSource(fileId) {
   if (!activeDeveloperRepoId || typeof fileId !== "string") return;
+  const generation = developerLoadGeneration;
+  const workspace = activeWorkspaceId;
+  const repositoryId = activeDeveloperRepoId;
   developerSource.hidden = true;
   try {
-    const response = await fetch(`/api/v1/developer/repositories/${encodeURIComponent(activeDeveloperRepoId)}/files/${encodeURIComponent(fileId)}`,
+    const response = await fetch(`/api/v1/developer/repositories/${encodeURIComponent(repositoryId)}/files/${encodeURIComponent(fileId)}`,
       { credentials: "same-origin", cache: "no-store" });
     const value = await responseJson(response);
+    if (generation !== developerLoadGeneration || workspace !== activeWorkspaceId
+        || repositoryId !== activeDeveloperRepoId) return;
     if (response.status === 401) return markSessionExpired();
     if (!response.ok || value.workspace_id !== activeWorkspaceId || value.source?.id !== fileId) {
       throw new Error("source_unavailable");
@@ -340,7 +643,9 @@ async function openDeveloperSource(fileId) {
     developerSource.textContent = `${source.relative_path} · ${source.commit_sha.slice(0, 12)} · lines ${source.start_line}-${source.end_line}\n${source.content}`;
     developerSource.hidden = false;
   } catch (_error) {
-    setDeveloperState("This indexed source is no longer available.", "لم يعد هذا المصدر المفهرس متاحًا.");
+    if (generation === developerLoadGeneration) {
+      setDeveloperState("This indexed source is no longer available.", "لم يعد هذا المصدر المفهرس متاحًا.");
+    }
   }
 }
 
@@ -349,6 +654,19 @@ async function askDeveloper(event) {
   if (!authenticated || !csrfToken || !activeWorkspaceId || !activeDeveloperRepoId || developerBusy) return;
   const message = developerQuestion.value.trim();
   if (!message || message.length > 1000) return;
+  const generation = developerLoadGeneration;
+  const workspace = activeWorkspaceId;
+  const repositoryId = activeDeveloperRepoId;
+  const payload = { repository_id: activeDeveloperRepoId, message };
+  if (developerIncludeChanges.checked) {
+    if (!developerCompareBase.value || !developerCompareTarget.value) {
+      setDeveloperChangeState("Choose both commits before including the comparison.",
+        "اختر الالتزامين قبل إدراج المقارنة.");
+      return;
+    }
+    payload.comparison_base = developerCompareBase.value;
+    payload.comparison_target = developerCompareTarget.value;
+  }
   developerBusy = true;
   updateDeveloperControls();
   clearDeveloperResults();
@@ -360,9 +678,11 @@ async function askDeveloper(event) {
     const response = await fetch("/api/v1/developer/chat", {
       method: "POST", credentials: "same-origin", cache: "no-store", signal: controller.signal,
       headers: { "Content-Type": "application/json", "X-Jarvis-CSRF": csrfToken },
-      body: JSON.stringify({ repository_id: activeDeveloperRepoId, message })
+      body: JSON.stringify(payload)
     });
     const value = await responseJson(response);
+    if (generation !== developerLoadGeneration || workspace !== activeWorkspaceId
+        || repositoryId !== activeDeveloperRepoId) return;
     if (response.status === 401) return markSessionExpired();
     if (response.status === 409 && value.error === "repository_index_stale") {
       developerAnswer.textContent = language === "ar" ? "تغير المستودع. أعد فهرسته من الطرفية ثم أعد السؤال." : "Repository changed. Re-index it in the trusted terminal, then ask again.";
@@ -383,9 +703,11 @@ async function askDeveloper(event) {
       developerAnswer.append(card);
     }
   } catch (error) {
-    developerAnswer.textContent = error.name === "AbortError"
-      ? (language === "ar" ? "انتهت مهلة سؤال المطور." : "Developer question timed out.")
-      : (language === "ar" ? "تعذر إكمال السؤال بأمان." : "The developer question could not be completed safely.");
+    if (generation === developerLoadGeneration) {
+      developerAnswer.textContent = error.name === "AbortError"
+        ? (language === "ar" ? "انتهت مهلة سؤال المطور." : "Developer question timed out.")
+        : (language === "ar" ? "تعذر إكمال السؤال بأمان." : "The developer question could not be completed safely.");
+    }
   } finally {
     clearTimeout(timeout);
     developerBusy = false;
@@ -411,6 +733,8 @@ function clearEphemeralWorkspaceView() {
   developerQuestion.value = "";
   developerSearch.value = "";
   clearDeveloperResults();
+  developerLoadGeneration += 1;
+  clearDeveloperGraph();
 }
 
 function setPairError(message = "") {
@@ -433,6 +757,8 @@ function setAuthenticated(value, token = null, model = null, provider = null, sh
     activeDeveloperRepoId = null;
     developerRepoSelect.replaceChildren();
     clearDeveloperResults();
+    developerLoadGeneration += 1;
+    clearDeveloperGraph();
     setDeveloperState("Pair and select a workspace to load repositories.", "اربط الجلسة واختر مساحة عمل لتحميل المستودعات.");
     workspaceServiceUnavailable = false;
     workspaceSelect.replaceChildren();
@@ -1351,6 +1677,7 @@ function useFallback() {
 languageSelect.addEventListener("change", () => applyLanguage(languageSelect.value));
 workspaceSelect.addEventListener("change", selectWorkspace);
 developerRepoSelect.addEventListener("change", selectDeveloperRepository);
+developerCompareButton.addEventListener("click", compareDeveloperCommits);
 developerSearchForm.addEventListener("submit", searchDeveloperFiles);
 developerChatForm.addEventListener("submit", askDeveloper);
 search.addEventListener("input", updateSearch);

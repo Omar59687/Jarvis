@@ -35,6 +35,23 @@
           <option value="" data-en="Select a workspace first" data-ar="اختر مساحة عمل أولًا">Select a workspace first</option>
         </select>
         <p id="developer-state" class="hint" role="status" aria-live="polite" data-en="Pair and select a workspace to load repositories." data-ar="اربط الجلسة واختر مساحة عمل لتحميل المستودعات.">Pair and select a workspace to load repositories.</p>
+        <div class="developer-graph-panel" aria-labelledby="developer-graph-heading">
+          <h3 id="developer-graph-heading" class="eyebrow" data-en="COMMIT-BOUND REPOSITORY GRAPH" data-ar="رسم المستودع المرتبط بالالتزام">COMMIT-BOUND REPOSITORY GRAPH</h3>
+          <p id="developer-graph-state" class="hint" role="status" aria-live="polite" data-en="Select a ready repository to load its indexed structure." data-ar="اختر مستودعًا جاهزًا لتحميل بنيته المفهرسة.">Select a ready repository to load its indexed structure.</p>
+          <svg id="developer-graph" class="developer-graph" viewBox="0 0 720 420" role="img" aria-label="Repository graph visualization" data-en-aria-label="Repository graph visualization" data-ar-aria-label="تصور رسم المستودع" hidden></svg>
+          <ul id="developer-graph-list" class="developer-graph-list" aria-label="Graph nodes" data-en-aria-label="Graph nodes" data-ar-aria-label="عقد الرسم"></ul>
+          <p id="developer-node-detail" class="hint" aria-live="polite"></p>
+        </div>
+        <div class="developer-changes">
+          <h3 class="eyebrow" data-en="GIT CHANGES" data-ar="تغييرات Git">GIT CHANGES</h3>
+          <label class="hint" for="developer-compare-base" data-en="Base commit" data-ar="الالتزام الأساسي">Base commit</label>
+          <select id="developer-compare-base" class="workspace-select" disabled aria-label="Base commit" data-en-aria-label="Base commit" data-ar-aria-label="الالتزام الأساسي"></select>
+          <label class="hint" for="developer-compare-target" data-en="Target commit" data-ar="الالتزام الهدف">Target commit</label>
+          <select id="developer-compare-target" class="workspace-select" disabled aria-label="Target commit" data-en-aria-label="Target commit" data-ar-aria-label="الالتزام الهدف"></select>
+          <button id="developer-compare" type="button" class="small-action" disabled data-en="Compare commits" data-ar="قارن الالتزامات">Compare commits</button>
+          <p id="developer-change-state" class="hint" role="status" aria-live="polite"></p>
+          <div id="developer-changes-list" class="developer-results" aria-live="polite"></div>
+        </div>
         <form id="developer-search-form" class="developer-form">
           <label class="eyebrow" for="developer-search" data-en="SEARCH FILES AND SYMBOLS" data-ar="ابحث في الملفات والرموز">SEARCH FILES AND SYMBOLS</label>
           <div class="developer-search-row">
@@ -47,6 +64,7 @@
         <form id="developer-chat-form" class="developer-form">
           <label class="eyebrow" for="developer-question" data-en="ASK ABOUT THIS REPOSITORY" data-ar="اسأل عن هذا المستودع">ASK ABOUT THIS REPOSITORY</label>
           <textarea id="developer-question" maxlength="1000" rows="3" disabled aria-label="Developer question" data-en-aria-label="Developer question" data-ar-aria-label="سؤال عن التطوير"></textarea>
+          <label class="check-row developer-compare-check"><input id="developer-include-changes" type="checkbox" disabled><span data-en="Include the selected Git comparison as evidence" data-ar="أدرج مقارنة Git المحددة كدليل">Include the selected Git comparison as evidence</span></label>
           <button id="developer-ask" type="submit" disabled data-en="Ask with source citations" data-ar="اسأل مع استشهادات المصدر">Ask with source citations</button>
         </form>
         <div id="developer-answer" class="developer-answer" role="status" aria-live="polite"></div>
