@@ -19,7 +19,7 @@ from typing import Iterator, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 REQUIRED_BACKUP_COLUMNS = {
     "workspaces": {"id", "name", "kind", "created_at"},
     "workspace_permissions": {
@@ -554,6 +554,12 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
                 INSERT INTO developer_file_search(workspace_id,repository_id,file_id,commit_sha,relative_path,language,content)
                 VALUES(NEW.workspace_id,NEW.repository_id,NEW.id,NEW.commit_sha,NEW.relative_path,NEW.language,NEW.content);
             END""",
+        ),
+    ),
+    Migration(
+        version=7,
+        statements=(
+            "ALTER TABLE developer_files ADD COLUMN analysis_status TEXT NOT NULL DEFAULT 'unknown' CHECK(analysis_status IN ('complete','partial','failed','unsupported','unknown'))",
         ),
     ),
 )
@@ -1316,6 +1322,10 @@ class Database:
                     ).fetchall()}
                     if not {"developer_files_search_insert", "developer_files_search_delete", "developer_files_search_update"} <= triggers:
                         raise sqlite3.DatabaseError("backup is missing developer search synchronization triggers")
+                if source_version >= 7:
+                    columns = {row[1] for row in source.execute("PRAGMA table_info(developer_files)").fetchall()}
+                    if "analysis_status" not in columns:
+                        raise sqlite3.DatabaseError("backup is missing developer analysis status")
                 if source.execute("PRAGMA foreign_key_check").fetchone() is not None:
                     raise sqlite3.DatabaseError("backup contains foreign key violations")
                 source.backup(target)

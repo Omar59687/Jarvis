@@ -79,7 +79,7 @@ class ApprovedMemorySearchTests(unittest.TestCase):
     def test_fresh_v6_has_separate_memory_fts_index_and_is_idempotent(self):
         self.db.initialize()
         with self.db._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
             sql = connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type=? AND name=?",
                 ("table", "memory_search"),

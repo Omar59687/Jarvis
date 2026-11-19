@@ -80,6 +80,11 @@ def compute_total(values):
         subprocess.run(["git", "-C", str(self.repo), *args], check=True,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
+    def _git_output(self, *args):
+        return subprocess.run(["git", "-C", str(self.repo), *args], check=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True).stdout.strip()
+
     def _write(self, relative_path, content):
         path = self.repo / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -112,6 +117,17 @@ def compute_total(values):
         with self.assertRaises(RepositoryError):
             self.service.register("alice", "ws-dev", self.root_record.id, link, confirmed=True)
 
+    def test_linked_worktrees_are_rejected_and_detached_head_is_supported(self):
+        linked = self.root / "linked-worktree"
+        subprocess.run(["git", "-C", str(self.repo), "worktree", "add", "--detach", str(linked), "HEAD"],
+                       check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        with self.assertRaises(RepositoryError):
+            self.service.register("alice", "ws-dev", self.root_record.id, linked, confirmed=True)
+        self._git("checkout", "--detach", "-q")
+        repository = self._register_and_index()
+        self.assertIsNone(repository.branch_name)
+        self.assertEqual(self.service.graph("alice", "ws-dev", repository.id)["commit_sha"], repository.head_commit)
+
     def test_git_config_cannot_import_external_configuration(self):
         config = self.repo / ".git" / "config"
         config.write_text(config.read_text(encoding="utf-8") + '\n[include]\n\tpath = /outside/secrets\n', encoding="utf-8")
@@ -131,6 +147,9 @@ def compute_total(values):
         self._git("add", ".")
         self._git("commit", "-qm", "add symlink and malformed Python")
         repository = self._register_and_index()
+        changes = self.service.changes("alice", "ws-dev", repository.id,
+                                       self._git_output("rev-parse", "HEAD~1"))
+        self.assertNotIn("src/external.py", {item["relative_path"] for item in changes["changes"]})
         self.assertEqual(self.service.search("alice", "ws-dev", repository.id, "OUTSIDE_MARKER"), [])
         malformed = self.service.search("alice", "ws-dev", repository.id, "broken")
         self.assertTrue(malformed)
@@ -150,7 +169,8 @@ def compute_total(values):
         self.assertEqual(all_indexed, [])
         files = self.service.search("alice", "ws-dev", repository.id, "displayTotal")
         self.assertEqual(files[0]["language"], "typescript")
-        self.assertEqual(files[0]["symbols"], [])  # Unsupported syntax is explicitly unknown.
+        self.assertIn("displayTotal", [item["name"] for item in files[0]["symbols"]])
+        self.assertEqual(files[0]["analysis_status"], "partial")
 
         answer = self.service.answer("alice", "ws-dev", repository.id,
                                      "Where is compute_total defined?", self.provider, self.model)
@@ -195,6 +215,102 @@ def compute_total(values):
         with self.assertRaises(AccessDenied):
             self.service.search("alice", "ws-dev", repository.id, "compute_total")
 
+    def test_bounded_graph_has_snapshot_scoped_nodes_and_supported_relationships(self):
+        self._write("src/helpers.py", "def helper():\n    return 1\n")
+        self._write("src/consumer.py", "from .helpers import helper\n\ndef use():\n    return helper()\n")
+        self._write("web/math.ts", "export class Calculator {}\nexport function add(a: number, b: number) { return a+b; }\n")
+        self._write("web/app.ts", "// class FakeComment {}\nconst text = 'function FakeString()';\nimport { add } from './math';\nexport class App {}\n")
+        self._write("lib/controller.dart", "import 'package:flutter/widgets.dart';\nclass Controller {\n  void start() {}\n}\n")
+        self._write("server/Worker.cs", "using System.Text;\npublic class Worker { public int Run() { return 1; } }\n")
+        self._write("db/schema.sql", "CREATE TABLE accounts (id INT);\nSELECT * FROM accounts JOIN roles ON 1=1;\n")
+        self._write("docs/guide.md", "# Architecture\nSee [implementation](../src/helpers.py).\n")
+        self._git("add", ".")
+        self._git("commit", "-qm", "multi-language fixture")
+        repository = self._register_and_index()
+        graph = self.service.graph("alice", "ws-dev", repository.id)
+        self.assertEqual(graph["commit_sha"], repository.head_commit)
+        self.assertEqual(graph["workspace_id"], "ws-dev")
+        types = {node["type"] for node in graph["nodes"]}
+        self.assertTrue({"repository", "directory", "file", "symbol", "module"} <= types)
+        relations = {edge["type"] for edge in graph["edges"]}
+        self.assertTrue({"contains", "defines", "imports", "references"} <= relations)
+        labels = {node["label"] for node in graph["nodes"]}
+        self.assertIn("Controller", labels)
+        self.assertIn("Worker", labels)
+        self.assertIn("accounts", labels)
+        self.assertIn("Architecture", labels)
+        self.assertNotIn("FakeComment", labels)
+        self.assertNotIn("FakeString", labels)
+        self.assertTrue(all(str(self.root) not in str(node) for node in graph["nodes"]))
+        with self.assertRaises(AccessDenied):
+            self.service.graph("bob", "ws-dev", repository.id)
+        limited = self.service.graph("alice", "ws-dev", repository.id, limit=10)
+        self.assertTrue(limited["truncated"])
+
+    def test_commit_change_view_is_bounded_literal_and_rejects_argument_injection(self):
+        repository = self._register_and_index()
+        base = repository.head_commit
+        self._write("src/math_utils.py", "def compute_total(values):\n    return max(values)\n")
+        self._write("src/a[1].py", "VALUE = 1\n")
+        self._write("src/settings.py", "API_KEY='synthetic-secret-value-long-enough-to-match'\n")
+        self._write(".env", "API_KEY=obvious-secret-material-long-enough-to-match\n")
+        (self.repo / "README.md").unlink()
+        self._git("add", "-A")
+        self._git("commit", "-qm", "change /home/private-owner/worktree sources")
+        updated = self.service.index("alice", "ws-dev", repository.id)
+        commits = self.service.commits("alice", "ws-dev", repository.id)
+        self.assertEqual(commits[0]["commit_sha"], updated.head_commit)
+        self.assertNotIn("/home/private-owner", commits[0]["subject"])
+        result = self.service.changes("alice", "ws-dev", repository.id, base)
+        self.assertEqual(result["target_commit"], updated.head_commit)
+        changes = {item["relative_path"]: item for item in result["changes"]}
+        self.assertEqual(changes["src/math_utils.py"]["change_type"], "modified")
+        self.assertEqual(changes["README.md"]["change_type"], "deleted")
+        self.assertEqual(changes["src/a[1].py"]["change_type"], "added")
+        self.assertNotIn(".env", changes)
+        self.assertNotIn("src/settings.py", changes)
+        self.assertIn("max(values)", changes["src/math_utils.py"]["excerpt"])
+        answer = self.service.answer("alice", "ws-dev", repository.id, "What changed?",
+                                     self.provider, self.model, comparison=(base, updated.head_commit))
+        self.assertEqual(answer.outcome, "valid_citations")
+        self.assertEqual(answer.citations[0].evidence_type, "git_change")
+        self.assertIn("untrusted_diff_hunk", self.provider.calls[-1][0])
+        with self.assertRaises(RepositoryError) as caught:
+            self.service.changes("alice", "ws-dev", repository.id, "HEAD;touch /tmp/jarvis-injected")
+        self.assertEqual(caught.exception.code, "commit_unavailable")
+        self.assertFalse(Path("/tmp/jarvis-injected").exists())
+
+    def test_analysis_failure_and_removed_files_do_not_partially_replace_index(self):
+        repository = self._register_and_index()
+        previous = repository.head_commit
+        self._write("src/math_utils.py", "def compute_total(values):\n    return max(values)\n")
+        (self.repo / "README.md").unlink()
+        self._git("add", "-A")
+        self._git("commit", "-qm", "index fault fixture")
+        with patch("jarvis_core.developer._extract_metadata", side_effect=RuntimeError("synthetic parser interruption")):
+            with self.assertRaises(RuntimeError):
+                self.service.index("alice", "ws-dev", repository.id)
+        with self.db._connection() as connection:
+            stored = connection.execute("SELECT head_commit FROM developer_repositories WHERE id=?", (repository.id,)).fetchone()[0]
+            paths = {row[0] for row in connection.execute("SELECT relative_path FROM developer_files WHERE repository_id=?", (repository.id,))}
+        self.assertEqual(stored, previous)
+        self.assertIn("README.md", paths)
+        self.assertNotIn("src/a[1].py", paths)
+
+    def test_schema_v6_to_v7_migration_failure_rolls_back(self):
+        path = self.base / "migration-v6.sqlite3"
+        v6 = Database(path, migrations=DEFAULT_MIGRATIONS[:6])
+        v6.initialize()
+        failed = Database(path, migrations=DEFAULT_MIGRATIONS[:6] + (
+            Migration(7, DEFAULT_MIGRATIONS[6].statements + ("INVALID SQL",)),
+        ))
+        with self.assertRaises(sqlite3.OperationalError):
+            failed.initialize()
+        with v6._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(developer_files)")}
+        self.assertNotIn("analysis_status", columns)
+
     def test_read_revocation_during_generation_discards_repository_answer(self):
         repository = self._register_and_index()
         self.provider.on_generate = lambda: self.db.revoke_permission(
@@ -235,6 +351,9 @@ def compute_total(values):
         self.assertEqual(len(repos), 1)
         hits = service.search("alice", "ws-dev", repos[0].id, "compute total")
         self.assertEqual(hits[0]["relative_path"], "src/math_utils.py")
+        self.assertEqual(hits[0]["analysis_status"], "complete")
+        graph = service.graph("alice", "ws-dev", repos[0].id)
+        self.assertTrue(graph["nodes"])
 
     def test_v5_to_v6_migration_failure_rolls_back_developer_tables_and_version(self):
         path = self.base / "migration-v5.sqlite3"
@@ -311,6 +430,20 @@ def compute_total(values):
                                       cookie=cookie)
             self.assertEqual(status, 200)
             self.assertEqual(json.loads(body)["results"][0]["relative_path"], "src/math_utils.py")
+            status, _, body = request(f"{API_PREFIX}/developer/repositories/{repository.id}/graph", cookie=cookie)
+            graph = json.loads(body)
+            self.assertEqual(status, 200)
+            self.assertEqual(graph["workspace_id"], "ws-dev")
+            self.assertTrue(any(node["type"] == "file" for node in graph["nodes"]))
+            status, _, body = request(f"{API_PREFIX}/developer/repositories/{repository.id}/commits", cookie=cookie)
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["commits"][0]["commit_sha"], repository.head_commit)
+            status, _, body = request(
+                f"{API_PREFIX}/developer/repositories/{repository.id}/changes?base={repository.head_commit}",
+                cookie=cookie,
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["changes"], [])
             status, _, denied = request(f"{API_PREFIX}/developer/chat", method="POST",
                                         payload={"repository_id": repository.id, "message": "Where?", "actor_id": "bob"},
                                         cookie=cookie, csrf=csrf)
@@ -323,7 +456,9 @@ def compute_total(values):
             self.assertEqual(self.provider.calls, [])
             status, _, body = request(f"{API_PREFIX}/developer/chat", method="POST",
                                       payload={"repository_id": repository.id,
-                                               "message": "Where is compute_total defined?"},
+                                               "message": "Where is compute_total defined?",
+                                               "comparison_base": repository.head_commit,
+                                               "comparison_target": repository.head_commit},
                                       cookie=cookie, csrf=csrf)
             payload = json.loads(body)
             self.assertEqual(status, 200)

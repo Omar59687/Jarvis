@@ -8,6 +8,7 @@ import hashlib
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import re
 import secrets
 import socket
 import threading
@@ -709,6 +710,32 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "invalid_query"})
                 return
             pieces = path[len(base):].strip("/").split("/")
+            if len(pieces) == 2 and pieces[1] == "graph":
+                params = parse_qs(query, strict_parsing=bool(query), max_num_fields=1)
+                if set(params) - {"limit"} or len(params.get("limit", ["300"])) != 1:
+                    self._json(400, {"error": "invalid_query"})
+                    return
+                limit = int(params.get("limit", ["300"])[0])
+                graph = self.server.developer.graph(actor, workspace, pieces[0], limit=limit)
+                self._json(200, graph)
+                return
+            if len(pieces) == 2 and pieces[1] == "commits":
+                if query:
+                    self._json(400, {"error": "invalid_query"})
+                    return
+                commits = self.server.developer.commits(actor, workspace, pieces[0], limit=20)
+                self._json(200, {"workspace_id": workspace, "repository_id": pieces[0],
+                                 "commits": commits})
+                return
+            if len(pieces) == 2 and pieces[1] == "changes":
+                params = parse_qs(query, strict_parsing=True, max_num_fields=3)
+                if set(params) - {"base", "target"} or len(params.get("base", [])) != 1 or len(params.get("target", [""])) != 1:
+                    self._json(400, {"error": "invalid_query"})
+                    return
+                result = self.server.developer.changes(actor, workspace, pieces[0],
+                    params["base"][0], params.get("target", [None])[0])
+                self._json(200, result)
+                return
             if len(pieces) == 2 and pieces[1] == "files":
                 params = parse_qs(query, strict_parsing=bool(query), max_num_fields=2)
                 if set(params) != {"q"} or len(params["q"]) != 1:
@@ -773,7 +800,8 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         value = self._read_json(CHAT_MAX_REQUEST_BYTES)
         if value is None:
             return
-        if _contains_client_identity(value) or set(value) != {"repository_id", "message"}:
+        allowed_fields = {"repository_id", "message", "comparison_base", "comparison_target"}
+        if _contains_client_identity(value) or not {"repository_id", "message"} <= set(value) or set(value) - allowed_fields:
             self._json(400, {"error": "invalid_request"})
             return
         repository_id, message = value.get("repository_id"), value.get("message")
@@ -787,6 +815,21 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         except UnicodeEncodeError:
             self._json(400, {"error": "invalid_message"})
             return
+        comparison = None
+        has_base = "comparison_base" in value
+        has_target = "comparison_target" in value
+        if has_base != has_target:
+            self._json(400, {"error": "invalid_request"})
+            return
+        if has_base:
+            comparison_base = value["comparison_base"]
+            comparison_target = value["comparison_target"]
+            if (not isinstance(comparison_base, str) or not isinstance(comparison_target, str)
+                    or not re.fullmatch(r"[0-9a-f]{40,64}", comparison_base)
+                    or not re.fullmatch(r"[0-9a-f]{40,64}", comparison_target)):
+                self._json(400, {"error": "invalid_commit"})
+                return
+            comparison = (comparison_base, comparison_target)
         state, _ = self.server.sessions.begin_chat(session_id)
         if state == "unauthorized":
             self._json(401, {"error": "authentication_required"})
@@ -799,7 +842,8 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             return
         try:
             answer = self.server.developer.answer(record.actor_id, workspace_id, repository_id,
-                                                  message.strip(), self.server.generator, self.server.model)
+                                                  message.strip(), self.server.generator, self.server.model,
+                                                  comparison=comparison)
             if not self._chat_workspace_is_current(session_id, workspace_id):
                 return
             cards = [{"label": item.label, "repository_id": item.repository_id,
