@@ -803,7 +803,8 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             if not self._chat_workspace_is_current(session_id, workspace_id):
                 return
             cards = [{"label": item.label, "repository_id": item.repository_id,
-                      "repository_name": item.repository_name, "evidence_type": item.evidence_type,
+                      "workspace_id": item.workspace_id, "repository_name": item.repository_name,
+                      "evidence_type": item.evidence_type,
                       "commit_sha": item.commit_sha,
                       "relative_path": item.relative_path, "start_line": item.start_line,
                       "end_line": item.end_line, "symbol_name": item.symbol_name,

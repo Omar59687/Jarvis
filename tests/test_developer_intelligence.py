@@ -157,6 +157,7 @@ def compute_total(values):
         self.assertEqual(answer.outcome, "valid_citations")
         self.assertEqual(answer.citations[0].relative_path, "src/math_utils.py")
         self.assertEqual(answer.citations[0].evidence_type, "code")
+        self.assertEqual(answer.citations[0].workspace_id, "ws-dev")
         self.assertEqual(answer.citations[0].commit_sha, repository.head_commit)
         self.assertGreaterEqual(answer.citations[0].start_line, 1)
         self.assertIn("untrusted_repository_evidence", self.provider.calls[0][0])

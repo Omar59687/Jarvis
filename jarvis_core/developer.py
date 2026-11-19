@@ -99,6 +99,7 @@ class IndexedFile:
 class DeveloperEvidence:
     label: str
     repository_id: str
+    workspace_id: str
     repository_name: str
     evidence_type: str
     commit_sha: str
@@ -656,7 +657,7 @@ class DeveloperRepositoryService:
             symbols = source["symbols"]
             symbol = next((str(item.get("qualified_name")) for item in symbols
                            if isinstance(item, dict) and start <= int(item.get("start_line", 0)) <= end), None)
-            evidence.append(DeveloperEvidence(label, repository_id, repo.name, evidence_type,
+            evidence.append(DeveloperEvidence(label, repository_id, workspace_id, repo.name, evidence_type,
                 str(source["commit_sha"]), str(source["relative_path"]),
                 int(source["start_line"]) + start - 1, int(source["start_line"]) + end - 1,
                 excerpt, symbol))
