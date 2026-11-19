@@ -77,7 +77,8 @@ class P2AWorkspaceChatTests(unittest.TestCase):
             with urlopen(request, timeout=5) as response:
                 return response.status, response.headers, response.read()
         except HTTPError as response:
-            return response.code, response.headers, response.read()
+            with response:
+                return response.code, response.headers, response.read()
 
     def test_authenticated_chat_returns_only_validated_provenance_cards(self):
         status, _, body = self.request("POST", f"{API_PREFIX}/chat", {"message": "old room code?"})
@@ -163,6 +164,57 @@ class P2AWorkspaceChatTests(unittest.TestCase):
         status, _, body = self.request("GET", f"{API_PREFIX}/memory-candidates")
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["candidates"], [])
+
+    def test_approved_memory_lifecycle_is_end_to_end_and_pending_is_not_retrievable(self):
+        _, _, chat_body = self.request("POST", f"{API_PREFIX}/chat", {"message": "room code?"})
+        chat = json.loads(chat_body)
+        status, _, body = self.request("POST", f"{API_PREFIX}/memory-candidates", {
+            "content": "The fictional room code was Amber-7.",
+            "expected_workspace_id": "ws-a",
+            "evidence_request_id": chat["evidence_request_id"], "citation_labels": ["D1"],
+        })
+        self.assertEqual(status, 201)
+        candidate = json.loads(body)["candidate"]
+        self.assertEqual(candidate["state"], "pending")
+        self.assertEqual(self.server.memory_service.search("alice", "ws-a", "Amber-7"), [])
+
+        path = f"{API_PREFIX}/memory-candidates/{candidate['id']}"
+        status, _, body = self.request("PUT", path, {
+            "expected_revision": candidate["revision"],
+            "expected_workspace_id": "ws-a",
+            "content": "Reviewed: the fictional room code was Amber-7.",
+            "retain_existing_sources": True,
+        })
+        self.assertEqual(status, 200)
+        edited = json.loads(body)["candidate"]
+        self.assertEqual(edited["revision"], candidate["revision"] + 1)
+        self.assertEqual(self.server.memory_service.search("alice", "ws-a", "Amber-7"), [])
+
+        status, _, body = self.request("GET", path)
+        review = json.loads(body)["candidate"]
+        decision = {
+            "expected_revision": review["revision"],
+            "content_sha256": review["content_sha256"],
+            "evidence_sha256": review["evidence_sha256"],
+            "confirmed_snapshot": True,
+            "expected_workspace_id": "ws-a",
+        }
+        status, _, body = self.request("POST", path + "/approve", decision)
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["memory_id"])
+        retrieved = self.server.memory_service.search("alice", "ws-a", "Amber-7")
+        self.assertEqual(len(retrieved), 1)
+        self.assertEqual(retrieved[0].source_status, "active_sources")
+
+        self.provider.text = "The fictional room code was Amber-7 [M1]."
+        status, _, body = self.request("POST", f"{API_PREFIX}/chat", {
+            "message": "What was the fictional room code Amber-7?"
+        })
+        response = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertEqual(response["outcome"], "valid_citations")
+        self.assertEqual(response["citations"][0]["label"], "M1")
+        self.assertEqual(response["citations"][0]["source_status"], "active_sources")
 
     def test_candidate_edit_rebinds_provenance_and_stale_snapshot_cannot_approve(self):
         _, _, chat_body = self.request("POST", f"{API_PREFIX}/chat", {"message": "room code?"})

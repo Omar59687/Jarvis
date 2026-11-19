@@ -82,7 +82,8 @@ class M03B1LocalChatTests(unittest.TestCase):
             with urlopen(req, timeout=5) as response:
                 return response.status, response.headers, response.read()
         except HTTPError as response:
-            return response.code, response.headers, response.read()
+            with response:
+                return response.code, response.headers, response.read()
 
     def pair(self):
         status, headers, body = self.request(f"{API_PREFIX}/session/pair", payload={
@@ -114,6 +115,9 @@ class M03B1LocalChatTests(unittest.TestCase):
         status, _, body = self.request("/chat.css", method="GET", origin=None)
         self.assertEqual(status, 200)
         self.assertIn(b".chat-form", body)
+        status, _, body = self.request("/chat-ui-state.mjs", method="GET", origin=None)
+        self.assertEqual(status, 200)
+        self.assertIn(b"chatInputPlaceholder", body)
 
     def test_pairing_sets_http_only_strict_cookie_and_one_time_code_cannot_replay(self):
         code = self.server.pairing.terminal_code
@@ -152,7 +156,8 @@ class M03B1LocalChatTests(unittest.TestCase):
                                        "Content-Type": "application/json"})
             with self.assertRaises(HTTPError) as caught:
                 urlopen(request, timeout=5)
-            self.assertEqual(caught.exception.code, 401)
+            with caught.exception as response:
+                self.assertEqual(response.code, 401)
         finally:
             other.shutdown()
             other.server_close()
@@ -198,7 +203,8 @@ class M03B1LocalChatTests(unittest.TestCase):
             with urlopen(req, timeout=5) as response:
                 return response.status, response.headers, response.read()
         except HTTPError as response:
-            return response.code, response.headers, response.read()
+            with response:
+                return response.code, response.headers, response.read()
 
     def test_origin_host_and_csrf_are_checked_before_generation(self):
         cookie, csrf = self.pair()
@@ -404,6 +410,8 @@ class M03B1LocalChatTests(unittest.TestCase):
         self.assertNotIn("sessionStorage", app_js)
         self.assertNotIn('fetch("http', app_js.lower())
         self.assertIn("العربية", index_html)
+        self.assertIn("updateChatInputPlaceholder()", app_js)
+        self.assertIn('import { chatInputPlaceholder } from "/chat-ui-state.mjs"', app_js)
 
     def test_repeated_unauthenticated_posts_with_bodies_receive_401_and_close_cleanly(self):
         payload = json.dumps({"message": "Unauthorized request"}).encode("utf-8")

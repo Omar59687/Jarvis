@@ -93,6 +93,7 @@ STATIC_FILES = {
     "/app.css": (M03A_ROOT / "app.css", "text/css; charset=utf-8"),
     "/chat.css": (Path(__file__).with_name("chat.css"), "text/css; charset=utf-8"),
     "/app.js": (Path(__file__).with_name("app.js"), "text/javascript; charset=utf-8"),
+    "/chat-ui-state.mjs": (Path(__file__).with_name("chat-ui-state.mjs"), "text/javascript; charset=utf-8"),
     "/galaxy-model.mjs": (M03A_ROOT / "galaxy-model.mjs", "text/javascript; charset=utf-8"),
     "/vendor/three.core.js": (M03A_ROOT / "vendor/three.core.js", "text/javascript; charset=utf-8"),
     "/vendor/three.module.js": (M03A_ROOT / "vendor/three.module.js", "text/javascript; charset=utf-8"),

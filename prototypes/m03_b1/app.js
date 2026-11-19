@@ -1,4 +1,5 @@
 import { NODES, EDGES, connectedNodeIds, searchNodeIds, classifyNode, createFrameDriver } from "/galaxy-model.mjs";
+import { chatInputPlaceholder } from "/chat-ui-state.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 const languageSelect = $("#language");
@@ -90,6 +91,14 @@ const CHAT_ERRORS = {
 };
 
 function localized(value) { return value?.[language] ?? value?.en ?? ""; }
+function updateChatInputPlaceholder() {
+  chatInput.placeholder = chatInputPlaceholder({
+    authenticated,
+    workspaceId: activeWorkspaceId,
+    language,
+  });
+}
+
 function applyLanguage(next) {
   language = next;
   document.documentElement.lang = language;
@@ -105,6 +114,7 @@ function applyLanguage(next) {
   for (const element of document.querySelectorAll("[data-en-aria-label][data-ar-aria-label]")) {
     element.setAttribute("aria-label", element.dataset[`${language}AriaLabel`]);
   }
+  updateChatInputPlaceholder();
   $("#motion-toggle").setAttribute("aria-pressed", String(!reduceMotion));
   $("#motion-label").textContent = language === "ar"
     ? (reduceMotion ? "الحركة مخفّضة" : "الحركة مفعّلة")
@@ -215,6 +225,7 @@ function setAuthenticated(value, token = null, model = null, provider = null, sh
       queueMicrotask(() => pairCode.focus());
     }
   }
+  updateChatInputPlaceholder();
 }
 
 function markSessionExpired() {
@@ -624,6 +635,7 @@ async function loadWorkspaces(preferredWorkspaceId = null) {
   workspaceSelect.disabled = false;
   if (previousWorkspaceId !== (selected || null)) clearEphemeralWorkspaceView();
   activeWorkspaceId = selected || null;
+  updateChatInputPlaceholder();
   workspaceServiceUnavailable = false;
   chatInput.disabled = !authenticated || sending;
   chatSend.disabled = !authenticated || sending;
@@ -656,6 +668,7 @@ async function selectWorkspace() {
     }
     if (!response.ok) throw new Error(value.error || "workspace_unavailable");
     activeWorkspaceId = selected || null;
+    updateChatInputPlaceholder();
     workspaceServiceUnavailable = false;
     clearEphemeralWorkspaceView();
     chatInput.disabled = !authenticated || sending;

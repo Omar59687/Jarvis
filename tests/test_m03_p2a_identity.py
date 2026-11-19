@@ -77,7 +77,8 @@ class P2A1WorkspaceBindingTests(unittest.TestCase):
             with urlopen(request, timeout=5) as response:
                 return response.status, response.headers, response.read()
         except HTTPError as response:
-            return response.code, response.headers, response.read()
+            with response:
+                return response.code, response.headers, response.read()
 
     def pair(self, server=None):
         server = server or self.server
