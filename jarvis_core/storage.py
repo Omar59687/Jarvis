@@ -19,7 +19,7 @@ from typing import Iterator, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 REQUIRED_BACKUP_COLUMNS = {
     "workspaces": {"id", "name", "kind", "created_at"},
     "workspace_permissions": {
@@ -496,6 +496,64 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
                 BEGIN
                     DELETE FROM memory_search WHERE memory_id = OLD.id;
                 END""",
+        ),
+    ),
+    Migration(
+        version=6,
+        statements=(
+            """CREATE TABLE developer_repositories (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                approved_root_id TEXT NOT NULL REFERENCES approved_roots(id) ON DELETE CASCADE,
+                relative_path TEXT NOT NULL,
+                name TEXT NOT NULL,
+                registered_by TEXT NOT NULL,
+                registered_at TEXT NOT NULL,
+                revoked_at TEXT,
+                head_commit TEXT,
+                branch_name TEXT,
+                indexed_at TEXT,
+                index_status TEXT NOT NULL DEFAULT 'not_indexed'
+                    CHECK(index_status IN ('not_indexed','ready','stale','failed')),
+                UNIQUE(id, workspace_id),
+                UNIQUE(approved_root_id, relative_path)
+            )""",
+            "CREATE INDEX developer_repositories_workspace ON developer_repositories(workspace_id,revoked_at,name,id)",
+            """CREATE TABLE developer_files (
+                id TEXT PRIMARY KEY,
+                repository_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                commit_sha TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                extension TEXT NOT NULL,
+                language TEXT NOT NULL,
+                git_blob_oid TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL CHECK(size_bytes BETWEEN 0 AND 1048576),
+                content TEXT NOT NULL,
+                symbols_json TEXT NOT NULL DEFAULT '[]',
+                imports_json TEXT NOT NULL DEFAULT '[]',
+                FOREIGN KEY(repository_id,workspace_id) REFERENCES developer_repositories(id,workspace_id) ON DELETE CASCADE,
+                UNIQUE(repository_id,relative_path)
+            )""",
+            "CREATE INDEX developer_files_repo_path ON developer_files(repository_id,commit_sha,relative_path)",
+            """CREATE VIRTUAL TABLE developer_file_search USING fts5(
+                workspace_id UNINDEXED, repository_id UNINDEXED, file_id UNINDEXED,
+                commit_sha UNINDEXED, relative_path, language UNINDEXED, content,
+                tokenize='unicode61'
+            )""",
+            """CREATE TRIGGER developer_files_search_insert AFTER INSERT ON developer_files BEGIN
+                INSERT INTO developer_file_search(workspace_id,repository_id,file_id,commit_sha,relative_path,language,content)
+                VALUES(NEW.workspace_id,NEW.repository_id,NEW.id,NEW.commit_sha,NEW.relative_path,NEW.language,NEW.content);
+            END""",
+            """CREATE TRIGGER developer_files_search_delete AFTER DELETE ON developer_files BEGIN
+                DELETE FROM developer_file_search WHERE file_id=OLD.id;
+            END""",
+            """CREATE TRIGGER developer_files_search_update AFTER UPDATE ON developer_files BEGIN
+                DELETE FROM developer_file_search WHERE file_id=OLD.id;
+                INSERT INTO developer_file_search(workspace_id,repository_id,file_id,commit_sha,relative_path,language,content)
+                VALUES(NEW.workspace_id,NEW.repository_id,NEW.id,NEW.commit_sha,NEW.relative_path,NEW.language,NEW.content);
+            END""",
         ),
     ),
 )
@@ -1238,6 +1296,26 @@ class Database:
                         raise sqlite3.DatabaseError(
                             "backup is missing memory search synchronization triggers"
                         )
+                if source_version >= 6:
+                    developer_tables = {
+                        "developer_repositories": {"id", "workspace_id", "approved_root_id", "relative_path", "head_commit", "index_status"},
+                        "developer_files": {"id", "repository_id", "workspace_id", "commit_sha", "relative_path", "git_blob_oid", "content_sha256", "symbols_json", "imports_json"},
+                    }
+                    for table, required_columns in developer_tables.items():
+                        columns = {row[1] for row in source.execute(f"PRAGMA table_info({table})").fetchall()}
+                        if not required_columns <= columns:
+                            raise sqlite3.DatabaseError(f"backup is missing required schema for table {table}")
+                    developer_search = source.execute(
+                        "SELECT sql FROM sqlite_master WHERE type=? AND name=?",
+                        ("table", "developer_file_search"),
+                    ).fetchone()
+                    if developer_search is None or "using fts5" not in str(developer_search[0]).lower():
+                        raise sqlite3.DatabaseError("backup is missing the developer FTS5 index")
+                    triggers = {row[0] for row in source.execute(
+                        "SELECT name FROM sqlite_master WHERE type=?", ("trigger",)
+                    ).fetchall()}
+                    if not {"developer_files_search_insert", "developer_files_search_delete", "developer_files_search_update"} <= triggers:
+                        raise sqlite3.DatabaseError("backup is missing developer search synchronization triggers")
                 if source.execute("PRAGMA foreign_key_check").fetchone() is not None:
                     raise sqlite3.DatabaseError("backup contains foreign key violations")
                 source.backup(target)

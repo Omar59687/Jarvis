@@ -1,4 +1,4 @@
-"""M03-B2 restricted loopback chat alpha; no retrieval, persistence, or tools."""
+"""Loopback chat alpha with permission-scoped P2 memory and P3 read-only source APIs."""
 from __future__ import annotations
 
 import argparse
@@ -14,9 +14,10 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from jarvis_core.lmstudio import LMStudioBionicClient
+from jarvis_core.developer import DeveloperRepositoryService, RepositoryError, StaleRepository
 from jarvis_core.storage import AccessDenied, Database
 from jarvis_core.storage import Permission
 from jarvis_core.retrieval import SearchIndex, SearchIndexUnavailable, FTS5Unavailable
@@ -303,6 +304,7 @@ class LocalChatServer(ThreadingHTTPServer):
         self.decision_key = secrets.token_bytes(32) if configured_database else None
         self.memory_service = MemoryService(configured_database, self.decision_key) if configured_database else None
         self.rag = DocumentRAG(self.search_index, generator) if configured_database else None
+        self.developer = DeveloperRepositoryService(configured_database) if configured_database else None
         self.pairing = PairingAuthority(code=pairing_code, clock=clock)
         self.sessions = SessionStore(clock=clock)
         self._handler_slots = threading.BoundedSemaphore(MAX_HANDLER_THREADS)
@@ -482,7 +484,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         if self._reject_host():
             return
         path, query = self._request_path()
-        if query:
+        if query and not path.startswith(f"{API_PREFIX}/developer/repositories"):
             self._json(404, {"error": "not_found"})
             return
         if path == "/health":
@@ -533,6 +535,9 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                 for workspace in workspaces
             ]})
             return
+        if path.startswith(f"{API_PREFIX}/developer/repositories"):
+            self._developer_get(path, query)
+            return
         if path == f"{API_PREFIX}/memory-candidates":
             self._list_memory_candidates()
             return
@@ -565,6 +570,8 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             self._pair()
         elif path == f"{API_PREFIX}/chat":
             self._chat()
+        elif path == f"{API_PREFIX}/developer/chat":
+            self._developer_chat()
         elif path == f"{API_PREFIX}/memory-candidates":
             self._propose_memory_candidate()
         elif path.startswith(f"{API_PREFIX}/memory-candidates/"):
@@ -670,6 +677,158 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             self._json(401, {"error": "authentication_required"})
             return
         self._json(200, {"active_workspace_id": workspace.id})
+
+    @staticmethod
+    def _repository_payload(repository) -> dict:
+        return {
+            "id": repository.id, "workspace_id": repository.workspace_id,
+            "name": repository.name, "relative_path": repository.relative_path,
+            "branch": repository.branch_name, "commit_sha": repository.head_commit,
+            "indexed_at": repository.indexed_at, "index_status": repository.index_status,
+        }
+
+    def _developer_get(self, path: str, query: str) -> None:
+        context = self._authenticated_workspace()
+        if context is None:
+            return
+        _, _, actor, workspace = context
+        if self.server.developer is None:
+            self._json(503, {"error": "developer_service_unavailable"})
+            return
+        base = f"{API_PREFIX}/developer/repositories"
+        try:
+            if path == base:
+                if query:
+                    self._json(400, {"error": "invalid_request"})
+                    return
+                repositories = self.server.developer.list_repositories(actor, workspace)
+                self._json(200, {"workspace_id": workspace,
+                                 "repositories": [self._repository_payload(item) for item in repositories]})
+                return
+            if len(query) > 1200:
+                self._json(400, {"error": "invalid_query"})
+                return
+            pieces = path[len(base):].strip("/").split("/")
+            if len(pieces) == 2 and pieces[1] == "files":
+                params = parse_qs(query, strict_parsing=bool(query), max_num_fields=2)
+                if set(params) != {"q"} or len(params["q"]) != 1:
+                    self._json(400, {"error": "invalid_query"})
+                    return
+                hits = self.server.developer.search(actor, workspace, pieces[0], params["q"][0], limit=10)
+                repo = next((item for item in self.server.developer.list_repositories(actor, workspace)
+                             if item.id == pieces[0]), None)
+                if repo is None:
+                    raise AccessDenied("repository unavailable")
+                self._json(200, {"workspace_id": workspace,
+                    "repository": self._repository_payload(repo), "results": hits})
+                return
+            if len(pieces) == 3 and pieces[1] == "files" and not query:
+                source = self.server.developer.source(actor, workspace, pieces[0], pieces[2])
+                self._json(200, {"workspace_id": workspace, "source": source})
+                return
+        except AccessDenied:
+            self._json(404, {"error": "repository_unavailable"})
+            return
+        except StaleRepository:
+            self._json(409, {"error": "repository_index_stale"})
+            return
+        except RepositoryError as exc:
+            self._json(503, {"error": exc.code})
+            return
+        except (ValueError, UnicodeError):
+            self._json(400, {"error": "invalid_query"})
+            return
+        except Exception:
+            self._json(503, {"error": "developer_service_unavailable"})
+            return
+        self._json(404, {"error": "not_found"})
+
+    def _developer_chat(self) -> None:
+        session_id = self._cookie_session_id()
+        record = self.server.sessions.resolve(session_id)
+        if record is None or session_id is None:
+            self._discard_bounded_request_body(CHAT_MAX_REQUEST_BYTES)
+            self._json(401, {"error": "authentication_required"})
+            return
+        if not _secret_matches(self.headers.get("X-Jarvis-CSRF", ""), record.csrf_token):
+            self._discard_bounded_request_body(CHAT_MAX_REQUEST_BYTES)
+            self._json(403, {"error": "csrf_rejected"})
+            return
+        if record.actor_id is None or record.active_workspace_id is None or self.server.developer is None:
+            self._discard_bounded_request_body(CHAT_MAX_REQUEST_BYTES)
+            self._json(409, {"error": "workspace_selection_required"})
+            return
+        workspace_id = record.active_workspace_id
+        try:
+            self.server.database.require_access(record.actor_id, workspace_id, Permission.READ)
+        except AccessDenied:
+            self.server.sessions.clear_active_workspace(session_id)
+            self._discard_bounded_request_body(CHAT_MAX_REQUEST_BYTES)
+            self._json(404, {"error": "workspace_unavailable"})
+            return
+        except Exception:
+            self._discard_bounded_request_body(CHAT_MAX_REQUEST_BYTES)
+            self._json(503, {"error": "workspace_service_unavailable"})
+            return
+        value = self._read_json(CHAT_MAX_REQUEST_BYTES)
+        if value is None:
+            return
+        if _contains_client_identity(value) or set(value) != {"repository_id", "message"}:
+            self._json(400, {"error": "invalid_request"})
+            return
+        repository_id, message = value.get("repository_id"), value.get("message")
+        if (not isinstance(repository_id, str) or not repository_id.isalnum()
+                or len(repository_id) > 64 or not isinstance(message, str)
+                or not message.strip() or len(message) > MAX_MESSAGE_CHARS or "\x00" in message):
+            self._json(400, {"error": "invalid_message"})
+            return
+        try:
+            message.encode("utf-8", "strict")
+        except UnicodeEncodeError:
+            self._json(400, {"error": "invalid_message"})
+            return
+        state, _ = self.server.sessions.begin_chat(session_id)
+        if state == "unauthorized":
+            self._json(401, {"error": "authentication_required"})
+            return
+        if state == "busy":
+            self._json(409, {"error": "chat_in_progress"})
+            return
+        if state == "rate_limited":
+            self._json(429, {"error": "rate_limited"})
+            return
+        try:
+            answer = self.server.developer.answer(record.actor_id, workspace_id, repository_id,
+                                                  message.strip(), self.server.generator, self.server.model)
+            if not self._chat_workspace_is_current(session_id, workspace_id):
+                return
+            cards = [{"label": item.label, "repository_id": item.repository_id,
+                      "repository_name": item.repository_name, "evidence_type": item.evidence_type,
+                      "commit_sha": item.commit_sha,
+                      "relative_path": item.relative_path, "start_line": item.start_line,
+                      "end_line": item.end_line, "symbol_name": item.symbol_name,
+                      "excerpt": item.excerpt[:1400]} for item in answer.citations]
+            self._json(200, {"workspace_id": workspace_id, "repository_id": repository_id,
+                "reply": answer.answer, "outcome": answer.outcome, "citations": cards,
+                "model": self.server.model, "provider": self.server.provider_name})
+        except AccessDenied:
+            self._json(404, {"error": "repository_unavailable"})
+        except StaleRepository:
+            self._json(409, {"error": "repository_index_stale"})
+        except RepositoryError as exc:
+            self._json(503, {"error": exc.code})
+        except (ProviderModelUnavailable, OllamaModelUnavailable):
+            self._json(503, {"error": "model_not_installed"})
+        except (ProviderTimeout, OllamaTimeout):
+            self._json(504, {"error": "generation_timeout"})
+        except (ProviderConnectionError, OllamaConnectionError):
+            self._json(503, {"error": "model_unavailable"})
+        except (ProviderError, OllamaError):
+            self._json(502, {"error": "generation_failed"})
+        except Exception:
+            self._json(502, {"error": "generation_failed"})
+        finally:
+            self.server.sessions.end_chat(session_id)
 
     def _pair(self) -> None:
         value = self._read_json(PAIR_MAX_REQUEST_BYTES)

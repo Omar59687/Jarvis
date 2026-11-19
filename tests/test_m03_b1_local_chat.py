@@ -410,6 +410,19 @@ class M03B1LocalChatTests(unittest.TestCase):
         self.assertNotIn("sessionStorage", app_js)
         self.assertNotIn('fetch("http', app_js.lower())
         self.assertIn("العربية", index_html)
+
+    def test_p3_ui_uses_authenticated_developer_endpoints_and_keeps_galaxy_synthetic(self):
+        app_js = (Path(__file__).parents[1] / "prototypes/m03_b1/app.js").read_text(encoding="utf-8")
+        index_html = (Path(__file__).parents[1] / "prototypes/m03_b1/index.html").read_text(encoding="utf-8")
+        self.assertIn('fetch("/api/v1/developer/repositories"', app_js)
+        self.assertIn('fetch("/api/v1/developer/chat"', app_js)
+        self.assertIn('"X-Jarvis-CSRF": csrfToken', app_js)
+        self.assertIn('id="developer-repo"', index_html)
+        self.assertIn('id="developer-results"', index_html)
+        self.assertIn('id="developer-answer"', index_html)
+        self.assertIn("galaxy above remains synthetic", index_html)
+        self.assertNotIn('fetch("http', app_js.lower())
+        self.assertNotIn("11434", app_js)
         self.assertIn("updateChatInputPlaceholder()", app_js)
         self.assertIn('import { chatInputPlaceholder } from "/chat-ui-state.mjs"', app_js)
 

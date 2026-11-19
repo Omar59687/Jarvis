@@ -76,10 +76,10 @@ class ApprovedMemorySearchTests(unittest.TestCase):
         )
         return self.memories.approve("alice", "ws-a", candidate.id, context)
 
-    def test_fresh_v5_has_separate_memory_fts_index_and_is_idempotent(self):
+    def test_fresh_v6_has_separate_memory_fts_index_and_is_idempotent(self):
         self.db.initialize()
         with self.db._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
             sql = connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type=? AND name=?",
                 ("table", "memory_search"),
@@ -111,7 +111,7 @@ class ApprovedMemorySearchTests(unittest.TestCase):
         )
         approved = legacy_service.approve("alice", "legacy-ws", candidate.id, approval)
 
-        upgraded = Database(path)
+        upgraded = Database(path, migrations=DEFAULT_MIGRATIONS[:5])
         upgraded.initialize()
         results = MemoryService(upgraded, SIGNING_KEY).search(
             "alice", "legacy-ws", "backfill"
