@@ -427,6 +427,8 @@ class M03B1LocalChatTests(unittest.TestCase):
         self.assertIn('function localizeDeveloperValue(value)', app_js)
         self.assertIn('excerpt.textContent = change.excerpt', app_js)
         self.assertGreaterEqual(app_js.count('generation !== developerLoadGeneration'), 4)
+        self.assertIn('"تحليل AST مكتمل"', app_js)
+        self.assertIn('type_changed: "تغيّر النوع"', app_js)
         self.assertIn('font-size: 14px; letter-spacing: 0', (Path(__file__).parents[1] / "prototypes/m03_b1/chat.css").read_text(encoding="utf-8"))
         self.assertIn('"X-Jarvis-CSRF": csrfToken', app_js)
         self.assertIn('id="developer-repo"', index_html)

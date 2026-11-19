@@ -453,6 +453,10 @@ function localizeDeveloperValue(value) {
   const labels = {
     repository: "المستودع", directory: "مجلد", file: "ملف", symbol: "رمز", module: "وحدة",
     contains: "يحتوي", defines: "يعرّف", imports: "يستورد", references: "يشير إلى",
+    added: "مضاف", modified: "معدّل", deleted: "محذوف", type_changed: "تغيّر النوع",
+    source: "مصدر", git_change: "تغيير Git", code: "شفرة", documentation: "توثيق",
+    ast_line_overlap: "تقاطع أسطر AST", partial_line_overlap: "تقاطع أسطر جزئي",
+    unavailable: "غير متاح",
     complete: "مكتمل", partial: "جزئي", failed: "فشل التحليل", unsupported: "غير مدعوم", unknown: "غير معروف"
   };
   return labels[value] || value;
@@ -550,11 +554,13 @@ async function compareDeveloperCommits() {
       const article = document.createElement("article");
       article.className = "developer-result";
       const title = document.createElement("strong");
-      title.textContent = `${change.change_type}: ${change.relative_path}`;
+      title.textContent = `${localizeDeveloperValue(change.change_type)}: ${change.relative_path}`;
       const meta = document.createElement("small");
       const symbolHint = Array.isArray(change.symbol_hints) && change.symbol_hints.length
-        ? ` · changed lines overlap ${change.symbol_hints.join(", ")} (${change.symbol_status})` : "";
-      meta.textContent = `${change.commit_sha.slice(0, 12)} · ${change.start_line}-${change.end_line} · ${change.evidence_type}${symbolHint}`;
+        ? (language === "ar"
+          ? ` · الأسطر المتغيرة تتقاطع مع ${change.symbol_hints.join(", ")} (${localizeDeveloperValue(change.symbol_status)})`
+          : ` · changed lines overlap ${change.symbol_hints.join(", ")} (${localizeDeveloperValue(change.symbol_status)})`) : "";
+      meta.textContent = `${change.commit_sha.slice(0, 12)} · ${change.start_line}-${change.end_line} · ${localizeDeveloperValue(change.evidence_type)}${symbolHint}`;
       const excerpt = document.createElement("pre");
       excerpt.textContent = change.excerpt;
       excerpt.dir = "ltr";
@@ -607,8 +613,11 @@ async function searchDeveloperFiles(event) {
       name.textContent = result.relative_path;
       const detail = document.createElement("small");
       const symbols = Array.isArray(result.symbols) ? result.symbols.map((symbol) => symbol.qualified_name).join(", ") : "";
-      const analysis = result.analysis_status === "complete" ? "AST complete"
-        : result.analysis_status === "partial" ? "partial parser" : "metadata unknown";
+      const analysis = language === "ar"
+        ? (result.analysis_status === "complete" ? "تحليل AST مكتمل"
+          : result.analysis_status === "partial" ? "محلل جزئي" : "بيانات غير معروفة")
+        : (result.analysis_status === "complete" ? "AST complete"
+          : result.analysis_status === "partial" ? "partial parser" : "metadata unknown");
       detail.textContent = `${result.language} · ${analysis}${symbols ? ` · ${symbols}` : ""}`;
       button.append(name, detail);
       button.addEventListener("click", () => openDeveloperSource(result.id));
@@ -699,7 +708,7 @@ async function askDeveloper(event) {
           || typeof citation.relative_path !== "string" || typeof citation.commit_sha !== "string") continue;
       const card = document.createElement("span");
       card.className = "developer-citation";
-      card.textContent = `[${citation.label}] ${citation.evidence_type || "source"} · ${citation.relative_path} · ${citation.commit_sha.slice(0, 12)} · ${citation.start_line}-${citation.end_line}`;
+      card.textContent = `[${citation.label}] ${localizeDeveloperValue(citation.evidence_type || "source")} · ${citation.relative_path} · ${citation.commit_sha.slice(0, 12)} · ${citation.start_line}-${citation.end_line}`;
       developerAnswer.append(card);
     }
   } catch (error) {
