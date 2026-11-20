@@ -8,6 +8,7 @@ import hashlib
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import logging
 import re
 import secrets
 import socket
@@ -23,7 +24,8 @@ from jarvis_core.storage import AccessDenied, Database
 from jarvis_core.storage import Permission
 from jarvis_core.retrieval import SearchIndex, SearchIndexUnavailable, FTS5Unavailable
 from jarvis_core.memory import (
-    DecisionContextIssuer, InvalidDecision, LifecycleConflict, MemorySearchUnavailable, MemoryService,
+    DecisionContextIssuer, EvidenceSourceChanged, InvalidDecision, LifecycleConflict,
+    MemorySearchUnavailable, MemoryService,
 )
 from jarvis_core.rag import DocumentRAG, InvalidCitationError, IncompleteGenerationError
 from jarvis_core.model_provider import (
@@ -57,6 +59,7 @@ MAX_CHATS_PER_MINUTE = 6
 MAX_SESSIONS = 8
 MAX_HANDLER_THREADS = 16
 API_PREFIX = "/api/v1"
+LOGGER = logging.getLogger(__name__)
 DEFAULT_PROVIDER_TIMEOUT_SECONDS = 120.0
 GENERAL_CHAT_SYSTEM_PROMPT = (
     "You are Jarvis, a helpful local conversational assistant. This request is a single-turn "
@@ -991,7 +994,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         return value
 
     def _resolve_memory_evidence(self, session_id: str, workspace: str,
-                                 value: dict) -> list[str] | None:
+                                 value: dict) -> list[tuple[str, str]] | None:
         user_authored = value.get("user_authored", False)
         request_id = value.get("evidence_request_id")
         labels = value.get("citation_labels", [])
@@ -1004,22 +1007,30 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "invalid_candidate"})
                 return None
             return []
-        self._session_evidence_expired(session_id, time.monotonic())
         record = self.server.sessions.resolve(session_id)
         if record is None:
             self._json(401, {"error": "authentication_required"})
             return None
+        now = time.monotonic()
+        expired = any(entry["id"] == request_id and entry["workspace"] == workspace
+                      and entry["expires"] <= now for entry in record.evidence_requests)
+        self._session_evidence_expired(session_id, now)
         cache = [entry for entry in record.evidence_requests
-                 if entry["expires"] > time.monotonic() and entry["workspace"] == workspace]
+                 if entry["expires"] > now and entry["workspace"] == workspace]
         evidence = next((entry for entry in cache if entry["id"] == request_id), None)
-        if evidence is None or not labels or len(set(labels)) != len(labels):
+        if evidence is None:
+            self._json(409 if expired else 400,
+                       {"error": "evidence_request_expired" if expired else "evidence_selection_required"})
+            return None
+        if not labels or len(set(labels)) != len(labels):
             self._json(400, {"error": "evidence_selection_required"})
             return None
         label_map = evidence["labels"]
         if any(label not in label_map or not label.startswith("D") for label in labels):
             self._json(400, {"error": "evidence_selection_invalid"})
             return None
-        return [label_map[label] for label in labels]
+        return [(label_map[label]["document_id"], label_map[label]["source_sha256"])
+                for label in labels]
 
     def _propose_memory_candidate(self) -> None:
         context = self._authenticated_workspace(write=True)
@@ -1043,16 +1054,25 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         document_ids = self._resolve_memory_evidence(session_id, workspace, value)
         if document_ids is None:
             return
+        expected_source_hashes = dict(document_ids)
         try:
             candidate = self.server.memory_service.propose(
-                actor, workspace, content, evidence_document_ids=document_ids,
+                actor, workspace, content, evidence_document_ids=expected_source_hashes,
+                expected_source_hashes=expected_source_hashes,
                 user_authored=value.get("user_authored", False),
                 request_key=secrets.token_urlsafe(18),
             )
         except AccessDenied:
             self._json(403, {"error": "write_permission_required"})
-        except Exception:
-            self._json(400, {"error": "candidate_rejected"})
+        except EvidenceSourceChanged:
+            self._json(409, {"error": "evidence_source_changed"})
+        except LifecycleConflict:
+            self._json(409, {"error": "candidate_changed"})
+        except ValueError:
+            self._json(400, {"error": "invalid_candidate"})
+        except Exception as exc:
+            LOGGER.warning("Memory candidate proposal failed (%s)", type(exc).__name__)
+            self._json(503, {"error": "memory_service_unavailable"})
         else:
             self._json(201, {"candidate": self._candidate_payload(candidate),
                              "requires_human_review": True})
@@ -1104,16 +1124,22 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                     return
                 document_ids = [item.document_id for item in current.evidence]
                 user_authored = current.provenance_kind == "user_authored"
+                expected_source_hashes = None
             else:
                 document_ids = self._resolve_memory_evidence(session_id, workspace, value)
                 if document_ids is None:
                     return
+                expected_source_hashes = dict(document_ids)
+                document_ids = [document_id for document_id, _ in document_ids]
                 user_authored = value.get("user_authored", False)
             candidate = self.server.memory_service.edit_candidate(
                 actor, workspace, candidate_id, expected_revision=current.revision,
                 content=value["content"], evidence_document_ids=document_ids,
                 user_authored=user_authored,
+                expected_source_hashes=expected_source_hashes,
             )
+        except EvidenceSourceChanged:
+            self._json(409, {"error": "evidence_source_changed"})
         except LifecycleConflict:
             self._json(409, {"error": "candidate_changed"})
         except AccessDenied:
@@ -1279,6 +1305,16 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                 label_map = {citation.citation_id: citation.document_id
                              for citation in rag_result.citations
                              if citation.source_type == "document" and citation.document_id}
+                label_map = {
+                    label: {
+                        "document_id": document_id,
+                        "source_sha256": evidence_by_label[label].source_sha256,
+                    }
+                    for label, document_id in label_map.items()
+                    if label in evidence_by_label
+                    and isinstance(evidence_by_label[label].source_sha256, str)
+                    and re.fullmatch(r"[0-9a-f]{64}", evidence_by_label[label].source_sha256)
+                }
                 request_id = None
                 if rag_result.outcome.value == "valid_citations" and label_map:
                     request_id = secrets.token_urlsafe(18)

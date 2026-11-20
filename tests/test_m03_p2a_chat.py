@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -344,6 +345,168 @@ class P2AWorkspaceChatTests(unittest.TestCase):
         self.assertEqual(response["reply"], self.provider.text)
         self.assertNotIn("outcome", response)
         self.assertIn("no access to the user's memories", self.provider.calls[-1][2])
+
+
+class AcceptanceMemoryProposalRegressionTests(unittest.TestCase):
+    """Reproduce the reported Windows acceptance sequence with synthetic records."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.base = Path(self.temp.name)
+        self.db = Database(self.base / "acceptance.sqlite3")
+        self.db.initialize()
+        self.db.create_workspace("Atlas Acceptance", WorkspaceKind.PROJECT,
+                                 "jarvis-acceptance-owner", "ws-atlas-acceptance")
+        self.db.grant_permission("jarvis-acceptance-owner", "ws-atlas-acceptance",
+                                 "jarvis-acceptance-owner", Permission.WRITE)
+        self.root_path = self.base / "approved"
+        self.root_path.mkdir()
+        self.root = self.db.register_approved_root(
+            "jarvis-acceptance-owner", "ws-atlas-acceptance", self.root_path)
+        self.document_path = self.root_path / "facts.txt"
+        self.document_path.write_text(
+            "The fictional Atlas Lantern project launch date is April 12, 2031.",
+            encoding="utf-8")
+        FolderSynchronizer(self.db).sync(
+            "jarvis-acceptance-owner", "ws-atlas-acceptance", self.root.id)
+        self.provider = FakeProvider(
+            "The fictional Atlas Lantern project launch date is April 12, 2031 [D1].")
+        self.server = make_server(
+            0, generator=self.provider, model="test-model",
+            actor_id="jarvis-acceptance-owner", database=self.db,
+            pairing_code="acceptance-pairing")
+        self.server._test_thread = threading.Thread(
+            target=self.server.serve_forever, daemon=True)
+        self.server._test_thread.start()
+        status, headers, body = self.request("POST", f"{API_PREFIX}/session/pair",
+                                             {"pairing_code": "acceptance-pairing"})
+        self.assertEqual(status, 200, body)
+        self.cookie = headers["Set-Cookie"].split(";", 1)[0]
+        self.csrf = json.loads(body)["csrf_token"]
+        status, _, body = self.request("PUT", f"{API_PREFIX}/session/workspace",
+                                       {"workspace_id": "ws-atlas-acceptance"})
+        self.assertEqual(status, 200, body)
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.server._test_thread.join(timeout=2)
+        self.temp.cleanup()
+
+    def request(self, method, path, payload=None):
+        headers = {"Host": self.server.expected_host, "Origin": self.server.expected_origin,
+                   "Cookie": getattr(self, "cookie", "")}
+        data = None
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+            headers["X-Jarvis-CSRF"] = getattr(self, "csrf", "")
+        elif method == "DELETE":
+            headers["X-Jarvis-CSRF"] = getattr(self, "csrf", "")
+        request = Request(f"http://{self.server.expected_host}{path}", data=data,
+                          headers=headers, method=method)
+        try:
+            with urlopen(request, timeout=5) as response:
+                return response.status, response.headers, response.read()
+        except HTTPError as response:
+            with response:
+                return response.code, response.headers, response.read()
+
+    def ask_atlas_question(self):
+        status, _, body = self.request("POST", f"{API_PREFIX}/chat", {
+            "message": "When does the fictional Atlas Lantern project launch?"})
+        value = json.loads(body)
+        self.assertEqual(status, 200, value)
+        self.assertEqual(value["citations"][0]["label"], "D1")
+        self.assertEqual(value["citations"][0]["relative_path"], "facts.txt")
+        self.assertTrue(value["evidence_request_id"])
+        return value
+
+    def propose_from_chat(self, chat):
+        # Same field names and label value produced by memoryProposalPayload in app.js.
+        return self.request("POST", f"{API_PREFIX}/memory-candidates", {
+            "content": "The fictional Atlas Lantern project launch date is April 12, 2031.",
+            "user_authored": False,
+            "expected_workspace_id": "ws-atlas-acceptance",
+            "evidence_request_id": chat["evidence_request_id"],
+            "citation_labels": ["D1"],
+        })
+
+    def test_reported_acceptance_sequence_proposes_reviews_approves_and_retrieves(self):
+        chat = self.ask_atlas_question()
+        status, _, body = self.propose_from_chat(chat)
+        value = json.loads(body)
+        self.assertEqual(status, 201, value)
+        candidate = value["candidate"]
+        self.assertEqual(candidate["state"], "pending")
+        self.assertEqual(candidate["provenance_kind"], "evidence")
+        self.assertEqual(candidate["evidence"][0]["relative_path"], "facts.txt")
+        self.assertEqual(self.server.memory_service.search(
+            "jarvis-acceptance-owner", "ws-atlas-acceptance", "Atlas Lantern"), [])
+
+        status, _, body = self.request("GET", f"{API_PREFIX}/memory-candidates")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["candidates"][0]["id"], candidate["id"])
+        status, _, body = self.request("GET", f"{API_PREFIX}/memory-candidates/{candidate['id']}")
+        review = json.loads(body)["candidate"]
+        decision = {
+            "expected_revision": review["revision"],
+            "content_sha256": review["content_sha256"],
+            "evidence_sha256": review["evidence_sha256"],
+            "confirmed_snapshot": True,
+            "expected_workspace_id": "ws-atlas-acceptance",
+        }
+        status, _, body = self.request(
+            "POST", f"{API_PREFIX}/memory-candidates/{candidate['id']}/approve", decision)
+        self.assertEqual(status, 200, body)
+        approved = self.server.memory_service.search(
+            "jarvis-acceptance-owner", "ws-atlas-acceptance", "Atlas Lantern")
+        self.assertEqual(len(approved), 1)
+        self.assertEqual(approved[0].source_status, "active_sources")
+        self.assertEqual(approved[0].evidence[0].relative_path, "facts.txt")
+
+    def test_expired_handle_is_rejected_with_refreshable_error(self):
+        chat = self.ask_atlas_question()
+        session_id = self.cookie.split("=", 1)[1]
+        record = self.server.sessions.resolve(session_id)
+        record.evidence_requests[-1]["expires"] = 0
+        status, _, body = self.propose_from_chat(chat)
+        self.assertEqual(status, 409)
+        self.assertEqual(json.loads(body), {"error": "evidence_request_expired"})
+        fresh = self.ask_atlas_question()
+        status, _, body = self.propose_from_chat(fresh)
+        self.assertEqual(status, 201, body)
+
+    def test_second_chat_does_not_misbind_the_first_answer_handle(self):
+        first = self.ask_atlas_question()
+        self.ask_atlas_question()
+        status, _, body = self.propose_from_chat(first)
+        self.assertEqual(status, 201, body)
+
+    def test_storage_exception_is_redacted_and_logged_without_exception_text(self):
+        chat = self.ask_atlas_question()
+        with self.assertLogs("prototypes.m03_b1.service", level="WARNING") as captured:
+            with patch.object(self.server.memory_service, "propose",
+                              side_effect=RuntimeError("secret /private/source/path")):
+                status, _, body = self.propose_from_chat(chat)
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(body), {"error": "memory_service_unavailable"})
+        self.assertIn("RuntimeError", " ".join(captured.output))
+        self.assertNotIn("secret", " ".join(captured.output))
+        self.assertNotIn("/private/source/path", body.decode("utf-8"))
+
+    def test_source_change_after_answer_cannot_be_rebound_to_new_content(self):
+        chat = self.ask_atlas_question()
+        self.document_path.write_text(
+            "The fictional Atlas Lantern project launch date is May 20, 2032.",
+            encoding="utf-8")
+        FolderSynchronizer(self.db).sync(
+            "jarvis-acceptance-owner", "ws-atlas-acceptance", self.root.id)
+        status, _, body = self.propose_from_chat(chat)
+        self.assertEqual(status, 409)
+        self.assertEqual(json.loads(body), {"error": "evidence_source_changed"})
+        status, _, body = self.request("GET", f"{API_PREFIX}/memory-candidates")
+        self.assertEqual(json.loads(body)["candidates"], [])
 
 
 if __name__ == "__main__":

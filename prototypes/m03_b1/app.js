@@ -1,5 +1,5 @@
 import { NODES, EDGES, connectedNodeIds, searchNodeIds, classifyNode, createFrameDriver } from "/galaxy-model.mjs";
-import { chatInputPlaceholder } from "/chat-ui-state.mjs";
+import { chatInputPlaceholder, memoryProposalPayload, memoryProposalError } from "/chat-ui-state.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 const languageSelect = $("#language");
@@ -811,6 +811,8 @@ function appendChatEntry(kind, text) {
 }
 
 function errorMessage(code) {
+  const proposalMessage = memoryProposalError(code, language);
+  if (proposalMessage) return proposalMessage;
   const translations = CHAT_ERRORS[code] ?? CHAT_ERRORS.default;
   return translations[language === "ar" ? 1 : 0];
 }
@@ -1111,11 +1113,16 @@ async function submitMemoryCandidate(event) {
     const response = await fetch("/api/v1/memory-candidates", {
       method: "POST", credentials: "same-origin", cache: "no-store",
       headers: { "Content-Type": "application/json", "X-Jarvis-CSRF": csrfToken },
-      body: JSON.stringify({ content, user_authored,
-        expected_workspace_id: activeWorkspaceId,
-        ...(userAuthored ? {} : { evidence_request_id: latestEvidenceRequestId, citation_labels: labels }) })
+      body: JSON.stringify(memoryProposalPayload({
+        content, userAuthored, workspaceId: activeWorkspaceId,
+        evidenceRequestId: latestEvidenceRequestId, citationLabels: labels,
+      }))
     });
     const value = await responseJson(response);
+    if (response.status === 401) {
+      markSessionExpired();
+      throw new Error(value.error || "authentication_required");
+    }
     if (!response.ok) throw new Error(value.error || "candidate_rejected");
     candidateEditorDialog.close();
     memoryStatus.textContent = language === "ar"
