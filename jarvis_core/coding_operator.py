@@ -65,6 +65,14 @@ class CodingOperatorWorkflow:
 
     def create_task(self, repository_id: str, base_commit: str,
                     requested_capabilities: list[CodingCapability | str] | None = None) -> str | None:
+        requested = requested_capabilities or [
+            CodingCapability.READ_REPOSITORY_METADATA,
+            CodingCapability.READ_INDEXED_SOURCE,
+        ]
+        self._write(f"Repository: {repository_id}; base commit: {base_commit}")
+        self._write("Requested capabilities: " + ", ".join(
+            CodingCapability(item).value for item in requested))
+        self._write("Granted capabilities will be rechecked by the server-side policy.")
         request = self.input("Task request (stored as a digest only): ")
         self._write("The request text is not persisted; only its SHA-256 is recorded.")
         if self.input("Type CREATE TASK to continue: ") != "CREATE TASK":
