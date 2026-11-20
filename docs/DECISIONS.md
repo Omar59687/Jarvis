@@ -82,10 +82,10 @@ The product targets Arabic and English, Windows desktop, and a browser dashboard
 **Security constraints:** no execution of repository code or scripts, no browser registration, no arbitrary path scanning, no cross-workspace fallback, no tools/edits, bounded indexing, and citations bind to a commit/path/line. Python uses AST; other language extraction is explicitly partial lexical metadata. The derived graph and commit-diff evidence are bounded and permission-scoped.
 **Status:** partial P3 vertical slice implemented. It includes a derived snapshot graph, recent commit selectors, bounded commit diffs, and line-overlap hints for indexed Python AST symbols. It does not provide comprehensive parsers, semantic call graphs, historical indexed snapshots, or tested Windows path-race resistance. See [P3 docs](P3_DEVELOPER_INTELLIGENCE.md).
 
-### P-12 — P4 supervised coding agents (architecture only)
-**Proposal:** if P4 is approved, integrate one pinned agent behind a provider-independent Jarvis supervisor, task-specific deny-by-default manifest, disposable repository copy/worktree, OS-enforced process/filesystem/network isolation, explicit per-action approvals, bounded cancellation/audit, and human diff review. A local agent is not considered safe because it runs locally.
-**Open gate:** `MANAGE_SOURCES` and memory `WRITE` do not authorize source changes. Decide whether to add a distinct repository-scoped code-write permission and validate a practical isolation mechanism on the owner's exact Windows 11 Home device. Until then, P4 must remain read-only. No runtime, agent, skill, connector, or dependency is installed or adopted by this branch.
-**Status:** architecture and acceptance documents only; no P4 behavior is implemented. See [P4 architecture](P4_SUPERVISED_CODING_AGENTS_DESIGN.md) and [P4 security and acceptance plan](P4_SECURITY_AND_ACCEPTANCE_PLAN.md).
+### P-12 — P4 supervised coding agents (bounded foundation)
+**Decision:** add repository-scoped capability grants independent of workspace and memory permissions, a read-only task supervisor, provider-neutral adapter contract with a deterministic fake, exact-diff human review receipts, audit/recovery, and a dry-run verification planner. No agent runtime or external dependency is included.
+**Open gate:** target Windows 11 isolation has not been verified. Worktree creation, file mutation, command/network execution, commit, push, PR, merge, and deploy remain unavailable. Do not interpret proposal approval as permission for a subsequent operation.
+**Status:** partial foundation implemented and tested on disposable synthetic repositories. See [P4 implementation status](P4_IMPLEMENTATION_STATUS.md), [P4 architecture](P4_SUPERVISED_CODING_AGENTS_DESIGN.md), and [P4 security and acceptance plan](P4_SECURITY_AND_ACCEPTANCE_PLAN.md).
 
 ## Open decisions
 

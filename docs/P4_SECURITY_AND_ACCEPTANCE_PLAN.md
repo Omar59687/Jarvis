@@ -1,6 +1,6 @@
 # P4 — Security and Acceptance Plan
 
-**Status:** Proposed test and security gates only. No P4 agent runtime or execution capability is implemented or approved by this branch. Read with [P4 architecture](P4_SUPERVISED_CODING_AGENTS_DESIGN.md).
+**Status:** Original platform and execution gates remain in force. A bounded authorization/task/proposal foundation is implemented, but it does not enable a runtime or execution capability. See [current implementation status](P4_IMPLEMENTATION_STATUS.md) and [P4 architecture](P4_SUPERVISED_CODING_AGENTS_DESIGN.md).
 
 ## Security invariants
 

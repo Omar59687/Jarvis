@@ -1,6 +1,6 @@
 # P4 — Supervised Coding Agents: Architecture Proposal
 
-**Status:** Proposed architecture only. This branch does not install, launch, embed, or authorize any coding agent. P4 implementation requires owner review of this design and its companion [security and acceptance plan](P4_SECURITY_AND_ACCEPTANCE_PLAN.md).
+**Status:** The architecture remains the authority for future runtime/write gates. A bounded read-only task and diff-review foundation exists; it does not install, launch, embed, or authorize a real coding agent. See [implementation status](P4_IMPLEMENTATION_STATUS.md) and companion [security and acceptance plan](P4_SECURITY_AND_ACCEPTANCE_PLAN.md).
 
 **Date:** 2026-11-20
 **Design baseline:** `feature/p3-completion-p4-architecture`; P2/P3 local service and workspace authorization remain the only implemented policy foundation.
@@ -129,11 +129,11 @@ The host service stays bound to numeric loopback, with current Host/Origin/CSRF/
 
 ## 10. Proposed implementation stages
 
-1. **P4-A policy and identity design approval.** Resolve the distinct repository-write permission, owner/manager grant UX, data disclosure rules, retention, and target Windows sandbox. No agent process yet.
-2. **P4-B fake supervisor and read-only inspect.** Add a task record, immutable capability schema, event validator, cancellation/expiry state machine, and fake adapter. Test identity, scope, redaction, budget, and cancellation offline.
-3. **P4-C one read-only runtime adapter.** Use a synthetic repository, deny shell/write/network, and verify that malformed/unexpected agent events are rejected. Confirm exact runtime and model routing explicitly.
-4. **P4-D disposable write workspace.** Implement isolated clone + worktree under verified OS boundary. Exercise traversal, symlink/junction, credential, network, resource, interruption, and cleanup attacks. No promotion capability.
-5. **P4-E human diff and test review.** Show deterministic patch and test report; require explicit snapshot-bound promotion into a named task branch. Push/PR/merge/deploy remain excluded.
-6. **Later separately approved gates.** External Git hosting, cloud providers, tool/skill ecosystems, multi-agent coordination, unattended operation, or deployment each need their own design and acceptance review.
+1. **P4-A policy and identity foundation — implemented, execution grants unavailable.** Repository-scoped grant/revoke and manager-confirmation UX exist in the policy/terminal helper. Data retention is bounded to task hashes, proposal snapshots, and audit metadata. No source-write grant exists.
+2. **P4-B fake supervisor and read-only inspect — partial.** Task schema/state, manifests, fake adapter, evidence bounds, expiry, cancellation, audit, review, and restart quarantine are implemented and tested. No worktree is created.
+3. **P4-C runtime adapter — blocked pending approval and isolation.** The provider-independent interface and fake adapter exist. Do not connect an actual runtime until an exact provider/data-flow decision and isolation verification are approved.
+4. **P4-D disposable write workspace — blocked.** Implement only after the target Windows isolation gate passes; then test traversal, symlink/junction, credentials, network, resources, interruption, and cleanup. No current worktree or execution is allowed.
+5. **P4-E human diff review — partial.** The exact patch can be viewed and approved/rejected by digest. Approval only records review; it does not promote, write, or create a task branch.
+6. **Later separately approved gates.** External Git hosting, cloud providers, tool/skill ecosystems, multi-agent coordination, unattended operation, push/PR/merge, or deployment each need a separate design and acceptance review.
 
-No P4 code, dependency, model, external skill, connector, or agent runtime is approved by this proposal.
+No real runtime, model, external skill, connector, or agent dependency is included or approved by this implementation.
