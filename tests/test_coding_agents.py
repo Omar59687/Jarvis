@@ -422,6 +422,17 @@ class CodingCapabilityPolicyTests(unittest.TestCase):
         self.assertIn("\\u001b", output.getvalue())
         self.assertIn("no files were changed", output.getvalue())
 
+    def test_terminal_grant_requires_literal_confirmation(self):
+        output = StringIO()
+        operator = CodingOperatorWorkflow(
+            "owner", "ws-code", self.repositories, self.policy, self.tasks,
+            input_fn=lambda _prompt: "yes", output=output)
+        self.assertIsNone(operator.grant(
+            self.repository.id, "reader", CodingCapability.READ_INDEXED_SOURCE))
+        self.assertFalse(self.policy.is_granted(
+            "reader", "ws-code", self.repository.id, CodingCapability.READ_INDEXED_SOURCE))
+        self.assertIn("Grant cancelled", output.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
