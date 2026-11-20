@@ -7,7 +7,7 @@ from io import StringIO
 import sqlite3
 import subprocess
 import tempfile
-from threading import Event
+from threading import Event, Thread
 import unittest
 from unittest.mock import patch
 
@@ -15,6 +15,7 @@ from jarvis_core.coding_agents import (
     CodingAuthorizationDenied,
     CodingCapability,
     CodingCapabilityPolicy,
+    AgentProposal,
     AgentChange,
     FakeAgentAdapter,
     CodingTaskService,
@@ -456,6 +457,81 @@ class CodingCapabilityPolicyTests(unittest.TestCase):
         self.assertIn(restarted.id, interrupted)
         self.assertEqual(self.tasks.get_task("owner", restarted.id).status.value, "interrupted")
 
+    def test_operator_cancellation_racing_adapter_return_is_idempotent(self):
+        task = self._new_task("Inspect run safely")
+        entered = Event()
+        release = Event()
+        cancelled = []
+
+        class BlockingAdapter:
+            def propose(self, task_input, cancellation):
+                entered.set()
+                if not release.wait(timeout=5):
+                    raise RuntimeError("test adapter timed out")
+                return AgentProposal(outcome="cancelled")
+
+            def cancel(self, task_id):
+                cancelled.append(task_id)
+                release.set()
+
+        failure = []
+
+        def run_proposal():
+            try:
+                self.tasks.propose_with_adapter(
+                    "owner", task.id, "Inspect run safely", BlockingAdapter())
+            except Exception as exc:
+                failure.append(exc)
+
+        worker = Thread(target=run_proposal)
+        worker.start()
+        self.assertTrue(entered.wait(timeout=3))
+        self.assertTrue(self.tasks.cancel_task("owner", task.id))
+        worker.join(timeout=3)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(cancelled, [task.id])
+        self.assertEqual(len(failure), 1)
+        self.assertIsInstance(failure[0], CodingAuthorizationDenied)
+        self.assertEqual(str(failure[0]), "task_cancelled")
+        self.assertEqual(self.tasks.get_task("owner", task.id).status.value, "cancelled")
+        self.assertEqual(sum(event["event_type"] == "task_cancelled"
+                             for event in self.tasks.audit_events("owner", task.id)), 1)
+
+    def test_operator_cancellation_racing_adapter_exception_is_reported_as_cancelled(self):
+        task = self._new_task("Inspect run safely")
+        entered = Event()
+        release = Event()
+
+        class StoppingAdapter:
+            def propose(self, task_input, cancellation):
+                entered.set()
+                if not release.wait(timeout=5):
+                    raise RuntimeError("test adapter timed out")
+                raise RuntimeError("adapter stopped")
+
+            def cancel(self, task_id):
+                release.set()
+
+        failure = []
+
+        def run_proposal():
+            try:
+                self.tasks.propose_with_adapter(
+                    "owner", task.id, "Inspect run safely", StoppingAdapter())
+            except Exception as exc:
+                failure.append(exc)
+
+        worker = Thread(target=run_proposal)
+        worker.start()
+        self.assertTrue(entered.wait(timeout=3))
+        self.assertTrue(self.tasks.cancel_task("owner", task.id))
+        worker.join(timeout=3)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(failure), 1)
+        self.assertIsInstance(failure[0], CodingAuthorizationDenied)
+        self.assertEqual(str(failure[0]), "task_cancelled")
+        self.assertEqual(self.tasks.get_task("owner", task.id).status.value, "cancelled")
+
     def test_adapter_exception_is_audited_without_leaking_details(self):
         task = self._new_task("Inspect run safely")
 
@@ -510,6 +586,43 @@ class CodingCapabilityPolicyTests(unittest.TestCase):
         self.assertFalse(self.policy.is_granted(
             "reader", "ws-code", self.repository.id, CodingCapability.READ_INDEXED_SOURCE))
         self.assertIn("Grant cancelled", output.getvalue())
+
+    def test_terminal_fake_proposal_inspection_review_and_revoke_are_bounded(self):
+        task = self._new_task("Inspect run safely")
+        output = StringIO()
+        operator = CodingOperatorWorkflow(
+            "owner", "ws-code", self.repositories, self.policy, self.tasks,
+            input_fn=lambda _prompt: "", output=output)
+        self.assertEqual(operator.propose_fake(
+            task.id, "Inspect run safely",
+            (AgentChange("main.py", "def run():\n    return 2\n"),)), "proposed")
+        proposal = self.tasks.view_proposal("owner", task.id)
+        operator.inspect_task(task.id)
+        operator.list_tasks()
+        self.assertIn("execution=False", output.getvalue())
+        self.assertIn(task.id, output.getvalue())
+
+        operator.input = lambda _prompt: f"REJECT {proposal['diff_sha256']}"
+        self.assertEqual(operator.review(task.id), "rejected")
+        self.assertEqual((self.repo_path / "main.py").read_text(encoding="utf-8"),
+                         "def run():\n    return 1\n")
+
+        grant = self.policy.grant(
+            "owner", "ws-code", self.repository.id, "reader",
+            CodingCapability.READ_INDEXED_SOURCE, confirmed=True)
+        operator.input = lambda _prompt: f"REVOKE {grant.id}"
+        self.assertTrue(operator.revoke(grant.id))
+        self.assertFalse(self.policy.is_granted(
+            "reader", "ws-code", self.repository.id, CodingCapability.READ_INDEXED_SOURCE))
+
+    def test_terminal_fake_proposal_rejects_unbounded_or_untyped_changes(self):
+        task = self._new_task("Inspect run safely")
+        operator = CodingOperatorWorkflow(
+            "owner", "ws-code", self.repositories, self.policy, self.tasks,
+            input_fn=lambda _prompt: "", output=StringIO())
+        with self.assertRaises(ValueError):
+            operator.propose_fake(task.id, "Inspect run safely", [
+                AgentChange("main.py", "replacement")])
 
 
 if __name__ == "__main__":

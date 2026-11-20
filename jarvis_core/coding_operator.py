@@ -9,9 +9,11 @@ from typing import Callable, TextIO
 import unicodedata
 
 from .coding_agents import (
+    AgentChange,
     CodingCapability,
     CodingCapabilityPolicy,
     CodingTaskService,
+    FakeAgentAdapter,
     ReadOnlyWorktreeManager,
 )
 from .developer import DeveloperRepositoryService
@@ -62,6 +64,47 @@ class CodingOperatorWorkflow:
                                   repository_id, principal_id, capability, confirmed=True)
         self._write(f"Granted {grant.id}.")
         return grant.id
+
+    def revoke(self, grant_id: str) -> bool:
+        grants = self.policy.list_grants(self.principal_id, self.workspace_id)
+        grant = next((item for item in grants if item.id == grant_id), None)
+        if grant is None or grant.revoked_at is not None:
+            self._write("Grant is unavailable or already revoked.")
+            return False
+        self._write(f"Revoke {grant.capability.value} for {grant.principal_id} "
+                    f"on repository {grant.repository_id}?")
+        if self.input(f"Type REVOKE {grant.id} to continue: ") != f"REVOKE {grant.id}":
+            self._write("Revocation cancelled.")
+            return False
+        changed = self.policy.revoke(self.principal_id, grant.id, confirmed=True)
+        self._write("Grant revoked." if changed else "Grant was already revoked.")
+        return changed
+
+    def list_tasks(self) -> None:
+        for task in self.tasks.list_tasks(self.principal_id, self.workspace_id):
+            self._write(f"{task.id} | {task.status.value} | {task.repository_id} | "
+                        f"{task.base_commit} | expires={task.expires_at}")
+
+    def inspect_task(self, task_id: str) -> None:
+        task = self.tasks.get_task(self.principal_id, task_id)
+        self._write(f"Task {task.id}: {task.status.value}; repository={task.repository_id}; "
+                    f"base={task.base_commit}; request_sha256={task.request_sha256}; "
+                    f"diff_sha256={task.diff_sha256 or 'none'}; "
+                    f"write={task.manifest.get('task_write_enabled')}; "
+                    f"execution={task.manifest.get('process_execution_enabled')}; "
+                    f"network={task.manifest.get('network_enabled')}")
+
+    def propose_fake(self, task_id: str, request_text: str,
+                     changes: tuple[AgentChange, ...]) -> str:
+        """Exercise proposal/review using only the deterministic, non-executing fake."""
+        if (not isinstance(changes, tuple) or len(changes) > 50
+                or any(type(item) is not AgentChange for item in changes)):
+            raise ValueError("fake proposal exceeds the bounded terminal contract")
+        adapter = FakeAgentAdapter(changes)
+        task = self.tasks.propose_with_adapter(
+            self.principal_id, task_id, request_text, adapter)
+        self._write(f"Recorded bounded fake proposal for {task.id}; no files were changed.")
+        return task.status.value
 
     def create_task(self, repository_id: str, base_commit: str,
                     requested_capabilities: list[CodingCapability | str] | None = None) -> str | None:

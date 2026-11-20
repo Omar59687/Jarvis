@@ -652,6 +652,10 @@ class CodingTaskService:
         try:
             output = adapter.propose(envelope, cancellation)
         except Exception:
+            if cancellation.is_set():
+                self._cancel_pending_transition(task, principal_id,
+                                                "cancelled_during_proposal")
+                raise CodingAuthorizationDenied("task_cancelled") from None
             # Provider exceptions can contain prompts, repository snippets,
             # credentials, or host paths. Persist a fixed code only.
             self._append_task_event(task, principal_id, "agent_proposal_failed",
@@ -661,9 +665,7 @@ class CodingTaskService:
             with self._active_lock:
                 self._active_cancellations.pop(task.id, None)
         if cancellation.is_set() or not isinstance(output, AgentProposal) or output.outcome == "cancelled":
-            self._record_transition(task, principal_id, CodingTaskState.CANCELLED.value,
-                                    task.manifest_sha256, "task_cancelled",
-                                    {"reason": "cancelled_during_proposal"})
+            self._cancel_pending_transition(task, principal_id, "cancelled_during_proposal")
             raise CodingAuthorizationDenied("task_cancelled")
         if (type(output) is not AgentProposal or output.outcome != "proposed"
                 or not isinstance(output.changes, tuple)
@@ -735,8 +737,19 @@ class CodingTaskService:
             principal_id, task.workspace_id, task.repository_id)
         if repository.head_commit != task.base_commit:
             raise StaleRepository()
-        self._update_proposal(task, principal_id, proposal_json, diff_digest,
-                              len(changes), len(evidence_paths), len(output.logs))
+        try:
+            self._update_proposal(task, principal_id, proposal_json, diff_digest,
+                                  len(changes), len(evidence_paths), len(output.logs))
+        except CodingAuthorizationDenied:
+            # Cancellation may commit after the adapter returns but before its
+            # proposal is persisted. Preserve the stable cancellation outcome.
+            try:
+                current = self.get_task(principal_id, task.id)
+            except CodingAuthorizationDenied:
+                current = None
+            if current is not None and current.status is CodingTaskState.CANCELLED:
+                raise CodingAuthorizationDenied("task_cancelled") from None
+            raise
         return self.get_task(principal_id, task.id)
 
     def _append_task_event(self, task: CodingTask, principal_id: str, event_type: str,
@@ -769,6 +782,35 @@ class CodingTaskService:
                 self._event(connection, task.id, task.workspace_id, principal_id,
                             event_type, snapshot_sha256, metadata)
                 self.db._commit(connection)
+            except Exception:
+                self.db._rollback(connection)
+                raise
+
+    def _cancel_pending_transition(self, task: CodingTask, principal_id: str,
+                                   reason: str) -> bool:
+        """Atomically cancel an unapproved task; concurrent cancellation is idempotent."""
+        with self.db._connection() as connection:
+            self.db._begin(connection)
+            try:
+                Database._require_access(connection, principal_id, task.workspace_id, Permission.READ)
+                cursor = connection.execute(
+                    "UPDATE coding_tasks SET status='cancelled',updated_at=? "
+                    "WHERE id=? AND principal_id=? AND workspace_id=? "
+                    "AND status IN ('requested','proposed')",
+                    (_now(), task.id, principal_id, task.workspace_id),
+                )
+                if cursor.rowcount == 1:
+                    self._event(connection, task.id, task.workspace_id, principal_id,
+                                "task_cancelled", task.diff_sha256 or task.manifest_sha256,
+                                {"reason": reason})
+                    self.db._commit(connection)
+                    return True
+                current = connection.execute(
+                    "SELECT status FROM coding_tasks WHERE id=? AND principal_id=?",
+                    (task.id, principal_id),
+                ).fetchone()
+                self.db._commit(connection)
+                return current is not None and current["status"] == CodingTaskState.CANCELLED.value
             except Exception:
                 self.db._rollback(connection)
                 raise
@@ -916,13 +958,13 @@ class CodingTaskService:
             active = self._active_cancellations.get(task.id)
             if active is not None:
                 active[0].set()
-                try:
-                    active[1].cancel(task.id)
-                except Exception:
-                    pass
-        self._record_transition(task, principal_id, CodingTaskState.CANCELLED.value,
-                                task.diff_sha256, "task_cancelled", {"reason": "operator_cancelled"})
-        return True
+        changed = self._cancel_pending_transition(task, principal_id, "operator_cancelled")
+        if active is not None:
+            try:
+                active[1].cancel(task.id)
+            except Exception:
+                pass
+        return changed
 
     def recover_after_restart(self, principal_id: str, workspace_id: str) -> list[str]:
         tasks = self.list_tasks(principal_id, workspace_id, limit=100)
