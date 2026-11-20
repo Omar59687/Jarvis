@@ -365,6 +365,19 @@ class CodingCapabilityPolicyTests(unittest.TestCase):
             self.tasks.view_proposal("owner", task.id)
         self.assertEqual(str(caught.exception), "task_expired")
 
+    def test_repository_head_change_invalidates_pending_diff_review(self):
+        task = self._new_task("Inspect run safely")
+        adapter = FakeAgentAdapter((AgentChange("main.py", "def run():\n    return 2\n"),))
+        self.tasks.propose_with_adapter("owner", task.id, "Inspect run safely", adapter)
+        source = self.repo_path / "main.py"
+        source.write_text("def run():\n    return 9\n", encoding="utf-8")
+        self._git("add", "main.py")
+        self._git("commit", "-qm", "move synthetic baseline")
+        with self.assertRaises(CodingAuthorizationDenied) as caught:
+            self.tasks.view_proposal("owner", task.id)
+        self.assertEqual(str(caught.exception), "proposal_base_stale")
+        self.assertEqual(self.tasks.get_task("owner", task.id).status.value, "stale")
+
     def test_cancellation_and_restart_quarantine_do_not_resume_tasks(self):
         task = self._new_task("Inspect run safely")
         already_cancelled = Event()

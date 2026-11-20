@@ -807,6 +807,21 @@ class CodingTaskService:
         if task.status not in {CodingTaskState.PROPOSED, CodingTaskState.APPROVED,
                                CodingTaskState.REJECTED, CodingTaskState.INTERRUPTED}:
             raise CodingAuthorizationDenied("proposal_unavailable")
+        try:
+            repository = self.repositories._repository(
+                principal_id, task.workspace_id, task.repository_id)
+            self.repositories._ensure_current(principal_id, task.workspace_id, repository)
+            if repository.head_commit != task.base_commit:
+                raise StaleRepository()
+        except (RepositoryError, AccessDenied):
+            if task.status in {CodingTaskState.PROPOSED, CodingTaskState.APPROVED}:
+                try:
+                    self._record_transition(task, principal_id, CodingTaskState.STALE.value,
+                                            task.diff_sha256, "proposal_base_invalidated",
+                                            {"reason": "repository_snapshot_changed"})
+                except AccessDenied:
+                    pass
+            raise CodingAuthorizationDenied("proposal_base_stale") from None
         with self.db._connection() as connection:
             row = connection.execute(
                 "SELECT proposal_json,diff_sha256,approved_diff_sha256,status FROM coding_tasks "
