@@ -602,29 +602,34 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
+                UNIQUE(id,workspace_id,principal_id),
                 FOREIGN KEY(repository_id,workspace_id)
                     REFERENCES developer_repositories(id,workspace_id) ON DELETE CASCADE
             )""",
             "CREATE INDEX coding_tasks_workspace_status ON coding_tasks(workspace_id,status,updated_at)",
             """CREATE TABLE coding_task_events (
                 id TEXT PRIMARY KEY,
-                task_id TEXT NOT NULL REFERENCES coding_tasks(id) ON DELETE CASCADE,
+                task_id TEXT NOT NULL,
                 workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
                 principal_id TEXT NOT NULL,
                 event_type TEXT NOT NULL,
                 snapshot_sha256 TEXT,
                 metadata_json TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(task_id,workspace_id,principal_id)
+                    REFERENCES coding_tasks(id,workspace_id,principal_id) ON DELETE CASCADE
             )""",
             "CREATE INDEX coding_task_events_task ON coding_task_events(task_id,created_at,id)",
             """CREATE TABLE coding_task_decision_receipts (
                 decision_id TEXT PRIMARY KEY,
-                task_id TEXT NOT NULL REFERENCES coding_tasks(id) ON DELETE CASCADE,
+                task_id TEXT NOT NULL,
                 workspace_id TEXT NOT NULL,
                 principal_id TEXT NOT NULL,
                 action TEXT NOT NULL CHECK(action IN ('approve_proposal','reject_proposal')),
                 snapshot_sha256 TEXT NOT NULL CHECK(length(snapshot_sha256)=64),
-                consumed_at TEXT NOT NULL
+                consumed_at TEXT NOT NULL,
+                FOREIGN KEY(task_id,workspace_id,principal_id)
+                    REFERENCES coding_tasks(id,workspace_id,principal_id) ON DELETE CASCADE
             )""",
         ),
     ),
