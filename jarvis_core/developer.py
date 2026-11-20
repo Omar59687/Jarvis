@@ -159,11 +159,26 @@ def _path_has_link_component(path: Path, stop: Path) -> bool:
     except ValueError:
         return True
     current = stop
+    components = [current]
     for part in relative.parts:
         current = current / part
+        components.append(current)
+    for component in components:
         try:
-            if current.is_symlink() or bool(getattr(current, "is_junction", lambda: False)()):
+            info = component.lstat()
+            if stat.S_ISLNK(info.st_mode):
                 return True
+            # Windows exposes junctions and other redirecting filesystem objects
+            # through FILE_ATTRIBUTE_REPARSE_POINT. Path.is_symlink() alone does
+            # not cover every reparse tag, so reject the whole class fail-closed.
+            reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            if getattr(info, "st_file_attributes", 0) & reparse_flag:
+                return True
+            is_junction = getattr(component, "is_junction", None)
+            if callable(is_junction) and is_junction():
+                return True
+        except FileNotFoundError:
+            continue
         except OSError:
             return True
     return False
@@ -295,7 +310,12 @@ def _check_git_tree_for_links(start: Path, *, max_entries: int = 100_000) -> boo
                     if seen > max_entries:
                         return False
                     entry_path = Path(entry.path)
-                    if entry.is_symlink() or bool(getattr(entry_path, "is_junction", lambda: False)()):
+                    info = entry_path.lstat()
+                    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+                    is_junction = getattr(entry_path, "is_junction", None)
+                    if (entry.is_symlink() or stat.S_ISLNK(info.st_mode)
+                            or getattr(info, "st_file_attributes", 0) & reparse_flag
+                            or (callable(is_junction) and is_junction())):
                         return False
                     if entry.is_dir(follow_symlinks=False):
                         stack.append(entry_path)
@@ -724,10 +744,44 @@ class DeveloperRepositoryService:
         return result
 
     def index(self, actor_id: str, workspace_id: str, repository_id: str) -> Repository:
+        return self._index(actor_id, workspace_id, repository_id, expected_commit=None)
+
+    def preview_index(self, actor_id: str, workspace_id: str, repository_id: str) -> dict[str, str | None]:
+        """Return the authorized repository identity and exact HEAD for terminal confirmation."""
+        repo = self._repository(actor_id, workspace_id, repository_id)
+        self.db.require_access(actor_id, workspace_id, Permission.MANAGE_SOURCES)
+        path = self._repository_path(actor_id, workspace_id, repo)
+        head, branch = _repo_head(path)
+        # Recheck authorization and registration after touching the local path.
+        current = self._repository(actor_id, workspace_id, repository_id)
+        self.db.require_access(actor_id, workspace_id, Permission.MANAGE_SOURCES)
+        if current.root_id != repo.root_id or current.relative_path != repo.relative_path:
+            raise RepositoryError("repository_changed_since_confirmation")
+        return {
+            "repository_id": repo.id,
+            "workspace_id": repo.workspace_id,
+            "name": repo.name,
+            "relative_path": repo.relative_path or ".",
+            "registered_commit": repo.head_commit,
+            "current_commit": head,
+            "branch_name": branch,
+        }
+
+    def index_confirmed(self, actor_id: str, workspace_id: str, repository_id: str,
+                        expected_commit: str) -> Repository:
+        """Index only the exact commit the trusted operator reviewed."""
+        if not isinstance(expected_commit, str) or not _SHA.fullmatch(expected_commit):
+            raise RepositoryError("repository_changed_since_confirmation")
+        return self._index(actor_id, workspace_id, repository_id, expected_commit=expected_commit)
+
+    def _index(self, actor_id: str, workspace_id: str, repository_id: str,
+               *, expected_commit: str | None) -> Repository:
         repo = self._repository(actor_id, workspace_id, repository_id)
         self.db.require_access(actor_id, workspace_id, Permission.MANAGE_SOURCES)
         path = self._repository_path(actor_id, workspace_id, repo)
         commit, branch = _repo_head(path)
+        if expected_commit is not None and commit != expected_commit:
+            raise RepositoryError("repository_changed_since_confirmation")
         with self.db._connection() as connection:
             Database._require_access(connection, actor_id, workspace_id, Permission.MANAGE_SOURCES)
             previous_rows = connection.execute(

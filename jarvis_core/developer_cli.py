@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sqlite3
 import sys
 
 from .developer import DeveloperRepositoryService, RepositoryError
@@ -25,10 +26,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not sys.stdin.isatty():
         parser.error("repository approval and indexing require an interactive trusted terminal")
-    database = Database(args.database)
-    database.initialize()
-    service = DeveloperRepositoryService(database)
     try:
+        database = Database(args.database)
+        database.initialize()
+        service = DeveloperRepositoryService(database)
         if args.command == "register":
             print(f"Repository path supplied for registration: {args.path.expanduser().absolute()}")
             print(f"Workspace: {args.workspace_id}; approved root: {args.approved_root_id}")
@@ -38,17 +39,31 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             repo = service.register(args.actor_id, args.workspace_id, args.approved_root_id,
                                     args.path, confirmed=True)
-            print(f"Registered repository {repo.id} ({repo.name}).")
+            print(f"Registered repository {repo.id} ({repo.name}) at commit {repo.head_commit} "
+                  f"on {repo.branch_name or 'detached HEAD'}.")
             return 0
-        print(f"Index repository {args.repository_id} in workspace {args.workspace_id}?")
-        if input("Type INDEX to read the current Git commit: ").strip() != "INDEX":
+        preview = service.preview_index(args.actor_id, args.workspace_id, args.repository_id)
+        branch = preview["branch_name"] or "detached HEAD"
+        print(f"Repository: {preview['name']} ({preview['repository_id']})")
+        print(f"Workspace: {preview['workspace_id']}; path under approved root: {preview['relative_path']}")
+        print(f"Current commit: {preview['current_commit']} ({branch})")
+        print("Only committed Git objects will be indexed; dirty and untracked files are excluded.")
+        confirmation = f"INDEX {preview['current_commit']}"
+        if input(f"Type {confirmation} to approve this exact commit: ").strip() != confirmation:
             print("Indexing cancelled.")
             return 1
-        repo = service.index(args.actor_id, args.workspace_id, args.repository_id)
+        repo = service.index_confirmed(args.actor_id, args.workspace_id, args.repository_id,
+                                       preview["current_commit"] or "")
         print(f"Indexed {repo.name} at commit {repo.head_commit}; status={repo.index_status}.")
         return 0
     except (AccessDenied, RepositoryError, ValueError):
         print("Repository operation was denied or unavailable.", file=sys.stderr)
+        return 2
+    except sqlite3.Error:
+        # SQLite lock/IO details can include local database paths. Keep operator
+        # failures actionable without printing internals into shared terminals.
+        print("Repository database is unavailable or locked; close Jarvis users and retry.",
+              file=sys.stderr)
         return 2
 
 

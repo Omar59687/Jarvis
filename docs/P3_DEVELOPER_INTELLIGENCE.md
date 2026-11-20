@@ -16,7 +16,7 @@ Repository source and documentation text are untrusted. The model receives only 
 
 ## Registration and indexing commands
 
-Run these commands from a trusted PowerShell window and replace the placeholders. The database and selected workspace must already exist; the principal must have `MANAGE_SOURCES` access and the repository must be beneath an active approved root.
+Run these commands from a trusted PowerShell window and replace the placeholders. The database and selected workspace must already exist; the principal must have `MANAGE_SOURCES` access and the repository must be beneath an active approved root. Registration prints the repository ID and the exact commit observed. Before indexing, Jarvis prints the registered identity, path relative to the approved root, current commit, and branch. The operator must type `INDEX <full-commit-sha>` to approve that exact snapshot; if HEAD changes before indexing begins, indexing fails closed. Dirty and untracked working-tree files are never read.
 
 Verify an approved Git CLI is installed with `git --version`. Install/upgrade Git only through the owner's normal software process; Jarvis does not install Git or invoke package managers.
 
@@ -38,7 +38,7 @@ py -3.14 -m jarvis_core.developer_cli --database $db index `
   --repository-id "<repository-id>"
 ```
 
-Type `INDEX` to confirm that the current Git commit will be read. No code is run. Open the Jarvis dashboard, pair, select the same workspace, then use **Developer Intelligence** to select the repository, search a symbol/file, and ask a question. Each result should name the indexed commit and line range. Change the HEAD commit and retry a query to confirm the UI reports a stale index; re-index only after inspecting the new commit in the trusted terminal.
+Review the displayed repository and commit, then type the exact `INDEX <full-commit-sha>` confirmation shown by the terminal. No code is run. Open the Jarvis dashboard, pair, select the same workspace, then use **Developer Intelligence** to select the repository, search a symbol/file, and ask a question. Each result should name the indexed commit and line range. Change the HEAD commit and retry a query to confirm the UI reports a stale index; re-index only after inspecting the new commit in the trusted terminal.
 
 Start the local service using a model provider/model that the owner already selected and installed. For example, with LM Studio configured as local-only and its native server bound to loopback:
 
@@ -91,7 +91,11 @@ All operations use the existing same-origin local service and the selected works
 | P3.4 Git change evidence | Implemented with limits | Added/modified/deleted/type-change diff hunks, recent commit selection, current-HEAD Python AST line-overlap hints, and optional comparison evidence in Q&A. Renames appear delete-plus-add; historical symbol changes are not classified. |
 | P3.5 Questions | Partial | Single-turn local-provider answers can include selected diff evidence. Lexical retrieval remains the selection method; broad architecture/dependency questions may abstain. |
 | P3.6 UI | Implemented as a first dashboard | SVG graph with node highlighting plus an accessible keyboard node list, commit selectors, comparison view, source search, Q&A/citations, English/Arabic strings, RTL, and safe text rendering. No server registration UI or automated Arabic/RTL owner acceptance. |
-| P3.7 Regression/security | Implemented for the declared slice | Synthetic tests cover auth/isolation, Git CLI argument injection, malicious config, linked worktrees, detached HEAD, path/link/secret exclusions, parser failures, graph scope, changes, stale commits, citation validation, injection framing, migration rollback/backup, and P2 API compatibility. Target-Windows filesystem race behavior remains unverified. |
+| P3.7 Regression/security | Implemented for the declared slice | Synthetic tests cover auth/isolation, Git CLI argument injection, malicious config, linked worktrees, detached HEAD, path/link/reparse-point/secret exclusions, parser failures, graph scope, changes, stale commits, citation validation, injection framing, migration rollback/backup, operator commit confirmation, dirty-tree exclusion, replacement, and P2 API compatibility. Target-Windows filesystem race behavior remains unverified. |
+
+## Windows acceptance boundary
+
+The repository path guard rejects symbolic links, junctions, and entries carrying the Windows `FILE_ATTRIBUTE_REPARSE_POINT` flag. Linux tests simulate that attribute; they do not prove Windows handle identity, junction, case-folding, drive-boundary, CRLF, or SQLite lock behavior. Do not treat P3 as Windows-accepted until the owner runs the focused suite on the target Windows/Python/Git versions and performs the trusted-terminal workflow above. A locked database is reported without printing its path or SQLite internals; close the Jarvis process using the database and retry.
 
 ## Migration and dependencies
 
@@ -108,12 +112,13 @@ Schema v6 adds `developer_repositories`, `developer_files`, a workspace/reposito
 
 ## Focused tests
 
-`tests/test_developer_intelligence.py` covers registration approval, permission checks, root containment, symlinks/worktrees, Git config include rejection, secret and link exclusion, multi-language partial extraction, malformed Python, graph nodes/edges and scoping, authorization rechecks during graph reads, literal-path commit diffs and deleted-file line ranges, commit argument injection, changed-file/symbol hints, interrupted indexing atomicity, stale commits, revocation before/during generation, cross-workspace denial, citation validation, provider completion, v5→v6/v6→v7 migration rollback, and backup/restore. Service integration uses the paired local session, selected workspace, CSRF header, synthetic Git repository, and deterministic fake provider.
+`tests/test_developer_intelligence.py` covers registration approval, permission checks, root containment, symlinks/worktrees, Git config include rejection, secret and link exclusion, multi-language partial extraction, malformed Python, graph nodes/edges and scoping, authorization rechecks during graph reads, literal-path commit diffs and deleted-file line ranges, commit argument injection, changed-file/symbol hints, interrupted indexing atomicity, stale commits, revocation before/during generation, cross-workspace denial, citation validation, provider completion, v5→v6/v6→v7 migration rollback, and backup/restore. `tests/test_p3_acceptance.py` runs a disposable multi-language repository through trusted-terminal registration, exact-commit indexing, search, source-line retrieval, graph links, history comparison, dirty-tree exclusion, head-race rejection, repository replacement, reparse-point rejection, and locked-database error handling. Service integration uses the paired local session, selected workspace, CSRF header, synthetic Git repository, and deterministic fake provider; it does not verify real provider quality.
 
 Run the focused and full offline checks in PowerShell:
 
 ```powershell
-py -3.14 -m unittest tests.test_developer_intelligence tests.test_m03_p2a_chat tests.test_m03_p2a_identity -v
+py -3.14 -m unittest tests.test_p3_acceptance tests.test_developer_intelligence -v
+py -3.14 -m unittest tests.test_m03_p2a_chat tests.test_m03_p2a_identity tests.test_coding_agents -v
 py -3.14 -m unittest discover -s tests -v
 py -3.14 -m compileall -q jarvis_core prototypes eval tests
 node --check prototypes/m03_b1/app.js
