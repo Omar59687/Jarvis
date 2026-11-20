@@ -43,8 +43,10 @@ class CodingCapabilityPolicyTests(unittest.TestCase):
         self._git("init", "-q")
         self._git("config", "user.name", "Synthetic")
         self._git("config", "user.email", "synthetic@example.invalid")
+        self._git("config", "core.autocrlf", "false")
+        (self.repo_path / ".gitattributes").write_text("main.py text eol=lf\n", encoding="ascii")
         (self.repo_path / "main.py").write_text("def run():\n    return 1\n", encoding="utf-8")
-        self._git("add", "main.py")
+        self._git("add", ".gitattributes", "main.py")
         self._git("commit", "-qm", "synthetic baseline")
         self.repositories = DeveloperRepositoryService(self.db)
         registered = self.repositories.register(
@@ -61,6 +63,10 @@ class CodingCapabilityPolicyTests(unittest.TestCase):
     def _git(self, *args):
         subprocess.run(["git", "-C", str(self.repo_path), *args], check=True,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def _git_bytes(self, *args):
+        return subprocess.run(["git", "-C", str(self.repo_path), *args], check=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
 
     def test_memory_write_and_workspace_read_do_not_grant_code_authority(self):
         self.assertTrue(self.db.check_access("reader", "ws-code", Permission.READ))
@@ -255,27 +261,57 @@ class CodingCapabilityPolicyTests(unittest.TestCase):
         original_branches = subprocess.run(
             ["git", "-C", str(self.repo_path), "branch", "--list"], check=True,
             stdout=subprocess.PIPE, text=True).stdout
-        # Model an autocrlf-normalized commit observed later by the service's
-        # sanitized Git environment, which intentionally omits global config.
+        # Make Git's line-ending policy explicit in this disposable repository;
+        # the service intentionally omits user and system Git configuration.
         self._git("config", "core.autocrlf", "false")
         source = self.repo_path / "main.py"
         committed_bytes = source.read_bytes()
-        source.write_bytes(committed_bytes.replace(b"\n", b"\r\n"))
+        normalized = committed_bytes.replace(b"\r\n", b"\n")
+
+        # Always use the opposite line-ending convention.
+        converted = (
+            normalized
+            if b"\r\n" in committed_bytes
+            else normalized.replace(b"\n", b"\r\n")
+        )
+
+        self.assertNotEqual(converted, committed_bytes)
+        source.write_bytes(converted)
         crlf_only = ReadOnlyWorktreeManager(self.tasks).plan("owner", task.id)
         self.assertEqual(crlf_only.state, "blocked_isolation_unverified")
         self.assertEqual(crlf_only.dirty_file_count, 0)
-        (self.repo_path / "untracked-note.txt").write_text("dirty", encoding="utf-8")
-        raw_status = subprocess.run(
-            ["git", "-C", str(self.repo_path), "status", "--porcelain=v1",
-             "--untracked-files=all"], check=True, stdout=subprocess.PIPE,
-            text=True).stdout
-        self.assertEqual(len([line for line in raw_status.splitlines() if line]), 2)
+        # Raw status sees the line-ending-only change under this repository's
+        # explicit config; the planner's --ignore-cr-at-eol diff treats it as clean.
+        self.assertEqual(
+            self._git_bytes("status", "--porcelain=v1", "-z"), b" M main.py\0")
+        self.assertEqual(self._git_bytes("diff", "--name-only", "-z"), b"")
+        self.assertEqual(
+            self._git_bytes("diff", "--name-only", "-z", "--ignore-cr-at-eol"), b"")
+        self.assertEqual(self._git_bytes("diff", "--cached", "--name-only", "-z"), b"")
+        self.assertEqual(self._git_bytes("ls-files", "--others", "--exclude-standard", "-z"), b"")
+        # Exercise the untracked-file path with an actual file in this repository.
+        (self.repo_path / "untracked-note.txt").write_text("note\n", encoding="utf-8")
+        self.assertEqual(
+            self._git_bytes("ls-files", "--others", "--exclude-standard", "-z"),
+            b"untracked-note.txt\0",
+        )
         planner = ReadOnlyWorktreeManager(self.tasks)
         dirty = planner.plan("owner", task.id)
         self.assertEqual(dirty.state, "dirty_baseline")
         self.assertEqual(dirty.dirty_file_count, 1)
         self.assertFalse(dirty.write_available)
         (self.repo_path / "untracked-note.txt").unlink()
+        source.write_text("def run():\n    return 2\n", encoding="utf-8", newline="\n")
+        modified = planner.plan("owner", task.id)
+        self.assertEqual(modified.state, "dirty_baseline")
+        self.assertEqual(modified.dirty_file_count, 1)
+        source.write_bytes(committed_bytes)
+        source.write_text("def run():\n    return 3\n", encoding="utf-8", newline="\n")
+        self._git("add", "main.py")
+        staged = planner.plan("owner", task.id)
+        self.assertEqual(staged.state, "dirty_baseline")
+        self.assertEqual(staged.dirty_file_count, 1)
+        self._git("reset", "-q", "HEAD", "--", "main.py")
         source.write_bytes(committed_bytes)
         clean = planner.plan("owner", task.id)
         self.assertEqual(clean.state, "blocked_isolation_unverified")
