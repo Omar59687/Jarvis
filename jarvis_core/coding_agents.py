@@ -673,6 +673,7 @@ class CodingTaskService:
                 or any(type(item) is not AgentChange for item in output.changes)
                 or len(output.changes) > 50
                 or len(output.evidence_paths) > 20 or len(output.logs) > 100
+                or len(output.approval_requests) > 10
                 or any(not isinstance(item, str) or len(item) > 4000 for item in output.logs)
                 or any(not isinstance(item, str) or len(item) > 200 for item in output.evidence_paths)
                 or any(not isinstance(item, str) or len(item) > 200 for item in output.approval_requests)):
