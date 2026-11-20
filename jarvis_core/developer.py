@@ -42,6 +42,13 @@ MAX_QUESTION_CHARS = 1000
 MAX_ANSWER_CHARS = 12_000
 _SHA = re.compile(r"^[0-9a-f]{40,64}$")
 _CITATION = re.compile(r"\[R([1-9][0-9]*)\]")
+_CITATION_CONTENT = re.compile(r"R[1-9][0-9]*\Z")
+_BRACKET_EXPRESSION = re.compile(r"\[([^\[\]\r\n]{0,256})\]")
+_CITATION_ATTEMPT = re.compile(r"(?<![A-Za-z0-9_])[Rr]\s*(?:#\s*|[-:]\s*)?\d+(?![A-Za-z0-9_])")
+_NUMBERED_REFERENCE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z]{1,3}\s*#?\s*\d+(?![A-Za-z0-9_])", re.I)
+_SOURCE_REFERENCE_WORD = re.compile(r"\b(?:source|citation|repository|document|file|line|page|section)\b", re.I)
+_BARE_REFERENCE_PREFIX = re.compile(r"(?:R|D|M)\s*(?:#\s*)?\Z", re.I)
+_NUMBER_ONLY_REFERENCE = re.compile(r"(?:p{1,2}\.\s*)?\d+(?:\s*[-–]\s*\d+)?\Z", re.I)
 _UNBRACKETED = re.compile(r"(?<![A-Za-z0-9_])(?:R\s*#?\s*[0-9]+|(?:repository|file|source|citation)\s*#?\s*[0-9]+)(?![A-Za-z0-9_])", re.I)
 _SECRET_NAME = re.compile(r"(?:^\.env(?:\.|$)|(?:^|[._ -])(?:secrets?|credentials?|tokens?|password|passwd|private[_ -]?key|api[_ -]?key|id_rsa|id_ed25519)(?:[._ -]|$))", re.I)
 _EXCLUDED_DIRS = {".git", ".hg", ".svn", "node_modules", "vendor", "dist", "build", "target", ".venv", "venv", "__pycache__", "coverage", "artifacts"}
@@ -442,6 +449,31 @@ def _mask_comments(content: str, language: str) -> str:
 
 def _line_of(content: str, offset: int) -> int:
     return content.count("\n", 0, offset) + 1
+
+
+def _has_invalid_citation_brackets(text: str) -> bool:
+    """Reject citation-like brackets while allowing ordinary editorial brackets.
+
+    A square-bracket expression is accepted as a citation only in the exact
+    server-issued ``[R<number>]`` form. Other natural-language bracket text
+    (for example, the editorial ``[s]`` in ``Calculate[s]``) is not itself a
+    source reference. Compact labels, source terms, and malformed R labels stay
+    fail-closed.
+    """
+    expressions = list(_BRACKET_EXPRESSION.finditer(text))
+    if text.count("[") != len(expressions) or text.count("]") != len(expressions):
+        return True
+    for match in expressions:
+        content = match.group(1).strip()
+        if _CITATION_CONTENT.fullmatch(content):
+            continue
+        if (_CITATION_ATTEMPT.search(content)
+                or _NUMBERED_REFERENCE.search(content)
+                or _SOURCE_REFERENCE_WORD.search(content)
+                or _BARE_REFERENCE_PREFIX.fullmatch(content)
+                or _NUMBER_ONLY_REFERENCE.fullmatch(content)):
+            return True
+    return False
 
 
 def _mask_strings(content: str, language: str) -> str:
@@ -1250,7 +1282,7 @@ class DeveloperRepositoryService:
             return DeveloperAnswer("I couldn't complete a source-grounded repository answer.", "incomplete_generation", ())
         labels = _CITATION.findall(text)
         without_valid = _CITATION.sub("", text)
-        invalid = _UNBRACKETED.search(without_valid) or re.search(r"\[(?!R[1-9][0-9]*\])[^\]]{0,40}\]", text)
+        invalid = _UNBRACKETED.search(without_valid) or _has_invalid_citation_brackets(text)
         available = {item.label[1:]: item for item in evidence}
         if not labels or invalid or any(label not in available for label in labels):
             return DeveloperAnswer("The model response was withheld because its repository citation was invalid.",

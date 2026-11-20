@@ -202,6 +202,42 @@ def compute_total(values):
                                      self.provider, self.model)
         self.assertEqual(answer.outcome, "incomplete_generation")
 
+    def test_citation_validator_allows_editorial_brackets_but_rejects_bad_references(self):
+        repository = self._register_and_index()
+
+        def check(text):
+            self.provider.text = text
+            self.provider.done = True
+            return self.service.answer("alice", "ws-dev", repository.id,
+                                       "compute total", self.provider, self.model)
+
+        for text in (
+            "Calculate[s] the total fare including a booking fee [R1].",
+            "Use the indexed fare formula [R1].",
+            "Calculate[s] the fare [R1] and [sic] preserve the note.",
+            "Use the expression values[index] with source [R1].",
+            "Complete [step 1] before continuing [R1].",
+        ):
+            with self.subTest(text=text):
+                answer = check(text)
+                self.assertEqual(answer.outcome, "valid_citations")
+                self.assertEqual([item.label for item in answer.citations], ["R1"])
+
+        for text in (
+            "The total fare is calculated.",
+            "The total fare is calculated [R99].",
+            "The total fare is calculated [R 1].",
+            "The total fare is calculated [R1, R2].",
+            "The total fare is calculated [R].",
+            "The total fare is calculated [D1].",
+            "The total fare is calculated [source].",
+            "The total fare is calculated [R1.",
+        ):
+            with self.subTest(text=text):
+                answer = check(text)
+                self.assertEqual(answer.outcome, "invalid_citations")
+                self.assertEqual(answer.citations, ())
+
     def test_commit_change_marks_index_stale_and_revoked_root_denies_read(self):
         repository = self._register_and_index()
         self._write("src/math_utils.py", "def compute_total(values):\n    return -1\n")
