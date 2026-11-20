@@ -357,13 +357,48 @@ print(workspace.name)
         )
         corrupt_backup = self.directory / "corrupt-backup.sqlite3"
         corrupt_backup.write_bytes(valid_backup.read_bytes()[:100])
-        with self.assertRaises(sqlite3.DatabaseError):
-            Database.restore_from_backup(corrupt_backup, destination)
+        real_connect = sqlite3.connect
+        opened_connections = []
+
+        def track_connection(*args, **kwargs):
+            connection = real_connect(*args, **kwargs)
+            opened_connections.append(connection)
+            return connection
+
+        with patch("jarvis_core.storage.sqlite3.connect", side_effect=track_connection):
+            with self.assertRaises(sqlite3.DatabaseError):
+                Database.restore_from_backup(corrupt_backup, destination)
+        self.assertEqual(len(opened_connections), 2)
+        for connection in opened_connections:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
         self.assertEqual(destination.read_bytes(), original_bytes)
         self.assertEqual(
             existing.get_workspace("existing-owner", "existing-1").name, "Must remain"
         )
         self.assertFalse(Path(str(destination) + ".restore-tmp").exists())
+
+    def test_backup_closes_source_and_target_when_backup_fails(self) -> None:
+        real_connect = sqlite3.connect
+        opened_connections = []
+
+        class FailingBackupConnection(sqlite3.Connection):
+            def backup(self, target, *args, **kwargs):
+                raise sqlite3.OperationalError("synthetic backup failure")
+
+        def track_connection(*args, **kwargs):
+            connection = real_connect(*args, factory=FailingBackupConnection, **kwargs)
+            opened_connections.append(connection)
+            return connection
+
+        destination = self.directory / "backup-failure.sqlite3"
+        with patch("jarvis_core.storage.sqlite3.connect", side_effect=track_connection):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "backup failure"):
+                self.db.backup_to(destination, actor_id="alice")
+        self.assertGreaterEqual(len(opened_connections), 3)
+        for connection in opened_connections:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
 
     def test_restore_closes_source_when_target_connection_open_fails(self) -> None:
         backup = self.db.backup_to(self.directory / "source.sqlite3", actor_id="alice")

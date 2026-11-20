@@ -53,6 +53,19 @@ python -m unittest discover -s tests
 node --test tests/chat_ui_state.test.mjs tests/m03_a_galaxy.test.mjs
 ```
 
+The read-only baseline preflight counts distinct NUL-delimited staged, unstaged,
+unmerged, and untracked Git paths. Its unstaged comparison ignores only CR at
+line endings, so Windows CRLF checkout conversion does not make an otherwise
+clean baseline appear dirty; staged changes, untracked files, mode changes,
+and other content edits remain blocking. It does not parse human-formatted
+`git status` lines, whose path and newline formatting is platform-sensitive.
+
+SQLite migration connections are closed in the database context manager;
+backup targets close in a `finally` block; restore source and temporary target
+connections close through an `ExitStack`, including validation failures. Tests
+assert connections are unusable after injected migration, backup, and restore
+failures. Windows file-lock behavior still requires execution on Windows.
+
 ## Independent review checklist
 
 - Confirm exact base and branch isolation; no P2-fix commit is included.

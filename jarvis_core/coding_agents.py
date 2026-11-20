@@ -952,9 +952,22 @@ class ReadOnlyWorktreeManager:
         head, _ = _repo_head(path)
         if head != task.base_commit or repo.head_commit != task.base_commit:
             raise StaleRepository()
-        status = _git(path, ["status", "--porcelain=v1", "--untracked-files=all"],
-                      limit=1024 * 1024)
-        dirty_count = sum(1 for line in status.splitlines() if line)
+        # Porcelain output is line-ending dependent and paths may themselves
+        # contain newlines. Count NUL-delimited changed paths instead. Treat
+        # CRLF-only working-tree conversion as clean while preserving staged
+        # changes and all other content/mode changes as dirty.
+        git_diff_flags = ["--no-ext-diff", "--no-textconv", "--no-renames"]
+        staged = _git(path, ["diff", "--cached", "--name-only", "-z",
+                             *git_diff_flags, "HEAD", "--"], limit=1024 * 1024)
+        unstaged = _git(path, ["diff", "--name-only", "-z", "--ignore-cr-at-eol",
+                               *git_diff_flags, "--"], limit=1024 * 1024)
+        unmerged = _git(path, ["diff", "--name-only", "-z", "--diff-filter=U",
+                               *git_diff_flags, "--"], limit=1024 * 1024)
+        untracked = _git(path, ["ls-files", "--others", "--exclude-standard", "-z"],
+                         limit=1024 * 1024)
+        dirty_paths = {entry for payload in (staged, unstaged, unmerged, untracked)
+                       for entry in payload.split(b"\x00") if entry}
+        dirty_count = len(dirty_paths)
         if dirty_count:
             return WorktreePlan(task.id, task.repository_id, task.base_commit,
                                 "dirty_baseline", dirty_count, False,

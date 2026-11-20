@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import closing
 import json
 from io import StringIO
 import sqlite3
@@ -8,6 +9,7 @@ import subprocess
 import tempfile
 from threading import Event
 import unittest
+from unittest.mock import patch
 
 from jarvis_core.coding_agents import (
     CodingAuthorizationDenied,
@@ -148,9 +150,21 @@ class CodingCapabilityPolicyTests(unittest.TestCase):
         v7.create_workspace("Migration", WorkspaceKind.PERSONAL, "manager", "ws-migration")
         faulty = Database(path, migrations=(*DEFAULT_MIGRATIONS[:7], Migration(
             8, (*DEFAULT_MIGRATIONS[7].statements, "INVALID SQL"))))
-        with self.assertRaises(sqlite3.OperationalError):
-            faulty.initialize()
-        with sqlite3.connect(path) as connection:
+        real_connect = sqlite3.connect
+        opened_connections = []
+
+        def track_connection(*args, **kwargs):
+            connection = real_connect(*args, **kwargs)
+            opened_connections.append(connection)
+            return connection
+
+        with patch("jarvis_core.storage.sqlite3.connect", side_effect=track_connection):
+            with self.assertRaises(sqlite3.OperationalError):
+                faulty.initialize()
+        self.assertEqual(len(opened_connections), 1)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            opened_connections[0].execute("SELECT 1")
+        with closing(sqlite3.connect(path)) as connection:
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
             self.assertIsNone(connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='coding_tasks'").fetchone())
@@ -241,13 +255,28 @@ class CodingCapabilityPolicyTests(unittest.TestCase):
         original_branches = subprocess.run(
             ["git", "-C", str(self.repo_path), "branch", "--list"], check=True,
             stdout=subprocess.PIPE, text=True).stdout
+        # Model an autocrlf-normalized commit observed later by the service's
+        # sanitized Git environment, which intentionally omits global config.
+        self._git("config", "core.autocrlf", "false")
+        source = self.repo_path / "main.py"
+        committed_bytes = source.read_bytes()
+        source.write_bytes(committed_bytes.replace(b"\n", b"\r\n"))
+        crlf_only = ReadOnlyWorktreeManager(self.tasks).plan("owner", task.id)
+        self.assertEqual(crlf_only.state, "blocked_isolation_unverified")
+        self.assertEqual(crlf_only.dirty_file_count, 0)
         (self.repo_path / "untracked-note.txt").write_text("dirty", encoding="utf-8")
+        raw_status = subprocess.run(
+            ["git", "-C", str(self.repo_path), "status", "--porcelain=v1",
+             "--untracked-files=all"], check=True, stdout=subprocess.PIPE,
+            text=True).stdout
+        self.assertEqual(len([line for line in raw_status.splitlines() if line]), 2)
         planner = ReadOnlyWorktreeManager(self.tasks)
         dirty = planner.plan("owner", task.id)
         self.assertEqual(dirty.state, "dirty_baseline")
         self.assertEqual(dirty.dirty_file_count, 1)
         self.assertFalse(dirty.write_available)
         (self.repo_path / "untracked-note.txt").unlink()
+        source.write_bytes(committed_bytes)
         clean = planner.plan("owner", task.id)
         self.assertEqual(clean.state, "blocked_isolation_unverified")
         self.assertFalse(clean.write_available)
