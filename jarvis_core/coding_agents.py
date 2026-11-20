@@ -602,6 +602,11 @@ class CodingTaskService:
         if hashlib.sha256(manifest_json.encode("utf-8")).hexdigest() != task.manifest_sha256:
             raise CodingAuthorizationDenied("task_manifest_changed")
 
+    def _reject_agent_output(self, task: CodingTask, principal_id: str, reason: str) -> None:
+        self._append_task_event(task, principal_id, "agent_output_rejected",
+                                task.manifest_sha256, {"reason": reason})
+        raise CodingAuthorizationDenied(reason)
+
     def propose_with_adapter(self, principal_id: str, task_id: str, request_text: str,
                              adapter: AgentAdapter, *, cancelled: Event | None = None) -> CodingTask:
         task = self.get_task(principal_id, task_id)
@@ -671,7 +676,7 @@ class CodingTaskService:
                 or any(not isinstance(item, str) or len(item) > 4000 for item in output.logs)
                 or any(not isinstance(item, str) or len(item) > 200 for item in output.evidence_paths)
                 or any(not isinstance(item, str) or len(item) > 200 for item in output.approval_requests)):
-            raise CodingAuthorizationDenied("agent_output_invalid")
+            self._reject_agent_output(task, principal_id, "agent_output_invalid")
         if output.approval_requests:
             self._append_task_event(task, principal_id, "agent_approval_request_denied",
                                     task.manifest_sha256,
@@ -684,24 +689,29 @@ class CodingTaskService:
         patch_parts: list[str] = []
         total_output_bytes = 0
         for change in output.changes:
-            path = self._proposal_path(change.relative_path)
+            try:
+                path = self._proposal_path(change.relative_path)
+            except (ValueError, TypeError):
+                self._reject_agent_output(task, principal_id, "proposal_path_invalid")
             if path in seen:
-                raise CodingAuthorizationDenied("agent_output_invalid")
+                self._reject_agent_output(task, principal_id, "agent_output_invalid")
             seen.add(path)
             source = source_by_path.get(path)
             if source is None:
-                raise CodingAuthorizationDenied("proposal_outside_indexed_evidence")
+                self._reject_agent_output(task, principal_id,
+                                          "proposal_outside_indexed_evidence")
             if not isinstance(change.new_content, str) or "\x00" in change.new_content:
-                raise CodingAuthorizationDenied("agent_output_invalid")
+                self._reject_agent_output(task, principal_id, "agent_output_invalid")
             try:
                 encoded = change.new_content.encode("utf-8", errors="strict")
             except UnicodeEncodeError:
-                raise CodingAuthorizationDenied("agent_output_invalid") from None
+                self._reject_agent_output(task, principal_id, "agent_output_invalid")
             if len(encoded) > int(budgets.get("max_file_bytes", 0)):
-                raise CodingAuthorizationDenied("agent_output_limit")
+                self._reject_agent_output(task, principal_id, "agent_output_limit")
             total_output_bytes += len(encoded)
             if total_output_bytes > 1024 * 1024 or _contains_secret_material(change.new_content):
-                raise CodingAuthorizationDenied("proposal_rejected_by_safety_screen")
+                self._reject_agent_output(task, principal_id,
+                                          "proposal_rejected_by_safety_screen")
             patch_parts.append("".join(difflib.unified_diff(
                 source.content.splitlines(keepends=True), change.new_content.splitlines(keepends=True),
                 fromfile=f"a/{path}", tofile=f"b/{path}", n=3,
@@ -712,7 +722,7 @@ class CodingTaskService:
         patch = "".join(patch_parts)
         patch_bytes = patch.encode("utf-8")
         if len(patch_bytes) > int(budgets.get("max_diff_bytes", 0)):
-            raise CodingAuthorizationDenied("agent_output_limit")
+            self._reject_agent_output(task, principal_id, "agent_output_limit")
         evidence_paths = [path for path in output.evidence_paths if path in source_by_path][:20]
         diff_digest = hashlib.sha256(patch_bytes).hexdigest()
         proposal_json = json.dumps({"changes": changes, "diff": patch,

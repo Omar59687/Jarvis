@@ -327,6 +327,10 @@ class CodingCapabilityPolicyTests(unittest.TestCase):
             row = connection.execute("SELECT proposal_json FROM coding_tasks WHERE id=?",
                                      (task.id,)).fetchone()
         self.assertIsNone(row[0])
+        rejected = [event for event in self.tasks.audit_events("owner", task.id)
+                    if event["event_type"] == "agent_output_rejected"]
+        self.assertEqual([event["metadata"]["reason"] for event in rejected],
+                         ["proposal_rejected_by_safety_screen", "agent_output_limit"])
 
     def test_diff_change_after_approval_invalidates_snapshot(self):
         task = self._new_task("Inspect run safely")
