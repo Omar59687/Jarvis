@@ -400,6 +400,9 @@ class M03B1LocalChatTests(unittest.TestCase):
         self.assertIn('fetch("/api/v1/workspaces"', app_js)
         self.assertIn("/api/v1/session/workspace", app_js)
         self.assertIn('fetch("/api/v1/memory-candidates"', app_js)
+        self.assertIn("memoryProposalPayload({", app_js)
+        self.assertIn("if (response.status === 401)", app_js)
+        self.assertIn("evidence_request_expired:", (Path(__file__).parents[1] / "prototypes/m03_b1/chat-ui-state.mjs").read_text(encoding="utf-8"))
         self.assertIn('confirmed_snapshot: true', app_js)
         self.assertIn('retain_existing_sources: true', app_js)
         self.assertIn('data-ar=', index_html)
@@ -441,7 +444,7 @@ class M03B1LocalChatTests(unittest.TestCase):
         self.assertNotIn('fetch("http', app_js.lower())
         self.assertNotIn("11434", app_js)
         self.assertIn("updateChatInputPlaceholder()", app_js)
-        self.assertIn('import { chatInputPlaceholder } from "/chat-ui-state.mjs"', app_js)
+        self.assertIn('import { chatInputPlaceholder, memoryProposalPayload, memoryProposalError } from "/chat-ui-state.mjs"', app_js)
 
     def test_repeated_unauthenticated_posts_with_bodies_receive_401_and_close_cleanly(self):
         payload = json.dumps({"message": "Unauthorized request"}).encode("utf-8")

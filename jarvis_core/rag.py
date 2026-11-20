@@ -78,6 +78,7 @@ class RAGEvidence:
     provenance_kind: str | None = None
     source_status: str | None = None
     memory_evidence: tuple[Evidence, ...] = ()
+    source_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -198,6 +199,7 @@ class EvidenceSelector:
                     excerpt=excerpt,
                     source_type="document",
                     source_status="active_document",
+                    source_sha256=getattr(result, "source_sha256", None),
                 )
             else:
                 item = RAGEvidence(
