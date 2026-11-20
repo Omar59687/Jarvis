@@ -48,7 +48,7 @@ class StorageTests(unittest.TestCase):
             self.assertTrue(path.exists())
             with db._connection() as connection:
                 self.assertEqual(
-                    connection.execute("PRAGMA user_version").fetchone()[0], 7
+                    connection.execute("PRAGMA user_version").fetchone()[0], 8
                 )
                 tables = {
                     row[0]
@@ -83,7 +83,7 @@ class StorageTests(unittest.TestCase):
         for _ in range(3):
             self.db.initialize()
         with self.db._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 8)
             count = connection.execute(
                 "SELECT COUNT(*) FROM workspaces WHERE id = ?", ("project-1",)
             ).fetchone()[0]
@@ -98,15 +98,15 @@ class StorageTests(unittest.TestCase):
         )
         version_three = Database(path)
         version_three.initialize()
-        version_eight_migrations = (
+        version_nine_migrations = (
             *DEFAULT_MIGRATIONS,
-            Migration(8, ("CREATE TABLE migration_marker (value TEXT NOT NULL)",)),
+            Migration(9, ("CREATE TABLE migration_marker (value TEXT NOT NULL)",)),
         )
-        version_eight = Database(path, migrations=version_eight_migrations)
-        version_eight.initialize()
-        version_eight.initialize()
-        with version_eight._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 8)
+        version_nine = Database(path, migrations=version_nine_migrations)
+        version_nine.initialize()
+        version_nine.initialize()
+        with version_nine._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 9)
             self.assertEqual(
                 connection.execute(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type = ? AND name = ?",
@@ -114,7 +114,7 @@ class StorageTests(unittest.TestCase):
                 ).fetchone()[0],
                 1,
             )
-        self.assertEqual(version_eight.get_workspace("upgrade-owner", "upgrade-1").name, "Preserved")
+        self.assertEqual(version_nine.get_workspace("upgrade-owner", "upgrade-1").name, "Preserved")
 
     def test_migration_failure_rolls_back_schema_and_version(self) -> None:
         migrations = (

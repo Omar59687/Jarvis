@@ -19,7 +19,7 @@ from typing import Iterator, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 REQUIRED_BACKUP_COLUMNS = {
     "workspaces": {"id", "name", "kind", "created_at"},
     "workspace_permissions": {
@@ -560,6 +560,72 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
         version=7,
         statements=(
             "ALTER TABLE developer_files ADD COLUMN analysis_status TEXT NOT NULL DEFAULT 'unknown' CHECK(analysis_status IN ('complete','partial','failed','unsupported','unknown'))",
+        ),
+    ),
+    Migration(
+        version=8,
+        statements=(
+            """CREATE TABLE coding_repository_grants (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                repository_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                capability TEXT NOT NULL CHECK(capability IN (
+                    'read_repository_metadata','read_indexed_source','propose_code_modifications',
+                    'create_isolated_worktree','modify_task_worktree','execute_verification',
+                    'request_network_access','create_commit','push_branch','open_pull_request',
+                    'merge_or_deploy'
+                )),
+                granted_by TEXT NOT NULL,
+                granted_at TEXT NOT NULL,
+                expires_at TEXT,
+                revoked_at TEXT,
+                FOREIGN KEY(repository_id,workspace_id)
+                    REFERENCES developer_repositories(id,workspace_id) ON DELETE CASCADE
+            )""",
+            "CREATE INDEX coding_repository_grants_lookup ON coding_repository_grants(workspace_id,repository_id,principal_id,capability,revoked_at)",
+            """CREATE TABLE coding_tasks (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                repository_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                base_commit TEXT NOT NULL CHECK(length(base_commit) IN (40,64)),
+                request_sha256 TEXT NOT NULL CHECK(length(request_sha256)=64),
+                manifest_json TEXT NOT NULL,
+                manifest_sha256 TEXT NOT NULL CHECK(length(manifest_sha256)=64),
+                status TEXT NOT NULL CHECK(status IN (
+                    'requested','proposed','approved','rejected','cancelled','interrupted','stale'
+                )),
+                proposal_json TEXT,
+                diff_sha256 TEXT,
+                approved_diff_sha256 TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY(repository_id,workspace_id)
+                    REFERENCES developer_repositories(id,workspace_id) ON DELETE CASCADE
+            )""",
+            "CREATE INDEX coding_tasks_workspace_status ON coding_tasks(workspace_id,status,updated_at)",
+            """CREATE TABLE coding_task_events (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL REFERENCES coding_tasks(id) ON DELETE CASCADE,
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                principal_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                snapshot_sha256 TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            )""",
+            "CREATE INDEX coding_task_events_task ON coding_task_events(task_id,created_at,id)",
+            """CREATE TABLE coding_task_decision_receipts (
+                decision_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL REFERENCES coding_tasks(id) ON DELETE CASCADE,
+                workspace_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('approve_proposal','reject_proposal')),
+                snapshot_sha256 TEXT NOT NULL CHECK(length(snapshot_sha256)=64),
+                consumed_at TEXT NOT NULL
+            )""",
         ),
     ),
 )
