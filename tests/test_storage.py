@@ -48,7 +48,7 @@ class StorageTests(unittest.TestCase):
             self.assertTrue(path.exists())
             with db._connection() as connection:
                 self.assertEqual(
-                    connection.execute("PRAGMA user_version").fetchone()[0], 8
+                    connection.execute("PRAGMA user_version").fetchone()[0], 9
                 )
                 tables = {
                     row[0]
@@ -75,6 +75,12 @@ class StorageTests(unittest.TestCase):
                     "developer_repositories",
                     "developer_files",
                     "developer_file_search",
+                    "orchestration_tasks",
+                    "orchestration_plans",
+                    "orchestration_subtasks",
+                    "orchestration_dependencies",
+                    "orchestration_approvals",
+                    "orchestration_task_events",
                 }
                 <= tables
             )
@@ -83,7 +89,7 @@ class StorageTests(unittest.TestCase):
         for _ in range(3):
             self.db.initialize()
         with self.db._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 8)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 9)
             count = connection.execute(
                 "SELECT COUNT(*) FROM workspaces WHERE id = ?", ("project-1",)
             ).fetchone()[0]
@@ -98,15 +104,15 @@ class StorageTests(unittest.TestCase):
         )
         version_three = Database(path)
         version_three.initialize()
-        version_nine_migrations = (
+        version_ten_migrations = (
             *DEFAULT_MIGRATIONS,
-            Migration(9, ("CREATE TABLE migration_marker (value TEXT NOT NULL)",)),
+            Migration(10, ("CREATE TABLE migration_marker (value TEXT NOT NULL)",)),
         )
-        version_nine = Database(path, migrations=version_nine_migrations)
-        version_nine.initialize()
-        version_nine.initialize()
-        with version_nine._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 9)
+        version_ten = Database(path, migrations=version_ten_migrations)
+        version_ten.initialize()
+        version_ten.initialize()
+        with version_ten._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 10)
             self.assertEqual(
                 connection.execute(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type = ? AND name = ?",
@@ -114,7 +120,44 @@ class StorageTests(unittest.TestCase):
                 ).fetchone()[0],
                 1,
             )
-        self.assertEqual(version_nine.get_workspace("upgrade-owner", "upgrade-1").name, "Preserved")
+        self.assertEqual(version_ten.get_workspace("upgrade-owner", "upgrade-1").name, "Preserved")
+
+    def test_v8_upgrade_adds_orchestration_schema_and_v9_failure_rolls_back(self) -> None:
+        path = self.directory / "v8-orchestration.sqlite3"
+        version_eight = Database(path, migrations=DEFAULT_MIGRATIONS[:8])
+        version_eight.initialize()
+        version_eight.create_workspace(
+            "Preserved P4", WorkspaceKind.PROJECT, "upgrade-owner", "upgrade-p4"
+        )
+        with version_eight._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 8)
+
+        broken_v9 = Database(path, migrations=(
+            *DEFAULT_MIGRATIONS[:8],
+            Migration(9, (
+                "CREATE TABLE orchestration_upgrade_probe (id INTEGER PRIMARY KEY)",
+                "INVALID V9 SQL",
+            )),
+        ))
+        with self.assertRaises(sqlite3.OperationalError):
+            broken_v9.initialize()
+        with broken_v9._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 8)
+            self.assertIsNone(connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                ("orchestration_upgrade_probe",),
+            ).fetchone())
+
+        upgraded = Database(path)
+        upgraded.initialize()
+        with upgraded._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 9)
+            tables = {row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertTrue({"orchestration_tasks", "orchestration_plans",
+                         "orchestration_task_events"} <= tables)
+        self.assertEqual(upgraded.get_workspace("upgrade-owner", "upgrade-p4").name,
+                         "Preserved P4")
 
     def test_migration_failure_rolls_back_schema_and_version(self) -> None:
         migrations = (

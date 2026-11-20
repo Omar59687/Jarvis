@@ -55,14 +55,14 @@ class MemoryLifecycleTests(unittest.TestCase):
 
     def test_fresh_v6_and_v3_upgrade(self):
         with self.db._connection() as c:
-            self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0],8)
+            self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0],9)
             self.assertIsNotNone(c.execute("SELECT name FROM sqlite_master WHERE name='memories'").fetchone())
         legacy=self.root/"v3.sqlite3"
         v3=Database(legacy,migrations=self.db._migrations[:3]); v3.initialize()
         v3.create_workspace("Legacy",WorkspaceKind.PERSONAL,"legacy","legacy-ws")
         Database(legacy).initialize()
         with closing(sqlite3.connect(legacy)) as c, c:
-            self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0],8)
+            self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0],9)
 
     def test_v3_to_v4_migration_rolls_back_on_failure(self):
         legacy=self.root/"rollback.sqlite3"

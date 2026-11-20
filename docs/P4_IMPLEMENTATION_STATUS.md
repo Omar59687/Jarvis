@@ -83,3 +83,30 @@ failures. Windows file-lock behavior still requires execution on Windows.
 2. Independently verified isolation on the target Windows edition, including filesystem, process tree, and network containment.
 3. Separate dependency/data-flow/license review for one exact agent runtime and provider configuration.
 4. A later independently approved slice for worktree creation and writes, and another for supervised verification/promotion. Push, PR, merge, and deployment remain separate decisions.
+
+## Persistent orchestration follow-on (schema v9)
+
+The isolated `feature/p4-persistent-task-orchestration` checkpoint adds
+`orchestration_tasks`, immutable plan-content revisions, bounded subtasks and
+dependencies, one-use exact-plan decision receipts, and append-only lifecycle
+events. This is a separate planned-task model; it does not reinterpret schema-v8
+coding-task approvals. The deterministic fake planner/worker can demonstrate
+bounded simulated progress and restart recovery without a model, external call,
+process, or repository write. The new manager-only trusted-terminal helper
+supports task creation, inspection, exact-digest approval/rejection, simulation,
+cancellation, recovery, and event history.
+
+| Orchestration capability | Checkpoint status | Evidence / remaining limit |
+|---|---|---|
+| Persistent workspace/principal/repository scope | Implemented | Migration 9, optional repository commit pin, bounded goal and integrity digest; local DB remains sensitive. |
+| Immutable approved plan revision | Implemented | Canonical plan SHA-256, current/approved revision pointers, one-use approval receipt; edited plan requires new approval. |
+| Subtask dependencies and progress | Implemented for simulation | Dependency-cycle validation and simulated progress; there is no real assignment or worker queue. |
+| Lifecycle history and idempotency | Implemented locally | Append-only event/receipt triggers, unique workspace/actor request keys, audit entries; not a distributed event system. |
+| Restart recovery | Implemented, fail-closed | Queued/simulating tasks become interrupted; explicit manager resume only for approved simulated work; no automatic worker resumes. |
+| Trusted operator flow | Helper implemented | `OrchestrationOperatorWorkflow` is injected into an authenticated trusted host; it is not a standalone CLI or HTTP endpoint. |
+| P1/P2/P3 and v8 approval compatibility | Preserved by additive migration | Existing schemas are not rewritten; schema and full regressions remain part of checkpoint verification. |
+| Real model, agent, or provider planning | Blocked | Only deterministic fake planner is accepted by the service. |
+| File writes, process/network execution, commits, remote actions | Blocked | Existing Windows `NOT_READY` isolation gate remains unchanged. |
+| Expiration deletion / retention UX | Not implemented | Expiration is logical; no task purge/export workflow exists, so local DB and backups must be treated as sensitive. |
+
+See [persistent orchestration design and operator boundaries](P4_PERSISTENT_TASK_ORCHESTRATION.md).
