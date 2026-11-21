@@ -1,9 +1,10 @@
-"""Loopback chat alpha with permission-scoped P2 memory and P3 read-only source APIs."""
+"""Loopback chat alpha with permission-scoped P2 memory, P3 read-only source, and P4 read-only task APIs."""
 from __future__ import annotations
 
 import argparse
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import hashlib
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,12 +15,23 @@ import secrets
 import socket
 import threading
 import time
+import unicodedata
 from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 
 from jarvis_core.lmstudio import LMStudioBionicClient
 from jarvis_core.developer import DeveloperRepositoryService, RepositoryError, StaleRepository
+from jarvis_core.orchestration import (
+    MAX_GOAL_CHARS,
+    MAX_RESULT_SUMMARY_CHARS,
+    OrchestrationError,
+    OrchestrationTask,
+    SubtaskProgress,
+    TaskOrchestrationService,
+    TaskPlan,
+    TaskState,
+)
 from jarvis_core.storage import AccessDenied, Database
 from jarvis_core.storage import Permission
 from jarvis_core.retrieval import SearchIndex, SearchIndexUnavailable, FTS5Unavailable
@@ -59,6 +71,31 @@ MAX_CHATS_PER_MINUTE = 6
 MAX_SESSIONS = 8
 MAX_HANDLER_THREADS = 16
 API_PREFIX = "/api/v1"
+TASK_ID_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
+TASK_LIST_DEFAULT_LIMIT = 20
+TASK_LIST_MAX_LIMIT = 50
+TASK_LIST_MAX_OFFSET = 99
+TASK_SERVICE_WINDOW_LIMIT = 100
+TASK_PLANS_DEFAULT_LIMIT = 10
+TASK_PLANS_MAX_LIMIT = 20
+TASK_PLANS_MAX_OFFSET = 100
+TASK_EVENTS_DEFAULT_LIMIT = 25
+TASK_EVENTS_MAX_LIMIT = 100
+TASK_EVENTS_MAX_OFFSET = 400
+TASK_LIST_GOAL_PREVIEW_CHARS = 300
+_TASK_ALLOWED_STATUS_FILTERS = frozenset({
+    "all", "draft", "pending_approval", "blocked", "interrupted", "cancelled", "simulated", "stale",
+})
+_SAFE_EVENT_METADATA_KEYS = frozenset({
+    "revision", "subtask_count", "subtask_id", "progress_percent",
+    "simulated", "simulated_only", "previous_state", "reason",
+    "capabilities", "auto_resume", "explicit",
+})
+_BIDI_AND_CONTROL_CHARS = frozenset({
+    "\u200e", "\u200f", "\u061c",
+    "\u202a", "\u202b", "\u202c", "\u202d", "\u202e",
+    "\u2066", "\u2067", "\u2068", "\u2069",
+})
 LOGGER = logging.getLogger(__name__)
 DEFAULT_PROVIDER_TIMEOUT_SECONDS = 120.0
 GENERAL_CHAT_SYSTEM_PROMPT = (
@@ -90,6 +127,72 @@ def _contains_client_identity(value: dict) -> bool:
     return any(isinstance(key, str) and key.casefold().replace("_", "").replace("-", "") in identity_keys
                for key in value)
 
+
+def _sanitize_display_text(value: object, *, max_chars: int, single_line: bool = False) -> str:
+    """Strip control/bidi-override characters and bound length for safe read-only display."""
+    if not isinstance(value, str):
+        return ""
+    cleaned: list[str] = []
+    for char in value:
+        if char in _BIDI_AND_CONTROL_CHARS:
+            continue
+        if char in ("\r", "\n", "\t"):
+            cleaned.append(" " if single_line else ("\n" if char == "\n" else " "))
+            continue
+        category = unicodedata.category(char)
+        if category.startswith(("C", "Zl", "Zp")):
+            continue
+        cleaned.append(char)
+    text = "".join(cleaned)
+    if single_line:
+        text = " ".join(text.split())
+    else:
+        text = text.strip()
+    return text[:max_chars]
+
+
+def _task_display_status(state: TaskState, execution_mode: str) -> tuple[str, bool]:
+    """Map persisted Schema v9 task state to a clear read-only dashboard status and simulation flag."""
+    if state is TaskState.DRAFT:
+        return "draft", False
+    if state is TaskState.AWAITING_APPROVAL:
+        return "pending_approval", False
+    if state is TaskState.BLOCKED:
+        return "blocked", execution_mode == "simulated"
+    if state is TaskState.INTERRUPTED:
+        return "interrupted", execution_mode == "simulated"
+    if state is TaskState.CANCELLED:
+        return "cancelled", execution_mode == "simulated"
+    if state is TaskState.STALE:
+        return "stale", execution_mode == "simulated"
+    if state in {TaskState.QUEUED, TaskState.SIMULATING, TaskState.SIMULATION_COMPLETED}:
+        return "simulated", True
+    return state.value, execution_mode == "simulated"
+
+
+def _task_is_expired(expires_at: str) -> bool:
+    try:
+        parsed = datetime.fromisoformat(expires_at)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed <= datetime.now(timezone.utc)
+    except (TypeError, ValueError):
+        return False
+
+
+def _parse_bounded_int(params: dict[str, list[str]], key: str, default: int,
+                       minimum: int, maximum: int) -> int:
+    if key not in params:
+        return default
+    values = params[key]
+    if len(values) != 1 or not values[0].isdecimal() or len(values[0]) > 10:
+        raise ValueError(f"invalid {key}")
+    parsed = int(values[0])
+    if not minimum <= parsed <= maximum:
+        raise ValueError(f"{key} out of bounds")
+    return parsed
+
+
 M03A_ROOT = Path(__file__).resolve().parents[1] / "m03_a"
 B1_ROOT = Path(__file__).resolve().parent
 STATIC_FILES = {
@@ -99,6 +202,7 @@ STATIC_FILES = {
     "/chat.css": (Path(__file__).with_name("chat.css"), "text/css; charset=utf-8"),
     "/app.js": (Path(__file__).with_name("app.js"), "text/javascript; charset=utf-8"),
     "/chat-ui-state.mjs": (Path(__file__).with_name("chat-ui-state.mjs"), "text/javascript; charset=utf-8"),
+    "/task-control-state.mjs": (Path(__file__).with_name("task-control-state.mjs"), "text/javascript; charset=utf-8"),
     "/galaxy-model.mjs": (M03A_ROOT / "galaxy-model.mjs", "text/javascript; charset=utf-8"),
     "/vendor/three.core.js": (M03A_ROOT / "vendor/three.core.js", "text/javascript; charset=utf-8"),
     "/vendor/three.module.js": (M03A_ROOT / "vendor/three.module.js", "text/javascript; charset=utf-8"),
@@ -309,6 +413,10 @@ class LocalChatServer(ThreadingHTTPServer):
         self.memory_service = MemoryService(configured_database, self.decision_key) if configured_database else None
         self.rag = DocumentRAG(self.search_index, generator) if configured_database else None
         self.developer = DeveloperRepositoryService(configured_database) if configured_database else None
+        self.orchestration = (
+            TaskOrchestrationService(configured_database, repositories=self.developer)
+            if configured_database else None
+        )
         self.pairing = PairingAuthority(code=pairing_code, clock=clock)
         self.sessions = SessionStore(clock=clock)
         self._handler_slots = threading.BoundedSemaphore(MAX_HANDLER_THREADS)
@@ -488,7 +596,9 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         if self._reject_host():
             return
         path, query = self._request_path()
-        if query and not path.startswith(f"{API_PREFIX}/developer/repositories"):
+        if query and not (path.startswith(f"{API_PREFIX}/developer/repositories")
+                          or path == f"{API_PREFIX}/tasks"
+                          or path.startswith(f"{API_PREFIX}/tasks/")):
             self._json(404, {"error": "not_found"})
             return
         if path == "/health":
@@ -542,6 +652,9 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         if path.startswith(f"{API_PREFIX}/developer/repositories"):
             self._developer_get(path, query)
             return
+        if path == f"{API_PREFIX}/tasks" or path.startswith(f"{API_PREFIX}/tasks/"):
+            self._tasks_get(path, query)
+            return
         if path == f"{API_PREFIX}/memory-candidates":
             self._list_memory_candidates()
             return
@@ -566,6 +679,10 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                 or self._reject_origin(discard_body_limit=post_body_limit)):
             return
         path, query = self._request_path()
+        if path == f"{API_PREFIX}/tasks" or path.startswith(f"{API_PREFIX}/tasks/"):
+            self._discard_bounded_request_body(post_body_limit)
+            self._json(405, {"error": "method_not_allowed"}, extra_headers={"Allow": "GET"})
+            return
         if query:
             self._discard_bounded_request_body(post_body_limit)
             self._json(404, {"error": "not_found"})
@@ -593,6 +710,9 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         if self._reject_host() or self._reject_origin():
             return
         path, query = self._request_path()
+        if path == f"{API_PREFIX}/tasks" or path.startswith(f"{API_PREFIX}/tasks/"):
+            self._json(405, {"error": "method_not_allowed"}, extra_headers={"Allow": "GET"})
+            return
         if not query and path == f"{API_PREFIX}/session/workspace":
             session_id = self._cookie_session_id()
             record = self.server.sessions.resolve(session_id)
@@ -631,6 +751,10 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                 or self._reject_origin(discard_body_limit=body_limit)):
             return
         path, query = self._request_path()
+        if path == f"{API_PREFIX}/tasks" or path.startswith(f"{API_PREFIX}/tasks/"):
+            self._discard_bounded_request_body(body_limit)
+            self._json(405, {"error": "method_not_allowed"}, extra_headers={"Allow": "GET"})
+            return
         if query:
             self._discard_bounded_request_body(body_limit)
             self._json(404, {"error": "not_found"})
@@ -770,6 +894,418 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             return
         except Exception:
             self._json(503, {"error": "developer_service_unavailable"})
+            return
+        self._json(404, {"error": "not_found"})
+
+    def _authenticated_workspace_manager(self):
+        session_id = self._cookie_session_id()
+        record = self.server.sessions.resolve(session_id, touch=True)
+        if record is None or session_id is None:
+            self._json(401, {"error": "authentication_required"})
+            return None
+        if (record.actor_id is None or self.server.database is None
+                or record.active_workspace_id is None):
+            self._json(409, {"error": "workspace_selection_required"})
+            return None
+        if self.server.orchestration is None:
+            self._json(503, {"error": "task_service_unavailable"})
+            return None
+        workspace_id = record.active_workspace_id
+        try:
+            self.server.database.require_access(record.actor_id, workspace_id, Permission.READ)
+        except AccessDenied:
+            self.server.sessions.clear_active_workspace(session_id)
+            self._json(404, {"error": "workspace_unavailable"})
+            return None
+        except Exception:
+            LOGGER.warning("Task workspace access check failed")
+            self._json(503, {"error": "task_service_unavailable"})
+            return None
+        try:
+            self.server.database.require_access(
+                record.actor_id, workspace_id, Permission.MANAGE_WORKSPACE
+            )
+        except AccessDenied:
+            self._json(403, {"error": "manage_permission_required"})
+            return None
+        except Exception:
+            LOGGER.warning("Task manager permission check failed")
+            self._json(503, {"error": "task_service_unavailable"})
+            return None
+        return session_id, record, record.actor_id, workspace_id
+
+    @staticmethod
+    def _task_list_item_payload(task: OrchestrationTask) -> dict[str, object]:
+        display_status, is_simulated = _task_display_status(task.state, task.execution_mode)
+        sanitized_goal = _sanitize_display_text(task.goal, max_chars=MAX_GOAL_CHARS, single_line=True)
+        goal_truncated = len(sanitized_goal) > TASK_LIST_GOAL_PREVIEW_CHARS
+        goal_preview = sanitized_goal[:TASK_LIST_GOAL_PREVIEW_CHARS]
+        summary = (
+            _sanitize_display_text(task.result_summary, max_chars=MAX_RESULT_SUMMARY_CHARS, single_line=True)
+            if task.result_summary is not None else None
+        )
+        return {
+            "id": task.id,
+            "workspace_id": task.workspace_id,
+            "repository_id": task.repository_id,
+            "repository_commit": task.repository_commit,
+            "goal": goal_preview,
+            "goal_truncated": goal_truncated,
+            "state": task.state.value,
+            "display_status": display_status,
+            "execution_mode": task.execution_mode,
+            "is_simulated": is_simulated,
+            "real_execution_enabled": bool(task.capability_manifest.get("execution_enabled", False)),
+            "current_plan_revision": task.current_plan_revision,
+            "approved_plan_revision": task.approved_plan_revision,
+            "has_pending_approval": task.state is TaskState.AWAITING_APPROVAL,
+            "result_summary": summary,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+            "expires_at": task.expires_at,
+            "is_expired": _task_is_expired(task.expires_at),
+        }
+
+    @staticmethod
+    def _task_detail_payload(task: OrchestrationTask, blocked: tuple[str, ...],
+                             plan_count: int, progress: tuple[SubtaskProgress, ...]) -> dict[str, object]:
+        display_status, is_simulated = _task_display_status(task.state, task.execution_mode)
+        total_subtasks = len(progress)
+        completed_subtasks = sum(1 for item in progress if item.state.value == "simulated_completed")
+        avg_percent = (
+            round(sum(item.progress_percent for item in progress) / total_subtasks)
+            if total_subtasks else 0
+        )
+        summary = (
+            _sanitize_display_text(task.result_summary, max_chars=MAX_RESULT_SUMMARY_CHARS)
+            if task.result_summary is not None else None
+        )
+        granted = task.capability_manifest.get("granted", [])
+        safe_granted = [str(item) for item in granted] if isinstance(granted, list) else []
+        return {
+            "id": task.id,
+            "workspace_id": task.workspace_id,
+            "repository_id": task.repository_id,
+            "repository_commit": task.repository_commit,
+            "goal": _sanitize_display_text(task.goal, max_chars=MAX_GOAL_CHARS),
+            "state": task.state.value,
+            "display_status": display_status,
+            "execution_mode": task.execution_mode,
+            "is_simulated": is_simulated,
+            "real_execution_enabled": bool(task.capability_manifest.get("execution_enabled", False)),
+            "capability_controls": {
+                "requested": list(task.requested_capabilities),
+                "granted": safe_granted,
+                "blocked": list(blocked),
+                "execution_enabled": bool(task.capability_manifest.get("execution_enabled", False)),
+                "file_write_enabled": bool(task.capability_manifest.get("file_write_enabled", False)),
+                "process_execution_enabled": bool(
+                    task.capability_manifest.get("process_execution_enabled", False)
+                ),
+                "network_enabled": bool(task.capability_manifest.get("network_enabled", False)),
+                "plan_approval_is_execution_approval": bool(
+                    task.capability_manifest.get("plan_approval_is_execution_approval", False)
+                ),
+            },
+            "current_plan_revision": task.current_plan_revision,
+            "approved_plan_revision": task.approved_plan_revision,
+            "has_pending_approval": task.state is TaskState.AWAITING_APPROVAL,
+            "plan_revision_count": plan_count,
+            "simulated_progress_summary": {
+                "simulated_only": True,
+                "total_subtasks": total_subtasks,
+                "completed_subtasks": completed_subtasks,
+                "average_percent": avg_percent,
+            },
+            "result_summary": summary,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+            "expires_at": task.expires_at,
+            "is_expired": _task_is_expired(task.expires_at),
+        }
+
+    @staticmethod
+    def _task_plan_payload(task: OrchestrationTask, plan: TaskPlan,
+                           progress: tuple[SubtaskProgress, ...]) -> dict[str, object]:
+        progress_by_id = {item.subtask_id: item for item in progress}
+        subtasks: list[dict[str, object]] = []
+        dependencies: list[dict[str, str]] = []
+        for item in plan.subtasks:
+            sub_progress = progress_by_id.get(item.id)
+            sub_state = sub_progress.state.value if sub_progress is not None else "pending"
+            percent = sub_progress.progress_percent if sub_progress is not None else 0
+            sub_summary = (
+                _sanitize_display_text(
+                    sub_progress.result_summary, max_chars=MAX_RESULT_SUMMARY_CHARS
+                )
+                if sub_progress is not None and sub_progress.result_summary is not None else None
+            )
+            sub_is_simulated = (
+                sub_state in {"simulating", "simulated_completed", "simulated_failed"} or percent > 0
+            )
+            for dep in item.dependencies:
+                dependencies.append({"subtask_id": item.id, "depends_on": dep})
+            subtasks.append({
+                "id": item.id,
+                "title": _sanitize_display_text(item.title, max_chars=120, single_line=True),
+                "goal": _sanitize_display_text(item.goal, max_chars=1000),
+                "acceptance_condition": _sanitize_display_text(
+                    item.acceptance_condition, max_chars=300
+                ),
+                "required_capabilities": list(item.required_capabilities),
+                "dependencies": list(item.dependencies),
+                "state": sub_state,
+                "progress_percent": percent,
+                "result_summary": sub_summary,
+                "is_simulated": sub_is_simulated,
+            })
+        return {
+            "revision": plan.revision,
+            "plan_sha256": plan.plan_sha256,
+            "approval_state": plan.state,
+            "is_current_revision": plan.revision == task.current_plan_revision,
+            "is_approved_revision": plan.revision == task.approved_plan_revision,
+            "subtask_count": len(subtasks),
+            "dependency_count": len(dependencies),
+            "subtasks": subtasks,
+            "dependencies": dependencies,
+        }
+
+    @staticmethod
+    def _task_event_payload(event: dict[str, object]) -> dict[str, object]:
+        raw_meta = event.get("metadata")
+        safe_details: dict[str, str] = {}
+        if isinstance(raw_meta, dict):
+            for key, value in raw_meta.items():
+                if key in _SAFE_EVENT_METADATA_KEYS and isinstance(value, str):
+                    safe_details[key] = _sanitize_display_text(value, max_chars=200, single_line=True)
+        event_type = str(event.get("event_type", ""))
+        simulated_only = (
+            event_type in {"simulation_progress", "simulation_completed", "simulation_resumed"}
+            or safe_details.get("simulated") == "true"
+            or safe_details.get("simulated_only") == "true"
+        )
+        snapshot = event.get("snapshot_sha256")
+        return {
+            "id": event.get("id"),
+            "event_type": event_type,
+            "plan_revision": event.get("plan_revision"),
+            "snapshot_sha256_prefix": snapshot[:16] if isinstance(snapshot, str) and snapshot else None,
+            "created_at": event.get("created_at"),
+            "simulated_only": simulated_only,
+            "details": safe_details,
+        }
+
+    def _load_workspace_task(self, actor: str, workspace: str, task_id: str) -> OrchestrationTask:
+        if not TASK_ID_PATTERN.fullmatch(task_id):
+            raise OrchestrationError("task_unavailable")
+        task = self.server.orchestration.get_task(actor, task_id)
+        if task.workspace_id != workspace:
+            raise OrchestrationError("task_unavailable")
+        return task
+
+    def _tasks_get(self, path: str, query: str) -> None:
+        context = self._authenticated_workspace_manager()
+        if context is None:
+            return
+        session_id, _, actor, workspace = context
+        base = f"{API_PREFIX}/tasks"
+        if len(query) > 512:
+            self._json(400, {"error": "invalid_query"})
+            return
+        try:
+            if path == base:
+                params = parse_qs(query, strict_parsing=bool(query), max_num_fields=4)
+                allowed_params = {"limit", "offset", "include_history", "status"}
+                if set(params) - allowed_params:
+                    self._json(400, {"error": "invalid_query"})
+                    return
+                limit = _parse_bounded_int(params, "limit", TASK_LIST_DEFAULT_LIMIT, 1, TASK_LIST_MAX_LIMIT)
+                offset = _parse_bounded_int(params, "offset", 0, 0, TASK_LIST_MAX_OFFSET)
+                include_history_raw = params.get("include_history", ["true"])
+                if len(include_history_raw) != 1 or include_history_raw[0] not in {"true", "false"}:
+                    self._json(400, {"error": "invalid_query"})
+                    return
+                include_history = include_history_raw[0] == "true"
+                status_raw = params.get("status", ["all"])
+                if len(status_raw) != 1 or status_raw[0] not in _TASK_ALLOWED_STATUS_FILTERS:
+                    self._json(400, {"error": "invalid_query"})
+                    return
+                status_filter = status_raw[0]
+
+                all_tasks = self.server.orchestration.list_tasks(
+                    actor, workspace, limit=TASK_SERVICE_WINDOW_LIMIT, include_history=include_history
+                )
+                counts = {
+                    "draft": 0,
+                    "pending_approval": 0,
+                    "blocked": 0,
+                    "interrupted": 0,
+                    "cancelled": 0,
+                    "simulated": 0,
+                    "stale": 0,
+                }
+                filtered: list[OrchestrationTask] = []
+                for task in all_tasks:
+                    display_status, _ = _task_display_status(task.state, task.execution_mode)
+                    if display_status in counts:
+                        counts[display_status] += 1
+                    if status_filter == "all" or display_status == status_filter:
+                        filtered.append(task)
+                page_items = filtered[offset:offset + limit]
+                if not self._chat_workspace_is_current(session_id, workspace):
+                    return
+                self._json(200, {
+                    "workspace_id": workspace,
+                    "read_only": True,
+                    "real_execution_enabled": False,
+                    "summary": {
+                        "total_visible": len(all_tasks),
+                        "awaiting_approval": counts["pending_approval"],
+                        "blocked": counts["blocked"],
+                        "interrupted": counts["interrupted"],
+                        "interrupted_or_blocked": counts["blocked"] + counts["interrupted"],
+                        "draft": counts["draft"],
+                        "cancelled": counts["cancelled"],
+                        "simulated": counts["simulated"],
+                        "stale": counts["stale"],
+                        "window_limit": TASK_SERVICE_WINDOW_LIMIT,
+                        "window_truncated": len(all_tasks) >= TASK_SERVICE_WINDOW_LIMIT,
+                    },
+                    "pagination": {
+                        "limit": limit,
+                        "offset": offset,
+                        "total": len(filtered),
+                        "returned": len(page_items),
+                        "has_more": offset + len(page_items) < len(filtered),
+                        "status_filter": status_filter,
+                        "include_history": include_history,
+                    },
+                    "tasks": [self._task_list_item_payload(item) for item in page_items],
+                })
+                return
+
+            suffix = path[len(base) + 1:]
+            if not suffix or suffix.endswith("/"):
+                self._json(404, {"error": "not_found"})
+                return
+            pieces = suffix.split("/")
+            if len(pieces) == 1:
+                if query:
+                    self._json(400, {"error": "invalid_query"})
+                    return
+                task = self._load_workspace_task(actor, workspace, pieces[0])
+                blocked = self.server.orchestration.blocked_capabilities(actor, task.id)
+                plans = self.server.orchestration.list_plans(actor, task.id)
+                progress = (
+                    self.server.orchestration.get_progress(actor, task.id)
+                    if task.current_plan_revision > 0 else ()
+                )
+                if not self._chat_workspace_is_current(session_id, workspace):
+                    return
+                self._json(200, {
+                    "workspace_id": workspace,
+                    "read_only": True,
+                    "task": self._task_detail_payload(task, blocked, len(plans), progress),
+                })
+                return
+
+            if len(pieces) == 2 and pieces[1] == "plans":
+                params = parse_qs(query, strict_parsing=bool(query), max_num_fields=3)
+                if set(params) - {"limit", "offset", "revision"}:
+                    self._json(400, {"error": "invalid_query"})
+                    return
+                limit = _parse_bounded_int(params, "limit", TASK_PLANS_DEFAULT_LIMIT, 1, TASK_PLANS_MAX_LIMIT)
+                offset = _parse_bounded_int(params, "offset", 0, 0, TASK_PLANS_MAX_OFFSET)
+                revision = (
+                    _parse_bounded_int(params, "revision", 0, 1, 10000)
+                    if "revision" in params else None
+                )
+                task = self._load_workspace_task(actor, workspace, pieces[0])
+                if revision is not None:
+                    plan = self.server.orchestration.get_plan(actor, task.id, revision)
+                    plans_slice = (plan,)
+                    total_plans = 1
+                    has_more = False
+                else:
+                    all_plans = tuple(reversed(self.server.orchestration.list_plans(actor, task.id)))
+                    total_plans = len(all_plans)
+                    plans_slice = all_plans[offset:offset + limit]
+                    has_more = offset + len(plans_slice) < total_plans
+                payloads = [
+                    self._task_plan_payload(
+                        task,
+                        item,
+                        self.server.orchestration.get_progress(actor, task.id, item.revision),
+                    )
+                    for item in plans_slice
+                ]
+                if not self._chat_workspace_is_current(session_id, workspace):
+                    return
+                self._json(200, {
+                    "workspace_id": workspace,
+                    "task_id": task.id,
+                    "read_only": True,
+                    "current_plan_revision": task.current_plan_revision,
+                    "approved_plan_revision": task.approved_plan_revision,
+                    "pagination": {
+                        "limit": limit,
+                        "offset": offset,
+                        "total": total_plans,
+                        "returned": len(payloads),
+                        "has_more": has_more,
+                    },
+                    "plans": payloads,
+                })
+                return
+
+            if len(pieces) == 2 and pieces[1] == "events":
+                params = parse_qs(query, strict_parsing=bool(query), max_num_fields=2)
+                if set(params) - {"limit", "offset"}:
+                    self._json(400, {"error": "invalid_query"})
+                    return
+                limit = _parse_bounded_int(params, "limit", TASK_EVENTS_DEFAULT_LIMIT, 1, TASK_EVENTS_MAX_LIMIT)
+                offset = _parse_bounded_int(params, "offset", 0, 0, TASK_EVENTS_MAX_OFFSET)
+                task = self._load_workspace_task(actor, workspace, pieces[0])
+                fetch_limit = min(500, offset + limit + 1)
+                raw_events = self.server.orchestration.events(actor, task.id, limit=fetch_limit)
+                page_events = raw_events[offset:offset + limit]
+                has_more = len(raw_events) > offset + limit
+                if not self._chat_workspace_is_current(session_id, workspace):
+                    return
+                self._json(200, {
+                    "workspace_id": workspace,
+                    "task_id": task.id,
+                    "read_only": True,
+                    "pagination": {
+                        "limit": limit,
+                        "offset": offset,
+                        "returned": len(page_events),
+                        "has_more": has_more,
+                        "service_event_limit": 500,
+                        "truncated_at_service_bound": len(raw_events) >= 500 and not has_more,
+                    },
+                    "events": [self._task_event_payload(item) for item in page_events],
+                })
+                return
+        except OrchestrationError as exc:
+            code = str(exc)
+            if code == "task_evidence_corrupt":
+                self._json(503, {"error": "task_evidence_corrupt"})
+            elif code == "task_manager_approval_required":
+                self._json(403, {"error": "manage_permission_required"})
+            else:
+                self._json(404, {"error": "task_unavailable"})
+            return
+        except AccessDenied:
+            self._json(404, {"error": "task_unavailable"})
+            return
+        except (ValueError, UnicodeError):
+            self._json(400, {"error": "invalid_query"})
+            return
+        except Exception as exc:
+            LOGGER.warning("Task control center request failed (%s)", type(exc).__name__)
+            self._json(503, {"error": "task_service_unavailable"})
             return
         self._json(404, {"error": "not_found"})
 
