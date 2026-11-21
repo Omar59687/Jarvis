@@ -8,7 +8,10 @@ import {
   applyTaskDetailResponse,
   applyTaskEventsPageResponse,
   applyTaskListResponse,
+  beginTaskDetailLoad,
+  beginTaskListLoad,
   clearTaskControlState,
+  clearTaskDetailState,
   createTaskControlState,
   formatEventType,
   formatPlanApprovalState,
@@ -203,4 +206,132 @@ test("Task Control Center markup and rendering remain strictly read-only and fre
   const ccCode = appJs.slice(ccStart, ccEnd);
   assert.doesNotMatch(ccCode, /innerHTML|outerHTML|insertAdjacentHTML/);
   assert.doesNotMatch(ccCode, /method:\s*["'](POST|PUT|DELETE|PATCH)["']/i);
+});
+
+test("beginTaskListLoad supersedes in-flight detail loads cleanly without stranding loadingDetail", () => {
+  const state = createTaskControlState();
+  const listGen = beginTaskListLoad(state, { offset: 0 });
+  assert.equal(state.loadingList, true);
+  assert.equal(state.loadingDetail, false);
+  applyTaskListResponse(state, {
+    generation: listGen,
+    workspaceId: "ws-a",
+    payload: sampleListPayload("ws-a"),
+  });
+
+  // Start loading detail for task-1, then immediately start a superseding list reload
+  const detailLoad = beginTaskDetailLoad(state, "task-1");
+  assert.equal(state.loadingDetail, true);
+  assert.equal(detailLoad.generation, listGen);
+
+  const nextListGen = beginTaskListLoad(state, { offset: 0 });
+  assert.equal(state.loadingDetail, false);
+  assert.ok(nextListGen > listGen);
+  assert.ok(state.detailGeneration > detailLoad.detailGeneration);
+
+  // Stale detail response from superseded load must be ignored
+  const stale = applyTaskDetailResponse(state, {
+    generation: detailLoad.generation,
+    detailGeneration: detailLoad.detailGeneration,
+    workspaceId: "ws-a",
+    taskId: "task-1",
+    detailPayload: {
+      workspace_id: "ws-a",
+      read_only: true,
+      task: { id: "task-1", workspace_id: "ws-a", goal: "Stale", state: "simulating", display_status: "simulated" },
+    },
+    plansPayload: { workspace_id: "ws-a", task_id: "task-1", read_only: true, plans: [] },
+    eventsPayload: { workspace_id: "ws-a", task_id: "task-1", read_only: true, events: [] },
+  });
+  assert.equal(stale.applied, false);
+  assert.equal(state.detail, null);
+});
+
+test("clearTaskDetailState and clearMissingDetail reset stale detail and pagination on filter or deletion", () => {
+  const state = createTaskControlState();
+  const listGen = beginTaskListLoad(state, { offset: 0 });
+  applyTaskListResponse(state, {
+    generation: listGen,
+    workspaceId: "ws-a",
+    payload: sampleListPayload("ws-a"),
+  });
+  const detailLoad = beginTaskDetailLoad(state, "task-1");
+  applyTaskDetailResponse(state, {
+    generation: detailLoad.generation,
+    detailGeneration: detailLoad.detailGeneration,
+    workspaceId: "ws-a",
+    taskId: "task-1",
+    detailPayload: {
+      workspace_id: "ws-a",
+      read_only: true,
+      task: { id: "task-1", workspace_id: "ws-a", goal: "Viewed task", state: "simulating", display_status: "simulated" },
+    },
+    plansPayload: {
+      workspace_id: "ws-a",
+      task_id: "task-1",
+      read_only: true,
+      plans: [{ revision: 1 }],
+      pagination: { total: 1, returned: 1, has_more: false },
+    },
+    eventsPayload: {
+      workspace_id: "ws-a",
+      task_id: "task-1",
+      read_only: true,
+      events: [{ id: 1, event_type: "task_created" }],
+      pagination: { total: 5, returned: 1, has_more: true },
+    },
+  });
+  assert.equal(state.detail.id, "task-1");
+  assert.equal(state.eventsPagination.has_more, true);
+
+  // Filter change returns empty task list -> clearMissingDetail wipes stale detail & pagination
+  const filteredGen = beginTaskListLoad(state, { offset: 0 });
+  const emptyPayload = sampleListPayload("ws-a");
+  emptyPayload.tasks = [];
+  applyTaskListResponse(state, {
+    generation: filteredGen,
+    workspaceId: "ws-a",
+    payload: emptyPayload,
+    clearMissingDetail: true,
+  });
+  assert.equal(state.selectedTaskId, null);
+  assert.equal(state.detail, null);
+  assert.deepEqual(state.plans, []);
+  assert.equal(state.plansPagination, null);
+  assert.deepEqual(state.events, []);
+  assert.equal(state.eventsPagination, null);
+  assert.equal(state.eventsOffset, 0);
+
+  // Explicit detail clearing (e.g. 404 task_unavailable) sets detailErrorCode and clears loadingDetail
+  beginTaskDetailLoad(state, "task-deleted");
+  clearTaskDetailState(state, { detailErrorCode: "task_unavailable" });
+  assert.equal(state.selectedTaskId, null);
+  assert.equal(state.detail, null);
+  assert.equal(state.loadingDetail, false);
+  assert.equal(state.detailErrorCode, "task_unavailable");
+});
+
+test("sanitizeTaskText strips invisible format and line-separator spoofing chars while keeping Arabic joiners", () => {
+  const input = "\ufeffSafe\u00adText\u200bHere\u2060!\u2028next\u2029para";
+  const cleaned = sanitizeTaskText(input, 200);
+  assert.equal(cleaned, "SafeTextHere!nextpara");
+
+  // Arabic ZWNJ/ZWJ (U+200C / U+200D) must remain intact for legitimate Arabic/Persian shaping
+  const arabic = "می\u200cخواهم";
+  assert.equal(sanitizeTaskText(arabic, 200), arabic);
+});
+
+test("app.js event pagination handles 409 workspace mismatch and 404 unavailable responses", () => {
+  const appJs = fs.readFileSync(path.join(repoRoot, "prototypes", "m03_b1", "app.js"), "utf8");
+  const evStart = appJs.indexOf("async function loadTaskEventsPage(");
+  const evEnd = appJs.indexOf("function clearEphemeralWorkspaceView(", evStart);
+  assert.ok(evStart > 0 && evEnd > evStart, "loadTaskEventsPage must exist in app.js");
+  const evCode = appJs.slice(evStart, evEnd);
+
+  assert.match(evCode, /response\.status === 409/);
+  assert.match(evCode, /restoreSession/);
+  assert.match(evCode, /response\.status === 404/);
+  assert.match(evCode, /workspace_unavailable/);
+  assert.match(evCode, /task_unavailable/);
+  assert.match(evCode, /clearTaskDetailState/);
 });

@@ -132,11 +132,12 @@ def _sanitize_display_text(value: object, *, max_chars: int, single_line: bool =
     """Strip control/bidi-override characters and bound length for safe read-only display."""
     if not isinstance(value, str):
         return ""
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
     cleaned: list[str] = []
-    for char in value:
+    for char in normalized:
         if char in _BIDI_AND_CONTROL_CHARS:
             continue
-        if char in ("\r", "\n", "\t"):
+        if char in ("\n", "\t"):
             cleaned.append(" " if single_line else ("\n" if char == "\n" else " "))
             continue
         category = unicodedata.category(char)
@@ -171,13 +172,15 @@ def _task_display_status(state: TaskState, execution_mode: str) -> tuple[str, bo
 
 
 def _task_is_expired(expires_at: str) -> bool:
+    if not isinstance(expires_at, str) or not expires_at.strip():
+        raise OrchestrationError("task_evidence_corrupt")
     try:
         parsed = datetime.fromisoformat(expires_at)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed <= datetime.now(timezone.utc)
-    except (TypeError, ValueError):
-        return False
+    except ValueError:
+        raise OrchestrationError("task_evidence_corrupt") from None
+    if parsed.tzinfo is None:
+        raise OrchestrationError("task_evidence_corrupt")
+    return parsed.astimezone(timezone.utc) <= datetime.now(timezone.utc)
 
 
 def _parse_bounded_int(params: dict[str, list[str]], key: str, default: int,
@@ -185,7 +188,8 @@ def _parse_bounded_int(params: dict[str, list[str]], key: str, default: int,
     if key not in params:
         return default
     values = params[key]
-    if len(values) != 1 or not values[0].isdecimal() or len(values[0]) > 10:
+    if (len(values) != 1 or not values[0].isascii()
+            or not values[0].isdecimal() or len(values[0]) > 10):
         raise ValueError(f"invalid {key}")
     parsed = int(values[0])
     if not minimum <= parsed <= maximum:
@@ -475,7 +479,8 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             for name, value in extra_headers.items():
                 self.send_header(name, value)
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     def _json(self, status: int, payload: dict, *, extra_headers: dict[str, str] | None = None) -> None:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -492,6 +497,19 @@ class LocalChatHandler(BaseHTTPRequestHandler):
     def _origin_is_exact(self) -> bool:
         values = self.headers.get_all("Origin", [])
         return len(values) == 1 and _secret_matches(values[0], self.server.expected_origin)
+
+    def _reject_foreign_origin_if_present(self) -> bool:
+        values = self.headers.get_all("Origin", [])
+        if not values:
+            return False
+        if len(values) == 1 and _secret_matches(values[0], self.server.expected_origin):
+            return False
+        self.close_connection = True
+        self._json(403, {"error": "origin_not_allowed"})
+        return True
+
+    def _is_task_route(self, path: str) -> bool:
+        return path == f"{API_PREFIX}/tasks" or path.startswith(f"{API_PREFIX}/tasks/")
 
     def _discard_bounded_request_body(self, max_bytes: int) -> None:
         """Consume a safely bounded body before closing an early-rejected request.
@@ -597,8 +615,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             return
         path, query = self._request_path()
         if query and not (path.startswith(f"{API_PREFIX}/developer/repositories")
-                          or path == f"{API_PREFIX}/tasks"
-                          or path.startswith(f"{API_PREFIX}/tasks/")):
+                          or self._is_task_route(path)):
             self._json(404, {"error": "not_found"})
             return
         if path == "/health":
@@ -652,7 +669,9 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         if path.startswith(f"{API_PREFIX}/developer/repositories"):
             self._developer_get(path, query)
             return
-        if path == f"{API_PREFIX}/tasks" or path.startswith(f"{API_PREFIX}/tasks/"):
+        if self._is_task_route(path):
+            if self._reject_foreign_origin_if_present():
+                return
             self._tasks_get(path, query)
             return
         if path == f"{API_PREFIX}/memory-candidates":
@@ -679,7 +698,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                 or self._reject_origin(discard_body_limit=post_body_limit)):
             return
         path, query = self._request_path()
-        if path == f"{API_PREFIX}/tasks" or path.startswith(f"{API_PREFIX}/tasks/"):
+        if self._is_task_route(path):
             self._discard_bounded_request_body(post_body_limit)
             self._json(405, {"error": "method_not_allowed"}, extra_headers={"Allow": "GET"})
             return
@@ -710,7 +729,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         if self._reject_host() or self._reject_origin():
             return
         path, query = self._request_path()
-        if path == f"{API_PREFIX}/tasks" or path.startswith(f"{API_PREFIX}/tasks/"):
+        if self._is_task_route(path):
             self._json(405, {"error": "method_not_allowed"}, extra_headers={"Allow": "GET"})
             return
         if not query and path == f"{API_PREFIX}/session/workspace":
@@ -751,7 +770,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                 or self._reject_origin(discard_body_limit=body_limit)):
             return
         path, query = self._request_path()
-        if path == f"{API_PREFIX}/tasks" or path.startswith(f"{API_PREFIX}/tasks/"):
+        if self._is_task_route(path):
             self._discard_bounded_request_body(body_limit)
             self._json(405, {"error": "method_not_allowed"}, extra_headers={"Allow": "GET"})
             return
@@ -897,6 +916,33 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             return
         self._json(404, {"error": "not_found"})
 
+    def _require_task_manager_access(self, session_id: str, actor_id: str, workspace_id: str) -> bool:
+        try:
+            self.server.database.require_access(actor_id, workspace_id, Permission.READ)
+        except AccessDenied:
+            self.server.sessions.clear_active_workspace(session_id)
+            self._json(404, {"error": "workspace_unavailable"})
+            return False
+        except Exception:
+            LOGGER.warning("Task workspace access check failed")
+            self._json(503, {"error": "task_service_unavailable"})
+            return False
+        try:
+            self.server.database.require_access(actor_id, workspace_id, Permission.MANAGE_WORKSPACE)
+        except AccessDenied:
+            self._json(403, {"error": "manage_permission_required"})
+            return False
+        except Exception:
+            LOGGER.warning("Task manager permission check failed")
+            self._json(503, {"error": "task_service_unavailable"})
+            return False
+        return True
+
+    def _task_workspace_access_is_current(self, session_id: str, actor_id: str, workspace_id: str) -> bool:
+        if not self._chat_workspace_is_current(session_id, workspace_id):
+            return False
+        return self._require_task_manager_access(session_id, actor_id, workspace_id)
+
     def _authenticated_workspace_manager(self):
         session_id = self._cookie_session_id()
         record = self.server.sessions.resolve(session_id, touch=True)
@@ -911,26 +957,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             self._json(503, {"error": "task_service_unavailable"})
             return None
         workspace_id = record.active_workspace_id
-        try:
-            self.server.database.require_access(record.actor_id, workspace_id, Permission.READ)
-        except AccessDenied:
-            self.server.sessions.clear_active_workspace(session_id)
-            self._json(404, {"error": "workspace_unavailable"})
-            return None
-        except Exception:
-            LOGGER.warning("Task workspace access check failed")
-            self._json(503, {"error": "task_service_unavailable"})
-            return None
-        try:
-            self.server.database.require_access(
-                record.actor_id, workspace_id, Permission.MANAGE_WORKSPACE
-            )
-        except AccessDenied:
-            self._json(403, {"error": "manage_permission_required"})
-            return None
-        except Exception:
-            LOGGER.warning("Task manager permission check failed")
-            self._json(503, {"error": "task_service_unavailable"})
+        if not self._require_task_manager_access(session_id, record.actor_id, workspace_id):
             return None
         return session_id, record, record.actor_id, workspace_id
 
@@ -1153,8 +1180,9 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                     if status_filter == "all" or display_status == status_filter:
                         filtered.append(task)
                 page_items = filtered[offset:offset + limit]
-                if not self._chat_workspace_is_current(session_id, workspace):
+                if not self._task_workspace_access_is_current(session_id, actor, workspace):
                     return
+                task_payloads = [self._task_list_item_payload(item) for item in page_items]
                 self._json(200, {
                     "workspace_id": workspace,
                     "read_only": True,
@@ -1181,7 +1209,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                         "status_filter": status_filter,
                         "include_history": include_history,
                     },
-                    "tasks": [self._task_list_item_payload(item) for item in page_items],
+                    "tasks": task_payloads,
                 })
                 return
 
@@ -1196,17 +1224,19 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                     return
                 task = self._load_workspace_task(actor, workspace, pieces[0])
                 blocked = self.server.orchestration.blocked_capabilities(actor, task.id)
-                plans = self.server.orchestration.list_plans(actor, task.id)
                 progress = (
                     self.server.orchestration.get_progress(actor, task.id)
                     if task.current_plan_revision > 0 else ()
                 )
-                if not self._chat_workspace_is_current(session_id, workspace):
+                if not self._task_workspace_access_is_current(session_id, actor, workspace):
                     return
+                detail_payload = self._task_detail_payload(
+                    task, blocked, task.current_plan_revision, progress
+                )
                 self._json(200, {
                     "workspace_id": workspace,
                     "read_only": True,
-                    "task": self._task_detail_payload(task, blocked, len(plans), progress),
+                    "task": detail_payload,
                 })
                 return
 
@@ -1224,13 +1254,28 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                 task = self._load_workspace_task(actor, workspace, pieces[0])
                 if revision is not None:
                     plan = self.server.orchestration.get_plan(actor, task.id, revision)
-                    plans_slice = (plan,)
                     total_plans = 1
+                    plans_slice = (plan,)[offset:offset + limit]
+                    has_more = False
+                elif task.current_plan_revision == 0:
+                    total_plans = 0
+                    plans_slice = ()
                     has_more = False
                 else:
-                    all_plans = tuple(reversed(self.server.orchestration.list_plans(actor, task.id)))
-                    total_plans = len(all_plans)
-                    plans_slice = all_plans[offset:offset + limit]
+                    total_plans = task.current_plan_revision
+                    rev_numbers = tuple(range(task.current_plan_revision, 0, -1))[offset:offset + limit]
+                    loaded_plans: list[TaskPlan] = []
+                    for rev in rev_numbers:
+                        try:
+                            loaded = self.server.orchestration.get_plan(actor, task.id, rev)
+                        except OrchestrationError as exc:
+                            if str(exc) == "plan_unavailable":
+                                raise OrchestrationError("task_evidence_corrupt") from None
+                            raise
+                        if loaded is None:
+                            raise OrchestrationError("task_evidence_corrupt")
+                        loaded_plans.append(loaded)
+                    plans_slice = tuple(loaded_plans)
                     has_more = offset + len(plans_slice) < total_plans
                 payloads = [
                     self._task_plan_payload(
@@ -1240,7 +1285,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                     )
                     for item in plans_slice
                 ]
-                if not self._chat_workspace_is_current(session_id, workspace):
+                if not self._task_workspace_access_is_current(session_id, actor, workspace):
                     return
                 self._json(200, {
                     "workspace_id": workspace,
@@ -1271,7 +1316,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                 raw_events = self.server.orchestration.events(actor, task.id, limit=fetch_limit)
                 page_events = raw_events[offset:offset + limit]
                 has_more = len(raw_events) > offset + limit
-                if not self._chat_workspace_is_current(session_id, workspace):
+                if not self._task_workspace_access_is_current(session_id, actor, workspace):
                     return
                 self._json(200, {
                     "workspace_id": workspace,
@@ -1298,6 +1343,8 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "task_unavailable"})
             return
         except AccessDenied:
+            if not self._task_workspace_access_is_current(session_id, actor, workspace):
+                return
             self._json(404, {"error": "task_unavailable"})
             return
         except (ValueError, UnicodeError):
@@ -1904,9 +1951,13 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             self.server.sessions.end_chat(session_id)
 
     def _reject_method(self) -> None:
-        if self._reject_host() or self._reject_origin():
+        if (self._reject_host(discard_body_limit=8192)
+                or self._reject_origin(discard_body_limit=8192)):
             return
-        self._json(405, {"error": "method_not_allowed"})
+        self._discard_bounded_request_body(8192)
+        path, _ = self._request_path()
+        extra_headers = {"Allow": "GET"} if self._is_task_route(path) else None
+        self._json(405, {"error": "method_not_allowed"}, extra_headers=extra_headers)
 
     def do_PATCH(self) -> None:
         self._reject_method()
@@ -1916,6 +1967,12 @@ class LocalChatHandler(BaseHTTPRequestHandler):
 
     def do_HEAD(self) -> None:
         if self._reject_host():
+            return
+        path, _ = self._request_path()
+        if self._is_task_route(path):
+            if self._reject_foreign_origin_if_present():
+                return
+            self._json(405, {"error": "method_not_allowed"}, extra_headers={"Allow": "GET"})
             return
         self._json(405, {"error": "method_not_allowed"})
 
