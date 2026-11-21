@@ -559,6 +559,109 @@ def _extract_metadata(language: str, content: str) -> tuple[list[dict[str, objec
     return [], [], "unsupported"
 
 
+_RANK_EXACT_SYMBOL = 0
+_RANK_EXACT_QUALIFIED_SYMBOL = 1
+_RANK_QUALIFIED_SUFFIX_SYMBOL = 2
+_RANK_CONTENT_ONLY = 3
+_QUERY_TOKEN_SPLIT = re.compile(r"[\s()\[\]{}<>,;:?!'\"`]+")
+
+
+def _is_symbol_segment(segment: str) -> bool:
+    if not segment:
+        return False
+    return segment.replace("$", "_").isidentifier() and any(char.isalnum() for char in segment)
+
+
+def _is_symbol_identifier(token: str) -> bool:
+    parts = token.split(".")
+    return bool(parts) and all(_is_symbol_segment(part) for part in parts)
+
+
+def _is_code_like_symbol_token(token: str) -> bool:
+    return (
+        "." in token
+        or "_" in token
+        or "$" in token
+        or any(prev.islower() and curr.isupper() for prev, curr in zip(token, token[1:]))
+    )
+
+
+def _symbol_query_targets(query: str) -> tuple[str, ...]:
+    """Extract normalized casefolded symbol targets from a search query.
+
+    A single-identifier query (optionally wrapped in quotes/backticks or ending
+    in ``()``) is treated directly as a symbol target. For multi-token queries
+    and natural-language questions, only explicitly code-like identifier tokens
+    (dotted, snake_case, ``$``-bearing, or camelCase) are extracted so normal
+    documentation queries continue to rank strictly by FTS relevance.
+    """
+    normalized = unicodedata.normalize("NFKC", query).strip()
+    if not normalized:
+        return ()
+    single = normalized.strip("`'\"")
+    if single.endswith("()"):
+        single = single[:-2]
+    if _is_symbol_identifier(single):
+        return (single.casefold(),)
+
+    targets: list[str] = []
+    seen: set[str] = set()
+    for raw_token in _QUERY_TOKEN_SPLIT.split(normalized):
+        token = raw_token.strip(".")
+        if not token or not _is_symbol_identifier(token) or not _is_code_like_symbol_token(token):
+            continue
+        folded = token.casefold()
+        if folded not in seen:
+            targets.append(folded)
+            seen.add(folded)
+        if len(targets) >= 32:
+            break
+    return tuple(targets)
+
+
+def _symbol_match_rank(language: object, symbols_json: object,
+                       targets: tuple[str, ...]) -> int:
+    """Return a bounded match tier prioritizing code symbol definitions.
+
+    Markdown headings are documentation metadata rather than code definitions
+    and remain in the FTS content tier so code definitions outrank mentions.
+    """
+    if (not targets or not isinstance(language, str) or language == "markdown"
+            or not isinstance(symbols_json, str) or not symbols_json
+            or symbols_json == "[]"):
+        return _RANK_CONTENT_ONLY
+    try:
+        symbols = json.loads(symbols_json)
+    except (TypeError, json.JSONDecodeError):
+        return _RANK_CONTENT_ONLY
+    if not isinstance(symbols, list):
+        return _RANK_CONTENT_ONLY
+    best = _RANK_CONTENT_ONLY
+    for symbol in symbols:
+        if not isinstance(symbol, dict):
+            continue
+        raw_name = symbol.get("name")
+        if not isinstance(raw_name, str) or not raw_name:
+            continue
+        name = unicodedata.normalize("NFKC", raw_name).casefold()
+        raw_qualified = symbol.get("qualified_name")
+        qualified = (
+            unicodedata.normalize("NFKC", raw_qualified).casefold()
+            if isinstance(raw_qualified, str) and raw_qualified
+            else name
+        )
+        for target in targets:
+            if name == target and qualified == target:
+                return _RANK_EXACT_SYMBOL
+            if qualified == target:
+                if _RANK_EXACT_QUALIFIED_SYMBOL < best:
+                    best = _RANK_EXACT_QUALIFIED_SYMBOL
+            elif name == target or qualified.endswith("." + target):
+                if _RANK_QUALIFIED_SUFFIX_SYMBOL < best:
+                    best = _RANK_QUALIFIED_SUFFIX_SYMBOL
+    return best
+
+
 class DeveloperRepositoryService:
     def __init__(self, database: Database, *, limits: tuple[int, int, int] =
                  (MAX_INDEX_FILES, MAX_FILE_BYTES, MAX_INDEX_BYTES)):
@@ -888,15 +991,36 @@ class DeveloperRepositoryService:
         if type(limit) is not int or not 1 <= limit <= MAX_SEARCH_RESULTS:
             raise ValueError("invalid search limit")
         expression = _fts_expression(terms)
+        symbol_targets = _symbol_query_targets(query)
         with self.db._connection() as connection:
             Database._require_access(connection, actor_id, workspace_id, Permission.READ)
+            if symbol_targets:
+                connection.create_function(
+                    "jarvis_symbol_rank",
+                    2,
+                    lambda language, symbols_json: _symbol_match_rank(
+                        language, symbols_json, symbol_targets
+                    ),
+                    deterministic=True,
+                )
+                order_by = (
+                    "jarvis_symbol_rank(f.language, f.symbols_json) ASC, "
+                    "bm25(developer_file_search,0.0,0.0,0.0,0.0,1.0,0.0,1.0) ASC, "
+                    "f.relative_path ASC, f.id ASC"
+                )
+            else:
+                order_by = (
+                    "bm25(developer_file_search,0.0,0.0,0.0,0.0,1.0,0.0,1.0) ASC, "
+                    "f.relative_path ASC, f.id ASC"
+                )
             rows = connection.execute(
                 "SELECT f.id,f.relative_path,f.language,f.extension,f.commit_sha,f.content_sha256,f.size_bytes,f.symbols_json,f.imports_json,f.analysis_status "
-                "FROM developer_file_search s JOIN developer_files f ON f.id=s.file_id "
+                "FROM developer_file_search s "
+                "JOIN developer_files f ON f.id=s.file_id AND f.workspace_id=s.workspace_id AND f.repository_id=s.repository_id AND f.commit_sha=s.commit_sha "
                 "JOIN developer_repositories r ON r.id=f.repository_id AND r.workspace_id=f.workspace_id "
                 "JOIN approved_roots a ON a.id=r.approved_root_id "
                 "WHERE s.workspace_id=? AND s.repository_id=? AND s.commit_sha=? AND r.revoked_at IS NULL AND a.revoked_at IS NULL AND developer_file_search MATCH ? "
-                "ORDER BY bm25(developer_file_search,0.0,0.0,0.0,0.0,1.0,0.0) LIMIT ?",
+                f"ORDER BY {order_by} LIMIT ?",
                 (workspace_id, repository_id, repo.head_commit, expression, limit),
             ).fetchall()
         return [{"id": row[0], "relative_path": row[1], "language": row[2], "extension": row[3],
