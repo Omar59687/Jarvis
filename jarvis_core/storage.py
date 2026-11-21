@@ -19,7 +19,7 @@ from typing import Iterator, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 REQUIRED_BACKUP_COLUMNS = {
     "workspaces": {"id", "name", "kind", "created_at"},
     "workspace_permissions": {
@@ -767,6 +767,86 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
                 BEFORE UPDATE OF task_id,workspace_id,principal_id,revision,subtask_id,ordinal,title,goal,
                     acceptance_condition,required_capabilities_json ON orchestration_subtasks
                 BEGIN SELECT RAISE(ABORT, 'orchestration plan revisions are immutable'); END""",
+        ),
+    ),
+    Migration(
+        version=10,
+        statements=(
+            "ALTER TABLE orchestration_tasks ADD COLUMN archived_at TEXT",
+            "ALTER TABLE orchestration_tasks ADD COLUMN archived_by TEXT",
+            "CREATE INDEX orchestration_tasks_workspace_archive ON orchestration_tasks(workspace_id,archived_at,state,updated_at,id)",
+            """CREATE TABLE orchestration_retention_policies (
+                workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+                completed_retention_days INTEGER CHECK(completed_retention_days IS NULL OR completed_retention_days BETWEEN 1 AND 3650),
+                cancelled_retention_days INTEGER CHECK(cancelled_retention_days IS NULL OR cancelled_retention_days BETWEEN 1 AND 3650),
+                failed_retention_days INTEGER CHECK(failed_retention_days IS NULL OR failed_retention_days BETWEEN 1 AND 3650),
+                interrupted_retention_days INTEGER CHECK(interrupted_retention_days IS NULL OR interrupted_retention_days BETWEEN 1 AND 3650),
+                auto_delete_enabled INTEGER NOT NULL DEFAULT 0 CHECK(auto_delete_enabled = 0),
+                updated_by TEXT NOT NULL CHECK(length(trim(updated_by)) > 0),
+                updated_at TEXT NOT NULL,
+                expires_at TEXT
+            )""",
+            """CREATE TABLE orchestration_purge_operations (
+                purge_id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                actor_id TEXT NOT NULL CHECK(length(trim(actor_id)) > 0),
+                idempotency_key TEXT NOT NULL,
+                preview_sha256 TEXT NOT NULL CHECK(length(preview_sha256)=64),
+                task_count INTEGER NOT NULL CHECK(task_count > 0),
+                plan_count INTEGER NOT NULL CHECK(plan_count >= 0),
+                subtask_count INTEGER NOT NULL CHECK(subtask_count >= 0),
+                dependency_count INTEGER NOT NULL CHECK(dependency_count >= 0),
+                approval_count INTEGER NOT NULL CHECK(approval_count >= 0),
+                event_count INTEGER NOT NULL CHECK(event_count >= 0),
+                purged_at TEXT NOT NULL,
+                UNIQUE(workspace_id,actor_id,idempotency_key)
+            )""",
+            "CREATE INDEX orchestration_purge_operations_workspace ON orchestration_purge_operations(workspace_id,purged_at,purge_id)",
+            """CREATE TABLE orchestration_purge_tombstones (
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                task_id TEXT NOT NULL,
+                purge_id TEXT NOT NULL REFERENCES orchestration_purge_operations(purge_id),
+                task_state TEXT NOT NULL,
+                archived_at TEXT,
+                goal_sha256 TEXT NOT NULL CHECK(length(goal_sha256)=64),
+                plan_count INTEGER NOT NULL CHECK(plan_count >= 0),
+                subtask_count INTEGER NOT NULL CHECK(subtask_count >= 0),
+                dependency_count INTEGER NOT NULL CHECK(dependency_count >= 0),
+                approval_count INTEGER NOT NULL CHECK(approval_count >= 0),
+                event_count INTEGER NOT NULL CHECK(event_count >= 0),
+                purged_by TEXT NOT NULL CHECK(length(trim(purged_by)) > 0),
+                purged_at TEXT NOT NULL,
+                PRIMARY KEY(workspace_id,task_id)
+            )""",
+            "CREATE INDEX orchestration_purge_tombstones_workspace ON orchestration_purge_tombstones(workspace_id,purged_at,task_id)",
+            """CREATE TRIGGER orchestration_purge_operations_no_update
+                BEFORE UPDATE ON orchestration_purge_operations
+                BEGIN SELECT RAISE(ABORT, 'orchestration purge operations are immutable'); END""",
+            """CREATE TRIGGER orchestration_purge_operations_no_delete
+                BEFORE DELETE ON orchestration_purge_operations
+                BEGIN SELECT RAISE(ABORT, 'orchestration purge operations are immutable'); END""",
+            """CREATE TRIGGER orchestration_purge_tombstones_no_update
+                BEFORE UPDATE ON orchestration_purge_tombstones
+                BEGIN SELECT RAISE(ABORT, 'orchestration purge tombstones are immutable'); END""",
+            """CREATE TRIGGER orchestration_purge_tombstones_no_delete
+                BEFORE DELETE ON orchestration_purge_tombstones
+                BEGIN SELECT RAISE(ABORT, 'orchestration purge tombstones are immutable'); END""",
+            "DROP TRIGGER IF EXISTS orchestration_task_events_no_delete",
+            """CREATE TRIGGER orchestration_task_events_no_delete
+                BEFORE DELETE ON orchestration_task_events
+                WHEN NOT EXISTS (
+                    SELECT 1 FROM orchestration_purge_tombstones p
+                    WHERE p.task_id = OLD.task_id AND p.workspace_id = OLD.workspace_id
+                )
+                BEGIN SELECT RAISE(ABORT, 'orchestration events are append-only'); END""",
+            "DROP TRIGGER IF EXISTS orchestration_approvals_no_delete",
+            """CREATE TRIGGER orchestration_approvals_no_delete
+                BEFORE DELETE ON orchestration_approvals
+                WHEN NOT EXISTS (
+                    SELECT 1 FROM orchestration_purge_tombstones p
+                    WHERE p.task_id = OLD.task_id AND p.workspace_id = OLD.workspace_id
+                )
+                BEGIN SELECT RAISE(ABORT, 'orchestration approvals are immutable'); END""",
         ),
     ),
 )
@@ -1559,6 +1639,42 @@ class Database:
                     } <= orchestration_triggers:
                         raise sqlite3.DatabaseError(
                             "backup is missing orchestration append-only protections")
+                if source_version >= 10:
+                    v10_tables = {
+                        "orchestration_tasks": {"archived_at", "archived_by"},
+                        "orchestration_retention_policies": {
+                            "workspace_id", "completed_retention_days",
+                            "cancelled_retention_days", "failed_retention_days",
+                            "interrupted_retention_days", "auto_delete_enabled",
+                            "updated_by", "updated_at", "expires_at",
+                        },
+                        "orchestration_purge_operations": {
+                            "purge_id", "workspace_id", "actor_id",
+                            "idempotency_key", "preview_sha256", "task_count",
+                            "purged_at",
+                        },
+                        "orchestration_purge_tombstones": {
+                            "workspace_id", "task_id", "purge_id", "task_state",
+                            "goal_sha256", "approval_count", "event_count",
+                            "purged_by", "purged_at",
+                        },
+                    }
+                    for table, required_columns in v10_tables.items():
+                        columns = {row[1] for row in source.execute(
+                            f"PRAGMA table_info({table})").fetchall()}
+                        if not required_columns <= columns:
+                            raise sqlite3.DatabaseError(
+                                f"backup is missing required schema for table {table}")
+                    v10_triggers = {row[0] for row in source.execute(
+                        "SELECT name FROM sqlite_master WHERE type='trigger'").fetchall()}
+                    if not {
+                        "orchestration_purge_operations_no_update",
+                        "orchestration_purge_operations_no_delete",
+                        "orchestration_purge_tombstones_no_update",
+                        "orchestration_purge_tombstones_no_delete",
+                    } <= v10_triggers:
+                        raise sqlite3.DatabaseError(
+                            "backup is missing orchestration purge tombstone protections")
                 if source.execute("PRAGMA foreign_key_check").fetchone() is not None:
                     raise sqlite3.DatabaseError("backup contains foreign key violations")
                 source.backup(target)

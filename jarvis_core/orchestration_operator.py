@@ -7,14 +7,19 @@ uses a task-specific confirmation phrase.
 from __future__ import annotations
 
 from typing import Callable, TextIO
+import secrets
 import unicodedata
 from uuid import uuid4
 
 from .orchestration import (
     DeterministicFakePlanner,
     DeterministicFakeWorker,
+    MAX_PURGE_BATCH,
     OrchestrationError,
+    PurgeReceipt,
+    PurgeTombstone,
     TaskOrchestrationService,
+    TaskRetentionPolicy,
 )
 from .storage import Database, Permission
 
@@ -46,12 +51,14 @@ class OrchestrationOperatorWorkflow:
     def _key() -> str:
         return uuid4().hex
 
-    def list_tasks(self, *, include_history: bool = True) -> None:
+    def list_tasks(self, *, include_history: bool = True, include_archived: bool = False) -> None:
         for task in self.service.list_tasks(self.principal_id, self.workspace_id,
-                                            include_history=include_history):
+                                            include_history=include_history,
+                                            include_archived=include_archived):
+            archived = f" | archived={task.archived_at}" if task.archived_at else ""
             self._write(f"{task.id} | {task.state.value} | mode={task.execution_mode} | "
                         f"repo={task.repository_id or 'workspace'} | "
-                        f"revision={task.current_plan_revision} | expires={task.expires_at}")
+                        f"revision={task.current_plan_revision} | expires={task.expires_at}{archived}")
 
     def create_task(self, goal: str, *, repository_id: str | None = None,
                     requested_capabilities: tuple[str, ...] = ()) -> str | None:
@@ -90,7 +97,7 @@ class OrchestrationOperatorWorkflow:
                     f"workspace={task.workspace_id}; repository={task.repository_id or 'none'}; "
                     f"base={task.repository_commit or 'none'}; "
                     f"plan={task.current_plan_revision}; approved={task.approved_plan_revision}; "
-                    f"expires={task.expires_at}")
+                    f"archived={task.archived_at or 'no'}; expires={task.expires_at}")
         self._write(f"Capabilities requested={task.requested_capabilities}; "
                     f"execution={task.capability_manifest.get('execution_enabled')}; "
                     f"writes={task.capability_manifest.get('file_write_enabled')}; "
@@ -160,3 +167,129 @@ class OrchestrationOperatorWorkflow:
             self._write(f"{event['created_at']} {event['event_type']} "
                         f"actor={event['actor_id']} revision={event['plan_revision']} "
                         f"sha256={event['snapshot_sha256'] or ''} {event['metadata']}")
+
+    def inspect_retention_policy(self, *, as_of: str | None = None) -> TaskRetentionPolicy:
+        policy = self.service.get_retention_policy(self.principal_id, self.workspace_id, as_of=as_of)
+        self._write(
+            f"Retention policy for {policy.workspace_id}: "
+            f"completed_days={policy.completed_retention_days}, "
+            f"cancelled_days={policy.cancelled_retention_days}, "
+            f"failed_days={policy.failed_retention_days}, "
+            f"interrupted_days={policy.interrupted_retention_days}, "
+            f"auto_delete={policy.auto_delete_enabled}, "
+            f"expires_at={policy.expires_at or 'none'}, "
+            f"expired={policy.is_expired}"
+        )
+        return policy
+
+    def configure_retention_policy(self, *,
+                                   completed_retention_days: int | None = None,
+                                   cancelled_retention_days: int | None = None,
+                                   failed_retention_days: int | None = None,
+                                   interrupted_retention_days: int | None = None,
+                                   policy_lifetime_days: int | None = None) -> TaskRetentionPolicy | None:
+        self._write(
+            f"Configure retention policy for {self.workspace_id}: "
+            f"completed={completed_retention_days}, cancelled={cancelled_retention_days}, "
+            f"failed={failed_retention_days}, interrupted={interrupted_retention_days}, "
+            f"policy_lifetime_days={policy_lifetime_days}."
+        )
+        self._write("Automatic deletion remains disabled; deletion still requires explicit operator confirmation.")
+        expected = f"SET RETENTION {self.workspace_id}"
+        if not secrets.compare_digest(self.input(f"Type {expected} to continue: "), expected):
+            self._write("Retention policy update cancelled.")
+            return None
+        policy = self.service.set_retention_policy(
+            self.principal_id, self.workspace_id,
+            completed_retention_days=completed_retention_days,
+            cancelled_retention_days=cancelled_retention_days,
+            failed_retention_days=failed_retention_days,
+            interrupted_retention_days=interrupted_retention_days,
+            policy_lifetime_days=policy_lifetime_days,
+        )
+        self._write(f"Updated retention policy for {policy.workspace_id}; auto_delete=False.")
+        return policy
+
+    def archive_task(self, task_id: str) -> str:
+        expected = f"ARCHIVE {task_id}"
+        if not secrets.compare_digest(self.input(f"Type {expected} to archive: "), expected):
+            self._write("Archive cancelled.")
+            return "unchanged"
+        task = self.service.archive_task(self.principal_id, task_id, idempotency_key=self._key())
+        self._write(f"Archived {task.id} at {task.archived_at}; task remains intact and restorable.")
+        return "archived"
+
+    def restore_archived_task(self, task_id: str) -> str:
+        expected = f"RESTORE {task_id}"
+        if not secrets.compare_digest(self.input(f"Type {expected} to restore: "), expected):
+            self._write("Restore cancelled.")
+            return "unchanged"
+        task = self.service.restore_archived_task(self.principal_id, task_id, idempotency_key=self._key())
+        self._write(f"Restored {task.id} ({task.state.value}).")
+        return "restored"
+
+    def purge_tasks(self, *,
+                    task_ids: tuple[str, ...] | None = None,
+                    use_retention_policy: bool = False,
+                    archived_only: bool = False,
+                    as_of: str | None = None,
+                    limit: int = MAX_PURGE_BATCH) -> PurgeReceipt | None:
+        preview = self.service.preview_purge(
+            self.principal_id, self.workspace_id,
+            task_ids=task_ids,
+            use_retention_policy=use_retention_policy,
+            archived_only=archived_only,
+            as_of=as_of,
+            limit=limit,
+        )
+        if preview.task_count == 0 or preview.confirmation_phrase is None:
+            self._write("No eligible tasks to purge.")
+            return None
+        self._write(
+            f"Purge preview for {preview.workspace_id}: tasks={preview.task_count}, "
+            f"plans={preview.plan_count}, subtasks={preview.subtask_count}, "
+            f"dependencies={preview.dependency_count}, approvals={preview.approval_count}, "
+            f"events={preview.event_count}, truncated={preview.truncated}, "
+            f"protected_skipped={preview.protected_skipped_count}"
+        )
+        for item in preview.items:
+            self._write(
+                f"  {item.task_id} | {item.state.value} | archived={item.archived_at or 'no'} | "
+                f"updated={item.updated_at} | goal_sha256={item.goal_sha256[:12]}... | "
+                f"plans={item.plan_count} approvals={item.approval_count} events={item.event_count}"
+            )
+        self._write(
+            "Warning: purge deletes these rows from the active SQLite database and records "
+            "non-sensitive audit tombstones. It does not erase historical backups or guarantee SSD physical erasure."
+        )
+        typed = self.input(f"Type {preview.confirmation_phrase} to purge: ")
+        if not secrets.compare_digest(typed, preview.confirmation_phrase):
+            self._write("Purge cancelled; no task records deleted.")
+            return None
+        receipt = self.service.purge_tasks(
+            self.principal_id, self.workspace_id,
+            task_ids=preview.task_ids,
+            expected_preview_sha256=preview.preview_sha256,
+            confirmation=typed,
+            idempotency_key=self._key(),
+            use_retention_policy=use_retention_policy,
+            archived_only=archived_only,
+            as_of=as_of,
+        )
+        self._write(
+            f"Purged {receipt.task_count} task(s) (purge_id={receipt.purge_id}, "
+            f"approvals={receipt.approval_count}, events={receipt.event_count})."
+        )
+        return receipt
+
+    def inspect_purge_tombstones(self, *, limit: int = 50) -> tuple[PurgeTombstone, ...]:
+        tombstones = self.service.list_purge_tombstones(
+            self.principal_id, self.workspace_id, limit=limit
+        )
+        for item in tombstones:
+            self._write(
+                f"{item.purged_at} | task={item.task_id} | state={item.task_state.value} | "
+                f"purge_id={item.purge_id} | goal_sha256={item.goal_sha256[:12]}... | "
+                f"approvals={item.approval_count} events={item.event_count} by={item.purged_by}"
+            )
+        return tombstones
