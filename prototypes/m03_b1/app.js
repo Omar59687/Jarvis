@@ -1,5 +1,23 @@
 import { NODES, EDGES, connectedNodeIds, searchNodeIds, classifyNode, createFrameDriver } from "/galaxy-model.mjs";
 import { chatInputPlaceholder, memoryProposalPayload, memoryProposalError } from "/chat-ui-state.mjs";
+import {
+  TASK_EVENTS_LIMIT,
+  TASK_LIST_LIMIT,
+  TASK_PLANS_LIMIT,
+  applyTaskDetailResponse,
+  applyTaskEventsPageResponse,
+  applyTaskListResponse,
+  clearTaskControlState,
+  createTaskControlState,
+  formatEventType,
+  formatPlanApprovalState,
+  formatSimulatedProgress,
+  formatSubtaskState,
+  formatSummaryCount,
+  formatTaskStatus,
+  sanitizeTaskText,
+  taskControlError,
+} from "/task-control-state.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 const languageSelect = $("#language");
@@ -57,6 +75,32 @@ const developerCompareButton = $("#developer-compare");
 const developerChangeState = $("#developer-change-state");
 const developerChangesList = $("#developer-changes-list");
 const developerIncludeChanges = $("#developer-include-changes");
+const taskSummaryTotal = $("#task-summary-total");
+const taskSummaryApproval = $("#task-summary-approval");
+const taskSummaryAttention = $("#task-summary-attention");
+const taskStatusFilter = $("#task-status-filter");
+const taskIncludeHistory = $("#task-include-history");
+const taskRefreshButton = $("#task-refresh");
+const taskStatusMessage = $("#task-status-message");
+const taskList = $("#task-list");
+const taskListPagination = $("#task-list-pagination");
+const taskListPrev = $("#task-list-prev");
+const taskListNext = $("#task-list-next");
+const taskListPageInfo = $("#task-list-page-info");
+const taskDetailEmpty = $("#task-detail-empty");
+const taskDetailContent = $("#task-detail-content");
+const taskDetailStatus = $("#task-detail-status");
+const taskDetailModeBanner = $("#task-detail-mode-banner");
+const taskDetailGoal = $("#task-detail-goal");
+const taskDetailMeta = $("#task-detail-meta");
+const taskDetailSummary = $("#task-detail-summary");
+const taskDetailCapabilities = $("#task-detail-capabilities");
+const taskDetailPlans = $("#task-detail-plans");
+const taskDetailEvents = $("#task-detail-events");
+const taskEventsPagination = $("#task-events-pagination");
+const taskEventsPrev = $("#task-events-prev");
+const taskEventsNext = $("#task-events-next");
+const taskEventsPageInfo = $("#task-events-page-info");
 let language = "en";
 let selectedId = null;
 let visibleIds = searchNodeIds(NODES, "", language);
@@ -84,6 +128,12 @@ let developerLoadGeneration = 0;
 let developerStatus = ["Pair and select a workspace to load repositories.", "اربط الجلسة واختر مساحة عمل لتحميل المستودعات."];
 let developerGraphStatus = ["Select a ready repository to load its indexed structure.", "اختر مستودعًا جاهزًا لتحميل بنيته المفهرسة."];
 let developerChangeStatus = ["", ""];
+const taskState = createTaskControlState();
+let taskStatusCopy = [
+  "Pair this browser and select an authorized workspace to inspect tasks.",
+  "اربط هذا المتصفح واختر مساحة عمل مصرحًا بها لفحص المهام.",
+  false,
+];
 
 const CHAT_STATUS = {
   checking: ["Checking local session…", "جارٍ التحقق من الجلسة المحلية…"],
@@ -174,6 +224,7 @@ function applyLanguage(next) {
   if (latestEvidenceResponse) renderEvidence(latestEvidenceResponse);
   if (activeWorkspaceId) loadPendingCandidates();
   if (memoryStatus.textContent) memoryStatus.textContent = "";
+  renderTaskControlCenter();
   if (sceneState) sceneState.refreshLabels();
 }
 
@@ -724,6 +775,619 @@ async function askDeveloper(event) {
   }
 }
 
+function setTaskStatusCopy(en, ar, isError = false) {
+  taskStatusCopy = [en, ar, Boolean(isError)];
+  taskStatusMessage.textContent = language === "ar" ? ar : en;
+  taskStatusMessage.classList.toggle("error", Boolean(isError));
+}
+
+function updateTaskControls() {
+  const ready = authenticated && Boolean(activeWorkspaceId) && !workspaceServiceUnavailable;
+  const busy = taskState.loadingList;
+  taskStatusFilter.disabled = !ready || busy;
+  taskIncludeHistory.disabled = !ready || busy;
+  taskRefreshButton.disabled = !ready || busy;
+  const page = taskState.pagination;
+  const showListPages = Boolean(ready && page && (page.offset > 0 || page.hasMore));
+  taskListPagination.hidden = !showListPages;
+  taskListPrev.disabled = !showListPages || busy || !page || page.offset <= 0;
+  taskListNext.disabled = !showListPages || busy || !page || !page.hasMore;
+  const evPage = taskState.eventsPagination;
+  const showEventPages = Boolean(ready && taskState.detail && evPage && (evPage.offset > 0 || evPage.has_more));
+  taskEventsPagination.hidden = !showEventPages;
+  taskEventsPrev.disabled = !showEventPages || taskState.loadingDetail || !evPage || evPage.offset <= 0;
+  taskEventsNext.disabled = !showEventPages || taskState.loadingDetail || !evPage || !evPage.has_more;
+}
+
+function renderTaskSummary() {
+  taskSummaryTotal.textContent = formatSummaryCount(taskState.summary?.totalVisible);
+  taskSummaryApproval.textContent = formatSummaryCount(taskState.summary?.awaitingApproval);
+  taskSummaryAttention.textContent = formatSummaryCount(taskState.summary?.interruptedOrBlocked);
+}
+
+function renderTaskList() {
+  taskList.replaceChildren();
+  const ar = language === "ar";
+  if (!authenticated || !activeWorkspaceId || workspaceServiceUnavailable || !taskState.summary) {
+    taskListPageInfo.textContent = "";
+    updateTaskControls();
+    return;
+  }
+  if (!taskState.tasks.length) {
+    const item = document.createElement("li");
+    const empty = document.createElement("p");
+    empty.className = "task-detail-empty";
+    empty.textContent = ar
+      ? "لا توجد مهام مطابقة في مساحة العمل المحددة."
+      : "No matching tasks in the selected workspace.";
+    item.append(empty);
+    taskList.append(item);
+  } else {
+    for (const task of taskState.tasks) {
+      const item = document.createElement("li");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "task-item-button";
+      button.dataset.taskId = task.id;
+      button.setAttribute("aria-pressed", String(taskState.selectedTaskId === task.id));
+
+      const top = document.createElement("div");
+      top.className = "task-item-top";
+      const statusPill = document.createElement("span");
+      statusPill.className = "task-status-pill";
+      statusPill.dataset.status = task.display_status;
+      statusPill.textContent = formatTaskStatus(task.display_status, task.state, language);
+      top.append(statusPill);
+      if (task.is_simulated) {
+        const simTag = document.createElement("span");
+        simTag.className = "task-sim-banner";
+        simTag.textContent = ar ? "محاكاة فقط" : "SIMULATED";
+        top.append(simTag);
+      }
+
+      const goal = document.createElement("span");
+      goal.className = "task-item-goal";
+      goal.dir = "auto";
+      const cleanGoal = sanitizeTaskText(task.goal, 300, { singleLine: true });
+      goal.textContent = task.goal_truncated ? `${cleanGoal}…` : cleanGoal;
+
+      const meta = document.createElement("span");
+      meta.className = "task-item-meta";
+      const revText = task.current_plan_revision > 0
+        ? (ar ? `مراجعة الخطة ${task.current_plan_revision}` : `Plan rev ${task.current_plan_revision}`)
+        : (ar ? "بلا مراجعة خطة" : "No plan revision");
+      const approvedText = task.approved_plan_revision
+        ? (ar ? ` · المعتمدة ${task.approved_plan_revision}` : ` · approved rev ${task.approved_plan_revision}`)
+        : "";
+      const expiredText = task.is_expired ? (ar ? " · منتهية" : " · expired") : "";
+      meta.textContent = `${task.id.slice(0, 10)} · ${revText}${approvedText}${expiredText}`;
+
+      button.append(top, goal, meta);
+      button.addEventListener("click", () => selectTask(task.id));
+      item.append(button);
+      taskList.append(item);
+    }
+  }
+  const page = taskState.pagination;
+  if (page && page.total > 0) {
+    const start = page.offset + 1;
+    const end = page.offset + page.returned;
+    taskListPageInfo.textContent = ar
+      ? `عرض ${start}–${end} من ${page.total}`
+      : `Showing ${start}–${end} of ${page.total}`;
+  } else {
+    taskListPageInfo.textContent = "";
+  }
+  updateTaskControls();
+}
+
+function renderTaskEvents() {
+  taskDetailEvents.replaceChildren();
+  const ar = language === "ar";
+  if (!taskState.events.length) {
+    const li = document.createElement("li");
+    li.className = "task-detail-empty";
+    li.textContent = ar ? "لا توجد أحداث دورة حياة مسجلة." : "No lifecycle events recorded.";
+    taskDetailEvents.append(li);
+  } else {
+    for (const ev of taskState.events) {
+      const li = document.createElement("li");
+      li.className = "task-event-item";
+      const head = document.createElement("div");
+      head.className = "task-event-head";
+      const title = document.createElement("strong");
+      title.textContent = formatEventType(ev.event_type, language);
+      const when = document.createElement("span");
+      when.className = "task-event-meta";
+      when.textContent = sanitizeTaskText(ev.created_at || "", 40, { singleLine: true });
+      head.append(title, when);
+      li.append(head);
+
+      const metaParts = [];
+      if (typeof ev.plan_revision === "number") {
+        metaParts.push(ar ? `مراجعة ${ev.plan_revision}` : `rev ${ev.plan_revision}`);
+      }
+      if (ev.simulated_only) {
+        metaParts.push(ar ? "محاكاة فقط" : "SIMULATED ONLY");
+      }
+      if (ev.snapshot_sha256_prefix) {
+        metaParts.push(`sha256:${sanitizeTaskText(ev.snapshot_sha256_prefix, 16, { singleLine: true })}`);
+      }
+      if (ev.details && typeof ev.details === "object") {
+        for (const [k, v] of Object.entries(ev.details)) {
+          if (typeof v === "string" && v) {
+            metaParts.push(`${sanitizeTaskText(k, 32, { singleLine: true })}=${sanitizeTaskText(v, 80, { singleLine: true })}`);
+          }
+        }
+      }
+      if (metaParts.length) {
+        const meta = document.createElement("span");
+        meta.className = "task-event-meta";
+        meta.textContent = metaParts.join(" · ");
+        li.append(meta);
+      }
+      taskDetailEvents.append(li);
+    }
+  }
+  const evPage = taskState.eventsPagination;
+  if (evPage && (evPage.offset > 0 || evPage.has_more)) {
+    const start = evPage.offset + 1;
+    const end = evPage.offset + evPage.returned;
+    taskEventsPageInfo.textContent = ar
+      ? `الأحداث ${start}–${end}${evPage.has_more ? "+" : ""}`
+      : `Events ${start}–${end}${evPage.has_more ? "+" : ""}`;
+  } else {
+    taskEventsPageInfo.textContent = "";
+  }
+  updateTaskControls();
+}
+
+function renderTaskDetail() {
+  const ar = language === "ar";
+  const detail = taskState.detail;
+  if (!detail) {
+    taskDetailContent.hidden = true;
+    taskDetailEmpty.hidden = false;
+    taskDetailEmpty.textContent = taskState.detailErrorCode
+      ? taskControlError(taskState.detailErrorCode, language)
+      : (ar
+        ? "اختر مهمة لفحص مراجعات الخطة والتقدم المحاكى والتبعيات وسجل دورة الحياة."
+        : "Select a task to inspect its plan revisions, simulated progress, dependencies, and lifecycle history.");
+    taskDetailCapabilities.replaceChildren();
+    taskDetailPlans.replaceChildren();
+    taskDetailEvents.replaceChildren();
+    updateTaskControls();
+    return;
+  }
+
+  taskDetailEmpty.hidden = true;
+  taskDetailContent.hidden = false;
+  taskDetailStatus.dataset.status = detail.display_status;
+  taskDetailStatus.textContent = formatTaskStatus(detail.display_status, detail.state, language);
+  taskDetailModeBanner.textContent = detail.is_simulated
+    ? (ar ? "تقدم محاكى فقط · بلا تنفيذ فعلي" : "SIMULATED PROGRESS ONLY · NO REAL EXECUTION")
+    : (ar ? "خطة فقط · بلا تنفيذ فعلي" : "PLAN ONLY · NO REAL EXECUTION");
+  taskDetailGoal.textContent = sanitizeTaskText(detail.goal, 1000);
+
+  const metaParts = [
+    `${ar ? "المعرف" : "ID"}: ${detail.id.slice(0, 12)}`,
+    `${ar ? "الوضع" : "Mode"}: ${sanitizeTaskText(detail.execution_mode, 32, { singleLine: true })}`,
+    `${ar ? "مراجعات الخطة" : "Plan revisions"}: ${detail.plan_revision_count ?? 0}`,
+  ];
+  if (detail.repository_commit) {
+    metaParts.push(`${ar ? "الالتزام" : "Commit"}: ${sanitizeTaskText(detail.repository_commit, 12, { singleLine: true })}`);
+  }
+  if (detail.is_expired) {
+    metaParts.push(ar ? "منتهية الصلاحية" : "Expired");
+  }
+  taskDetailMeta.textContent = metaParts.join(" · ");
+
+  if (detail.result_summary) {
+    taskDetailSummary.textContent = sanitizeTaskText(detail.result_summary, 400);
+    taskDetailSummary.hidden = false;
+  } else {
+    taskDetailSummary.textContent = "";
+    taskDetailSummary.hidden = true;
+  }
+
+  taskDetailCapabilities.replaceChildren();
+  const caps = detail.capability_controls || {};
+  const disabledLabel = ar ? "معطّل (قراءة فقط)" : "Disabled (read-only)";
+  const enabledLabel = ar ? "مفعّل" : "Enabled";
+  const noneLabel = ar ? "لا يوجد" : "None";
+  const capRows = [
+    [ar ? "الصلاحيات المطلوبة" : "Requested capabilities",
+      Array.isArray(caps.requested) && caps.requested.length ? caps.requested.join(", ") : noneLabel],
+    [ar ? "الصلاحيات الممنوحة" : "Granted capabilities",
+      Array.isArray(caps.granted) && caps.granted.length ? caps.granted.join(", ") : noneLabel],
+    [ar ? "الصلاحيات المحظورة" : "Blocked capabilities",
+      Array.isArray(caps.blocked) && caps.blocked.length ? caps.blocked.join(", ") : noneLabel],
+    [ar ? "التنفيذ الفعلي" : "Real execution", caps.execution_enabled ? enabledLabel : disabledLabel],
+    [ar ? "كتابة الملفات / العمليات / الشبكة" : "File writes / processes / network",
+      (caps.file_write_enabled || caps.process_execution_enabled || caps.network_enabled)
+        ? enabledLabel : disabledLabel],
+  ];
+  for (const [labelText, valueText] of capRows) {
+    const row = document.createElement("div");
+    row.className = "task-cap-row";
+    const labelEl = document.createElement("span");
+    labelEl.textContent = labelText;
+    const valueEl = document.createElement("strong");
+    valueEl.textContent = sanitizeTaskText(String(valueText), 240, { singleLine: true });
+    row.append(labelEl, valueEl);
+    taskDetailCapabilities.append(row);
+  }
+
+  taskDetailPlans.replaceChildren();
+  if (!taskState.plans.length) {
+    const noPlans = document.createElement("p");
+    noPlans.className = "task-detail-empty";
+    noPlans.textContent = ar ? "لا توجد مراجعات خطة مسجلة لهذه المهمة بعد." : "No plan revisions recorded for this task yet.";
+    taskDetailPlans.append(noPlans);
+  } else {
+    for (const plan of taskState.plans) {
+      const card = document.createElement("article");
+      card.className = "task-plan-card";
+      const head = document.createElement("div");
+      head.className = "task-plan-head";
+      const revTitle = document.createElement("strong");
+      revTitle.textContent = ar ? `المراجعة #${plan.revision}` : `Revision #${plan.revision}`;
+      const approvalBadge = document.createElement("span");
+      approvalBadge.className = "task-status-pill";
+      approvalBadge.dataset.status = plan.approval_state === "awaiting_approval"
+        ? "pending_approval" : (plan.approval_state === "approved" ? "simulated" : "cancelled");
+      approvalBadge.textContent = formatPlanApprovalState(
+        plan.approval_state,
+        { isCurrent: plan.is_current_revision, isApproved: plan.is_approved_revision },
+        language,
+      );
+      head.append(revTitle, approvalBadge);
+
+      const digest = document.createElement("div");
+      digest.className = "task-plan-hash";
+      digest.textContent = `sha256:${sanitizeTaskText(plan.plan_sha256 || "", 16, { singleLine: true })} · ${
+        ar ? `${plan.subtask_count} مهام فرعية · ${plan.dependency_count} تبعيات`
+          : `${plan.subtask_count} subtasks · ${plan.dependency_count} dependencies`
+      }`;
+      card.append(head, digest);
+
+      const subList = document.createElement("ul");
+      subList.className = "task-subtask-list";
+      for (const sub of plan.subtasks || []) {
+        const subLi = document.createElement("li");
+        subLi.className = "task-subtask-card";
+        const subHead = document.createElement("div");
+        subHead.className = "task-subtask-head";
+        const subTitle = document.createElement("strong");
+        subTitle.dir = "auto";
+        subTitle.textContent = `${sanitizeTaskText(sub.id, 40, { singleLine: true })}: ${sanitizeTaskText(sub.title, 120, { singleLine: true })}`;
+        const subState = document.createElement("span");
+        subState.className = "task-status-pill";
+        subState.dataset.status = sub.is_simulated ? "simulated" : (sub.state === "blocked" ? "blocked" : "draft");
+        subState.textContent = formatSubtaskState(sub.state, language);
+        subHead.append(subTitle, subState);
+
+        const subGoal = document.createElement("p");
+        subGoal.className = "task-subtask-goal";
+        subGoal.dir = "auto";
+        subGoal.textContent = sanitizeTaskText(sub.goal, 400);
+
+        const progressRow = document.createElement("div");
+        progressRow.className = "task-progress-row";
+        const progressEl = document.createElement("progress");
+        progressEl.className = "task-progress-bar";
+        progressEl.max = 100;
+        progressEl.value = typeof sub.progress_percent === "number"
+          ? Math.max(0, Math.min(100, sub.progress_percent)) : 0;
+        const progressLabel = document.createElement("span");
+        progressLabel.textContent = formatSimulatedProgress(sub.progress_percent, sub.is_simulated, language);
+        progressRow.append(progressEl, progressLabel);
+
+        subLi.append(subHead, subGoal, progressRow);
+
+        const deps = Array.isArray(sub.dependencies) && sub.dependencies.length
+          ? `${ar ? "تعتمد على" : "Depends on"}: ${sub.dependencies.map((d) => sanitizeTaskText(d, 40, { singleLine: true })).join(", ")}`
+          : (ar ? "تعتمد على: لا توجد تبعيات" : "Depends on: none");
+        const capsText = Array.isArray(sub.required_capabilities) && sub.required_capabilities.length
+          ? ` · ${ar ? "الصلاحيات" : "Capabilities"}: ${sub.required_capabilities.join(", ")}`
+          : "";
+        const depsNote = document.createElement("p");
+        depsNote.className = "task-deps-note";
+        depsNote.textContent = `${deps}${capsText}`;
+        subLi.append(depsNote);
+
+        if (sub.result_summary) {
+          const subSummary = document.createElement("p");
+          subSummary.className = "task-deps-note";
+          subSummary.dir = "auto";
+          subSummary.textContent = sanitizeTaskText(sub.result_summary, 300);
+          subLi.append(subSummary);
+        }
+        subList.append(subLi);
+      }
+      card.append(subList);
+      taskDetailPlans.append(card);
+    }
+  }
+  renderTaskEvents();
+}
+
+function renderTaskControlCenter() {
+  setTaskStatusCopy(taskStatusCopy[0], taskStatusCopy[1], taskStatusCopy[2]);
+  renderTaskSummary();
+  renderTaskList();
+  renderTaskDetail();
+}
+
+function clearTaskControlCenter({ en, ar, isError = false, preserveFilter = false } = {}) {
+  clearTaskControlState(taskState, { preserveFilter });
+  if (!preserveFilter) {
+    taskStatusFilter.value = "all";
+    taskIncludeHistory.checked = true;
+  }
+  const defaultEn = authenticated
+    ? "Select an authorized workspace to inspect its tasks."
+    : "Pair this browser and select an authorized workspace to inspect tasks.";
+  const defaultAr = authenticated
+    ? "اختر مساحة عمل مصرحًا بها لفحص مهامها."
+    : "اربط هذا المتصفح واختر مساحة عمل مصرحًا بها لفحص المهام.";
+  setTaskStatusCopy(en ?? defaultEn, ar ?? defaultAr, isError);
+  renderTaskSummary();
+  renderTaskList();
+  renderTaskDetail();
+}
+
+async function loadTaskList({ offset = 0, refreshDetail = false } = {}) {
+  if (!authenticated || !activeWorkspaceId || workspaceServiceUnavailable) {
+    clearTaskControlCenter();
+    return;
+  }
+  const workspace = activeWorkspaceId;
+  const previousSelected = refreshDetail ? taskState.selectedTaskId : null;
+  taskState.generation += 1;
+  const generation = taskState.generation;
+  taskState.listOffset = Math.max(0, offset);
+  taskState.loadingList = true;
+  updateTaskControls();
+  setTaskStatusCopy("Loading authorized workspace tasks…", "جارٍ تحميل مهام مساحة العمل المصرح بها…", false);
+  try {
+    const query = new URLSearchParams({
+      limit: String(TASK_LIST_LIMIT),
+      offset: String(taskState.listOffset),
+      include_history: taskState.includeHistory ? "true" : "false",
+      status: taskState.statusFilter,
+    });
+    const response = await fetch(`/api/v1/tasks?${query.toString()}`, {
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    const value = await responseJson(response);
+    if (generation !== taskState.generation || workspace !== activeWorkspaceId) return;
+    if (response.status === 401) {
+      clearTaskControlCenter();
+      markSessionExpired();
+      return;
+    }
+    if (response.status === 403) {
+      clearTaskControlCenter({
+        en: taskControlError(value.error || "manage_permission_required", "en"),
+        ar: taskControlError(value.error || "manage_permission_required", "ar"),
+        isError: true,
+        preserveFilter: true,
+      });
+      return;
+    }
+    if (response.status === 404 && value.error === "workspace_unavailable") {
+      activeWorkspaceId = null;
+      clearEphemeralWorkspaceView();
+      await loadWorkspaces(null).catch(() => {});
+      return;
+    }
+    if (response.status === 409 && value.error === "workspace_selection_changed") {
+      clearTaskControlCenter();
+      await restoreSession();
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(value.error || "task_service_unavailable");
+    }
+    const applied = applyTaskListResponse(taskState, { generation, workspaceId: workspace, payload: value });
+    if (!applied.applied) {
+      throw new Error("task_service_unavailable");
+    }
+    const totalVisible = taskState.summary.totalVisible;
+    const truncatedSuffixEn = taskState.summary.windowTruncated
+      ? ` (capped at latest ${taskState.summary.windowLimit} tasks)` : "";
+    const truncatedSuffixAr = taskState.summary.windowTruncated
+      ? ` (محدودة بأحدث ${taskState.summary.windowLimit} مهمة)` : "";
+    setTaskStatusCopy(
+      totalVisible
+        ? `Read-only view · ${totalVisible} visible task(s) in this workspace${truncatedSuffixEn}.`
+        : "Read-only view · No tasks recorded in this workspace yet.",
+      totalVisible
+        ? `عرض للقراءة فقط · ${totalVisible} مهمة مرئية في مساحة العمل${truncatedSuffixAr}.`
+        : "عرض للقراءة فقط · لا توجد مهام مسجلة في مساحة العمل هذه بعد.",
+      false,
+    );
+    renderTaskSummary();
+    renderTaskList();
+    if (previousSelected && taskState.tasks.some((item) => item.id === previousSelected)) {
+      await selectTask(previousSelected);
+    } else if (!taskState.detail || taskState.detail.workspace_id !== workspace) {
+      renderTaskDetail();
+    }
+  } catch (error) {
+    if (generation === taskState.generation) {
+      const code = error?.message || "task_service_unavailable";
+      clearTaskControlCenter({
+        en: taskControlError(code, "en"),
+        ar: taskControlError(code, "ar"),
+        isError: true,
+        preserveFilter: true,
+      });
+    }
+  } finally {
+    if (generation === taskState.generation) {
+      taskState.loadingList = false;
+      updateTaskControls();
+    }
+  }
+}
+
+async function selectTask(taskId) {
+  if (!authenticated || !activeWorkspaceId || workspaceServiceUnavailable || typeof taskId !== "string") return;
+  const workspace = activeWorkspaceId;
+  const generation = taskState.generation;
+  taskState.detailGeneration += 1;
+  const detailGeneration = taskState.detailGeneration;
+  taskState.selectedTaskId = taskId;
+  taskState.eventsOffset = 0;
+  taskState.detailErrorCode = null;
+  taskState.loadingDetail = true;
+  renderTaskList();
+  taskDetailContent.hidden = true;
+  taskDetailEmpty.hidden = false;
+  taskDetailEmpty.textContent = language === "ar" ? "جارٍ تحميل تفاصيل المهمة…" : "Loading task details…";
+  updateTaskControls();
+  try {
+    const encoded = encodeURIComponent(taskId);
+    const [detailResp, plansResp, eventsResp] = await Promise.all([
+      fetch(`/api/v1/tasks/${encoded}`, { credentials: "same-origin", cache: "no-store" }),
+      fetch(`/api/v1/tasks/${encoded}/plans?limit=${TASK_PLANS_LIMIT}&offset=0`, { credentials: "same-origin", cache: "no-store" }),
+      fetch(`/api/v1/tasks/${encoded}/events?limit=${TASK_EVENTS_LIMIT}&offset=0`, { credentials: "same-origin", cache: "no-store" }),
+    ]);
+    const [detailPayload, plansPayload, eventsPayload] = await Promise.all([
+      responseJson(detailResp),
+      responseJson(plansResp),
+      responseJson(eventsResp),
+    ]);
+    if (generation !== taskState.generation || detailGeneration !== taskState.detailGeneration
+        || workspace !== activeWorkspaceId) return;
+    if (detailResp.status === 401 || plansResp.status === 401 || eventsResp.status === 401) {
+      clearTaskControlCenter();
+      markSessionExpired();
+      return;
+    }
+    if (detailResp.status === 403 || plansResp.status === 403 || eventsResp.status === 403) {
+      clearTaskControlCenter({
+        en: taskControlError("manage_permission_required", "en"),
+        ar: taskControlError("manage_permission_required", "ar"),
+        isError: true,
+        preserveFilter: true,
+      });
+      return;
+    }
+    if (detailResp.status === 409 || plansResp.status === 409 || eventsResp.status === 409) {
+      clearTaskControlCenter();
+      await restoreSession();
+      return;
+    }
+    if (detailResp.status === 404 || plansResp.status === 404 || eventsResp.status === 404) {
+      const errCode = detailPayload.error || plansPayload.error || eventsPayload.error || "task_unavailable";
+      if (errCode === "workspace_unavailable") {
+        activeWorkspaceId = null;
+        clearEphemeralWorkspaceView();
+        await loadWorkspaces(null).catch(() => {});
+        return;
+      }
+      taskState.selectedTaskId = null;
+      taskState.detail = null;
+      taskState.plans = [];
+      taskState.events = [];
+      taskState.detailErrorCode = "task_unavailable";
+      renderTaskDetail();
+      await loadTaskList({ offset: taskState.listOffset });
+      return;
+    }
+    if (!detailResp.ok || !plansResp.ok || !eventsResp.ok) {
+      const errCode = detailPayload.error || plansPayload.error || eventsPayload.error || "task_service_unavailable";
+      throw new Error(errCode);
+    }
+    const applied = applyTaskDetailResponse(taskState, {
+      generation,
+      detailGeneration,
+      workspaceId: workspace,
+      taskId,
+      detailPayload,
+      plansPayload,
+      eventsPayload,
+    });
+    if (!applied.applied) {
+      throw new Error("task_service_unavailable");
+    }
+    renderTaskList();
+    renderTaskDetail();
+  } catch (error) {
+    if (generation === taskState.generation && detailGeneration === taskState.detailGeneration) {
+      taskState.detail = null;
+      taskState.plans = [];
+      taskState.events = [];
+      taskState.detailErrorCode = error?.message || "task_service_unavailable";
+      renderTaskDetail();
+    }
+  } finally {
+    if (generation === taskState.generation && detailGeneration === taskState.detailGeneration) {
+      taskState.loadingDetail = false;
+      updateTaskControls();
+    }
+  }
+}
+
+async function loadTaskEventsPage(offset) {
+  if (!authenticated || !activeWorkspaceId || !taskState.selectedTaskId || taskState.loadingDetail) return;
+  const workspace = activeWorkspaceId;
+  const taskId = taskState.selectedTaskId;
+  const generation = taskState.generation;
+  const detailGeneration = taskState.detailGeneration;
+  taskState.loadingDetail = true;
+  updateTaskControls();
+  try {
+    const safeOffset = Math.max(0, offset);
+    const response = await fetch(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}/events?limit=${TASK_EVENTS_LIMIT}&offset=${safeOffset}`,
+      { credentials: "same-origin", cache: "no-store" },
+    );
+    const payload = await responseJson(response);
+    if (generation !== taskState.generation || detailGeneration !== taskState.detailGeneration
+        || workspace !== activeWorkspaceId) return;
+    if (response.status === 401) {
+      clearTaskControlCenter();
+      markSessionExpired();
+      return;
+    }
+    if (response.status === 403) {
+      clearTaskControlCenter({
+        en: taskControlError("manage_permission_required", "en"),
+        ar: taskControlError("manage_permission_required", "ar"),
+        isError: true,
+        preserveFilter: true,
+      });
+      return;
+    }
+    if (!response.ok) throw new Error(payload.error || "task_service_unavailable");
+    const applied = applyTaskEventsPageResponse(taskState, {
+      generation, detailGeneration, workspaceId: workspace, taskId, eventsPayload: payload,
+    });
+    if (applied.applied) {
+      taskState.eventsOffset = safeOffset;
+      renderTaskEvents();
+    }
+  } catch (error) {
+    if (generation === taskState.generation && detailGeneration === taskState.detailGeneration) {
+      setTaskStatusCopy(
+        taskControlError(error?.message || "task_service_unavailable", "en"),
+        taskControlError(error?.message || "task_service_unavailable", "ar"),
+        true,
+      );
+    }
+  } finally {
+    if (generation === taskState.generation && detailGeneration === taskState.detailGeneration) {
+      taskState.loadingDetail = false;
+      updateTaskControls();
+    }
+  }
+}
+
 function clearEphemeralWorkspaceView() {
   if (candidateEditorDialog.open) candidateEditorDialog.close();
   if (candidateReviewDialog.open) candidateReviewDialog.close();
@@ -744,6 +1408,7 @@ function clearEphemeralWorkspaceView() {
   clearDeveloperResults();
   developerLoadGeneration += 1;
   clearDeveloperGraph();
+  clearTaskControlCenter();
 }
 
 function setPairError(message = "") {
@@ -1173,6 +1838,7 @@ async function loadWorkspaces(preferredWorkspaceId = null) {
       chatSend.disabled = true;
       setWorkspaceState("Workspace authorization is unavailable. Clear the selection or reload before asking.", "تفويض مساحة العمل غير متاح. امسح الاختيار أو أعد التحميل قبل السؤال.");
       await loadDeveloperRepositories();
+      clearTaskControlCenter();
     } else {
       workspaceSelect.value = "";
       activeWorkspaceId = null;
@@ -1182,6 +1848,7 @@ async function loadWorkspaces(preferredWorkspaceId = null) {
       createCandidateOpen.disabled = true;
       setWorkspaceState("Workspace APIs are unavailable. General chat remains available.", "واجهات مساحات العمل غير متاحة. تظل الدردشة العامة متاحة.");
       await loadDeveloperRepositories();
+      clearTaskControlCenter();
     }
     return;
   }
@@ -1219,6 +1886,11 @@ async function loadWorkspaces(preferredWorkspaceId = null) {
     pendingCandidates.replaceChildren();
   }
   await loadDeveloperRepositories();
+  if (activeWorkspaceId) {
+    await loadTaskList({ offset: 0 });
+  } else {
+    clearTaskControlCenter();
+  }
 }
 
 async function selectWorkspace() {
@@ -1253,6 +1925,11 @@ async function selectWorkspace() {
       setWorkspaceState("General chat only · no workspace is selected.", "دردشة عامة فقط · لم تُحدد مساحة عمل.");
     }
     await loadDeveloperRepositories();
+    if (activeWorkspaceId) {
+      await loadTaskList({ offset: 0 });
+    } else {
+      clearTaskControlCenter();
+    }
   } catch (error) {
     if (error.message === "workspace_selection_changed") {
       await restoreSession();
@@ -1696,6 +2373,33 @@ developerRepoSelect.addEventListener("change", selectDeveloperRepository);
 developerCompareButton.addEventListener("click", compareDeveloperCommits);
 developerSearchForm.addEventListener("submit", searchDeveloperFiles);
 developerChatForm.addEventListener("submit", askDeveloper);
+taskStatusFilter.addEventListener("change", () => {
+  taskState.statusFilter = taskStatusFilter.value || "all";
+  loadTaskList({ offset: 0 });
+});
+taskIncludeHistory.addEventListener("change", () => {
+  taskState.includeHistory = Boolean(taskIncludeHistory.checked);
+  loadTaskList({ offset: 0 });
+});
+taskRefreshButton.addEventListener("click", () => {
+  loadTaskList({ offset: taskState.listOffset, refreshDetail: true });
+});
+taskListPrev.addEventListener("click", () => {
+  const prevOffset = Math.max(0, (taskState.pagination?.offset ?? 0) - TASK_LIST_LIMIT);
+  loadTaskList({ offset: prevOffset });
+});
+taskListNext.addEventListener("click", () => {
+  if (!taskState.pagination?.hasMore) return;
+  loadTaskList({ offset: (taskState.pagination.offset ?? 0) + TASK_LIST_LIMIT });
+});
+taskEventsPrev.addEventListener("click", () => {
+  const prevOffset = Math.max(0, (taskState.eventsPagination?.offset ?? 0) - TASK_EVENTS_LIMIT);
+  loadTaskEventsPage(prevOffset);
+});
+taskEventsNext.addEventListener("click", () => {
+  if (!taskState.eventsPagination?.has_more) return;
+  loadTaskEventsPage((taskState.eventsPagination.offset ?? 0) + TASK_EVENTS_LIMIT);
+});
 search.addEventListener("input", updateSearch);
 pairForm.addEventListener("submit", pairBrowser);
 chatForm.addEventListener("submit", sendChat);

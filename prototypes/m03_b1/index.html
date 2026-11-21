@@ -83,6 +83,7 @@
       <nav class="primary-nav" aria-label="Prototype navigation">
         <a class="nav-item active" href="#galaxy"><span class="nav-icon" aria-hidden="true">◉</span><span data-en="Knowledge galaxy" data-ar="مجرة المعرفة">Knowledge galaxy</span><span class="nav-count">08</span></a>
         <a class="nav-item" href="#node-list"><span class="nav-icon" aria-hidden="true">⌁</span><span data-en="Connections" data-ar="الروابط">Connections</span></a>
+        <a class="nav-item" href="#task-control-center"><span class="nav-icon" aria-hidden="true">◫</span><span data-en="Task Control Center" data-ar="مركز التحكم بالمهام">Task Control Center</span><span class="offline-mark" data-en="READ-ONLY" data-ar="قراءة فقط">READ-ONLY</span></a>
         <a class="nav-item" href="#command-dock"><span class="nav-icon" aria-hidden="true">✳</span><span data-en="Jarvis assistant" data-ar="مساعد جارفس">Jarvis assistant</span><span class="offline-mark" data-en="PREVIEW" data-ar="معاينة">PREVIEW</span></a>
       </nav>
 
@@ -133,6 +134,90 @@
       <section id="evidence-panel" class="evidence-panel" aria-label="Answer evidence" data-en-aria-label="Answer evidence" data-ar-aria-label="أدلة الإجابة" hidden>
         <div class="evidence-heading"><span class="eyebrow" data-en="ANSWER EVIDENCE" data-ar="أدلة الإجابة">ANSWER EVIDENCE</span><span id="evidence-outcome" class="evidence-outcome"></span></div>
         <div id="citation-list" class="citation-list"></div>
+      </section>
+      <section id="task-control-center" class="task-control-center" aria-labelledby="tasks-heading">
+        <div class="task-cc-header">
+          <div>
+            <p class="eyebrow" data-en="P4 PERSISTENT ORCHESTRATION · READ-ONLY" data-ar="تنسيق المهام الدائم P4 · قراءة فقط">P4 PERSISTENT ORCHESTRATION · READ-ONLY</p>
+            <h2 id="tasks-heading" data-en="Task Control Center" data-ar="مركز التحكم بالمهام">Task Control Center</h2>
+          </div>
+          <span class="task-readonly-badge" data-en="READ-ONLY · NO REAL EXECUTION" data-ar="قراءة فقط · بلا تنفيذ فعلي">READ-ONLY · NO REAL EXECUTION</span>
+        </div>
+        <p class="task-cc-note" data-en="Authorized workspace managers can inspect persistent task plans, simulated progress, pending approvals, dependencies, and lifecycle history. Real execution and browser mutations remain disabled." data-ar="يمكن لمديري مساحة العمل المصرح لهم فحص خطط المهام الدائمة والتقدم المحاكى والموافقات المعلّقة والتبعيات وسجل دورة الحياة. يبقى التنفيذ الفعلي والتعديلات من المتصفح معطلين.">Authorized workspace managers can inspect persistent task plans, simulated progress, pending approvals, dependencies, and lifecycle history. Real execution and browser mutations remain disabled.</p>
+        <div class="task-summary-grid" aria-label="Task summary counts" data-en-aria-label="Task summary counts" data-ar-aria-label="ملخص أعداد المهام">
+          <div class="task-summary-card">
+            <span class="eyebrow" data-en="TOTAL VISIBLE" data-ar="الإجمالي المرئي">TOTAL VISIBLE</span>
+            <strong id="task-summary-total">—</strong>
+          </div>
+          <div class="task-summary-card">
+            <span class="eyebrow" data-en="PENDING APPROVAL" data-ar="بانتظار الموافقة">PENDING APPROVAL</span>
+            <strong id="task-summary-approval">—</strong>
+          </div>
+          <div class="task-summary-card">
+            <span class="eyebrow" data-en="BLOCKED / INTERRUPTED" data-ar="محظورة / متوقفة">BLOCKED / INTERRUPTED</span>
+            <strong id="task-summary-attention">—</strong>
+          </div>
+        </div>
+        <div class="task-toolbar">
+          <div class="task-filter-group">
+            <label class="eyebrow" for="task-status-filter" data-en="STATUS FILTER" data-ar="تصفية الحالة">STATUS FILTER</label>
+            <select id="task-status-filter" class="workspace-select task-filter-select" disabled aria-label="Filter tasks by status" data-en-aria-label="Filter tasks by status" data-ar-aria-label="تصفية المهام حسب الحالة">
+              <option value="all" data-en="All statuses" data-ar="جميع الحالات">All statuses</option>
+              <option value="draft" data-en="Draft · Plan only" data-ar="مسودة · خطة فقط">Draft · Plan only</option>
+              <option value="pending_approval" data-en="Pending approval" data-ar="بانتظار الموافقة">Pending approval</option>
+              <option value="simulated" data-en="Simulated" data-ar="محاكاة">Simulated</option>
+              <option value="blocked" data-en="Blocked" data-ar="محظورة">Blocked</option>
+              <option value="interrupted" data-en="Interrupted" data-ar="متوقفة مؤقتًا">Interrupted</option>
+              <option value="cancelled" data-en="Cancelled" data-ar="ملغاة">Cancelled</option>
+              <option value="stale" data-en="Stale snapshot" data-ar="لقطة قديمة">Stale snapshot</option>
+            </select>
+          </div>
+          <label class="check-row task-history-toggle">
+            <input id="task-include-history" type="checkbox" checked disabled>
+            <span data-en="Include completed and cancelled history" data-ar="إدراج السجل المكتمل والملغى">Include completed and cancelled history</span>
+          </label>
+          <button id="task-refresh" type="button" class="small-action" disabled data-en="Refresh tasks" data-ar="تحديث المهام">Refresh tasks</button>
+        </div>
+        <p id="task-status-message" class="task-status-message" role="status" aria-live="polite" data-en="Pair this browser and select an authorized workspace to inspect tasks." data-ar="اربط هذا المتصفح واختر مساحة عمل مصرحًا بها لفحص المهام.">Pair this browser and select an authorized workspace to inspect tasks.</p>
+        <div class="task-cc-layout">
+          <div class="task-list-pane">
+            <ul id="task-list" class="task-list" aria-label="Authorized workspace tasks" data-en-aria-label="Authorized workspace tasks" data-ar-aria-label="مهام مساحة العمل المصرح بها"></ul>
+            <div id="task-list-pagination" class="task-pagination" hidden>
+              <button id="task-list-prev" type="button" class="small-action" disabled data-en="Previous" data-ar="السابق">Previous</button>
+              <span id="task-list-page-info" class="hint" aria-live="polite"></span>
+              <button id="task-list-next" type="button" class="small-action" disabled data-en="Next" data-ar="التالي">Next</button>
+            </div>
+          </div>
+          <div id="task-detail-panel" class="task-detail-pane" aria-live="polite">
+            <p id="task-detail-empty" class="task-detail-empty" data-en="Select a task to inspect its plan revisions, simulated progress, dependencies, and lifecycle history." data-ar="اختر مهمة لفحص مراجعات الخطة والتقدم المحاكى والتبعيات وسجل دورة الحياة.">Select a task to inspect its plan revisions, simulated progress, dependencies, and lifecycle history.</p>
+            <div id="task-detail-content" class="task-detail-content" hidden>
+              <div class="task-detail-top">
+                <span id="task-detail-status" class="task-status-pill"></span>
+                <span id="task-detail-mode-banner" class="task-sim-banner"></span>
+              </div>
+              <h3 id="task-detail-goal" class="task-detail-goal" dir="auto"></h3>
+              <p id="task-detail-meta" class="hint"></p>
+              <p id="task-detail-summary" class="task-detail-summary" dir="auto" hidden></p>
+              <div class="task-detail-block">
+                <h4 class="eyebrow" data-en="CAPABILITY CONTROLS &amp; SAFETY POSTURE" data-ar="ضوابط الصلاحيات ووضعية الأمان">CAPABILITY CONTROLS &amp; SAFETY POSTURE</h4>
+                <div id="task-detail-capabilities" class="task-cap-grid"></div>
+              </div>
+              <div class="task-detail-block">
+                <h4 class="eyebrow" data-en="PLAN REVISIONS, SUBTASKS &amp; DEPENDENCIES" data-ar="مراجعات الخطة والمهام الفرعية والتبعيات">PLAN REVISIONS, SUBTASKS &amp; DEPENDENCIES</h4>
+                <div id="task-detail-plans" class="task-plans-list"></div>
+              </div>
+              <div class="task-detail-block">
+                <h4 class="eyebrow" data-en="LIFECYCLE HISTORY (READ-ONLY)" data-ar="سجل دورة الحياة (قراءة فقط)">LIFECYCLE HISTORY (READ-ONLY)</h4>
+                <ol id="task-detail-events" class="task-events-list"></ol>
+                <div id="task-events-pagination" class="task-pagination" hidden>
+                  <button id="task-events-prev" type="button" class="small-action" disabled data-en="Previous events" data-ar="الأحداث السابقة">Previous events</button>
+                  <span id="task-events-page-info" class="hint" aria-live="polite"></span>
+                  <button id="task-events-next" type="button" class="small-action" disabled data-en="Next events" data-ar="الأحداث التالية">Next events</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
     </main>
 
