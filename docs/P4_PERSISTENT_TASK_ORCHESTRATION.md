@@ -70,20 +70,84 @@ idempotency collisions, workspace isolation, revoked grants, cancellation,
 corrupt evidence, and terminal confirmations. These tests do not establish
 Windows containment or real-agent/model behavior.
 
+## Retention, archiving, and safe deletion (schema migration 10)
+
+Schema migration 10 adds an additive, workspace-scoped task-data lifecycle
+layer without duplicating task payloads:
+
+- **Safe default policy:** Workspaces without an explicit policy default to no
+  retention deadlines (`None` for completed, cancelled, failed, and interrupted
+  states) and `auto_delete_enabled = False`. Even when retention periods are
+  configured, automatic deletion is permanently disabled (`CHECK(auto_delete_enabled = 0)`).
+  Retention periods only govern eligibility for operator-initiated previews and
+  confirmed purges.
+- **Expired policies fail closed:** A retention policy with an `expires_at`
+  timestamp in the past causes policy-driven `preview_purge` and `purge_tasks`
+  calls to fail closed (`retention_policy_expired`) until a workspace manager
+  renews or updates the policy.
+- **Hide vs. archive vs. delete:**
+  - *Hiding from active views:* `list_tasks(..., include_history=False)` hides
+    terminal history; `list_tasks(..., include_archived=False)` (default) hides
+    archived tasks from standard listings without altering records.
+  - *Archiving (`archive_task` / `restore_archived_task`):* Sets `archived_at`
+    and `archived_by` in place on `orchestration_tasks` without copying goals,
+    plans, subtasks, approvals, or events. Archived tasks remain readable via
+    `get_task`, `get_plan`, `get_progress`, `events`, and bounded
+    `list_task_history`, while rejecting state mutations until restored. Active
+    tasks and pending human approvals cannot be archived.
+  - *Operator-controlled purge (`preview_purge` -> `purge_tasks`):* Requires
+    authenticated `READ`, `WRITE`, and `MANAGE_WORKSPACE` authority, a bounded
+    preview (at most 50 tasks per batch), and exact confirmation
+    `PURGE <workspace_id> <preview_sha256>`. Active tasks (`draft`,
+    `awaiting_approval`, `queued`, `simulating`, `blocked`) and tasks with
+    pending plan approvals cannot be purged.
+- **Atomic deletion and stale-preview protection:** `purge_tasks` runs inside a
+  `BEGIN IMMEDIATE` SQLite transaction, re-validates manager permissions and
+  policy state, recomputes the canonical `preview_sha256` from live task state,
+  revision pointers, goal/summary digests, dependent row counts, and latest
+  event ID, and aborts (`purge_preview_stale`) if anything changed since the
+  preview. Authorized deletion records an immutable `orchestration_purge_operations`
+  receipt, inserts minimal non-sensitive `orchestration_purge_tombstones`
+  (workspace ID, task ID, state, archive timestamp, `goal_sha256`, dependent
+  row counts including purged approval/event counts, actor, and timestamp — no
+  plaintext goals or summaries), atomically cascades deletion across
+  `orchestration_tasks`, `orchestration_plans`, `orchestration_subtasks`,
+  `orchestration_dependencies`, `orchestration_approvals`, and
+  `orchestration_task_events`, and writes an `audit_events` entry. Unauthorized
+  direct `DELETE` statements on `orchestration_approvals` and
+  `orchestration_task_events` remain blocked by SQLite triggers.
+- **Idempotency and concurrency:** Repeating `purge_tasks` with the same
+  `(workspace_id, actor_id, idempotency_key)` and matching `preview_sha256` and
+  `task_ids` returns the recorded `PurgeReceipt` with `already_purged=True`
+  (still enforcing current workspace manager authorization). Reusing an
+  idempotency key with different parameters raises `idempotency_key_conflict`.
+  Concurrent task updates or purges serialize via SQLite `BEGIN IMMEDIATE`,
+  either failing closed with `purge_preview_stale` / `task_unavailable` or
+  rolling back cleanly on SQLite failure.
+
 ## Privacy and remaining limits
 
-Goals and simulated summaries persist in the local application database, with
-strict size limits and logical expiration timestamps. They are not encrypted
-by this migration. Expiration does not yet purge records; event/approval
-immutability and foreign-key retention also mean there is no task-level delete
-workflow. Before multi-user operation, define and implement a reviewed
-retention, export, and deletion policy. Treat the database and backups as
-sensitive.
+Goals, plan subtasks, and simulated summaries persist in plaintext in the local
+SQLite database, with strict size bounds and logical expiration timestamps.
+This migration intentionally does **not** add application-layer encryption
+because no reviewed key-management subsystem exists in Jarvis yet; treat the
+database, WAL files, and backups as sensitive.
 
-Task plans do not yet have provider assignments, external planners, queue
-workers, leases, or distributed locking. SQLite transactions and unique
+Purging removes rows from the active SQLite database only. It does **not**
+retroactively erase records from historical database backups or guarantee
+physical block/page erasure on SSDs or copy-on-write filesystems. Restoring an
+older backup restores whatever tasks, policies, and tombstones existed in that
+backup snapshot; `restore_from_backup` verifies schema v10 tables and
+immutability triggers before replacing the active database. When approval
+receipts are purged along with a task, their exact count remains preserved on
+the immutable `orchestration_purge_tombstones` row and `audit_events` entry.
+
+Deletion is strictly a trusted-operator action (via `TaskOrchestrationService`
+or `OrchestrationOperatorWorkflow`), never an AI-generated tool call or HTTP
+endpoint. Task plans do not yet have provider assignments, external planners,
+queue workers, leases, or distributed locking. SQLite transactions and unique
 idempotency keys protect current local operations, but this is not a
 multi-process orchestration service. Cancellation is durable state only; no
-child process exists to terminate. Agent-created worktrees, file changes,
-subprocesses, network, commits, pushes, pull requests, merges, and deployment
-remain unavailable until the independent Windows isolation gate is passed.
+child process exists to terminate. P4 Windows isolation remains `NOT_READY`;
+agent-created worktrees, file writes, subprocesses, network access, automatic
+Git operations, and deployment remain disabled.

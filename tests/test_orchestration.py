@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+from io import StringIO
 from pathlib import Path
 import sqlite3
 import subprocess
 import tempfile
 from threading import Barrier, Thread
 import unittest
+from unittest.mock import patch
 
 from jarvis_core.orchestration import (
     DeterministicFakePlanner,
@@ -20,7 +23,13 @@ from jarvis_core.orchestration import (
 from jarvis_core.orchestration_operator import OrchestrationOperatorWorkflow
 from jarvis_core.coding_agents import CodingCapability, CodingCapabilityPolicy
 from jarvis_core.developer import DeveloperRepositoryService
-from jarvis_core.storage import AccessDenied, Database, Permission, WorkspaceKind
+from jarvis_core.storage import (
+    AccessDenied,
+    DEFAULT_MIGRATIONS,
+    Database,
+    Permission,
+    WorkspaceKind,
+)
 
 
 def key(label: str) -> str:
@@ -352,6 +361,848 @@ class OrchestrationTests(unittest.TestCase):
         workflow.list_tasks()
         self.assertIn("nothing executed", output.getvalue())
         self.assertIn(r"\u000a", output.getvalue())
+
+
+class OrchestrationRetentionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.db_path = Path(self.temp.name) / "jarvis.sqlite3"
+        self.db = Database(self.db_path)
+        self.db.initialize()
+        self.db.create_workspace("Primary WS", WorkspaceKind.PROJECT, "owner", "ws")
+        self.db.grant_permission("owner", "ws", "member", Permission.READ)
+        self.db.grant_permission("owner", "ws", "member", Permission.WRITE)
+        self.db.create_workspace("Secondary WS", WorkspaceKind.PROJECT, "other", "ws2")
+        self.service = TaskOrchestrationService(self.db)
+        self._counter = 0
+
+    def _k(self, prefix: str) -> str:
+        self._counter += 1
+        return key(f"{prefix}_{self._counter}")
+
+    def _make_completed_task(self, actor="owner", workspace_id="ws",
+                             goal="Synthetic completed task goal",
+                             revisions: int = 1):
+        task = self.service.create_task(actor, workspace_id, goal, idempotency_key=self._k("create"))
+        plan = None
+        for rev in range(revisions):
+            planner = DeterministicFakePlanner(proposal(dependencies=("one",)))
+            plan = self.service.propose_plan(actor, task.id, planner,
+                                             idempotency_key=self._k(f"plan{rev}"))
+        assert plan is not None
+        self.service.approve_plan(actor, task.id, plan.revision, plan.plan_sha256,
+                                  idempotency_key=self._k("approve"))
+        worker = DeterministicFakeWorker({
+            "one": (SimulationStep(100, "SIMULATED: step one complete", True),),
+            "two": (SimulationStep(100, "SIMULATED: step two complete", True),),
+        })
+        self.service.simulate_next_step(actor, task.id, worker, idempotency_key=self._k("sim1"))
+        self.service.simulate_next_step(actor, task.id, worker, idempotency_key=self._k("sim2"))
+        return self.service.simulate_next_step(actor, task.id, worker, idempotency_key=self._k("sim3"))
+
+    def _make_cancelled_task(self, actor="owner", workspace_id="ws",
+                             goal="Synthetic cancelled task", with_pending_plan: bool = False):
+        task = self.service.create_task(actor, workspace_id, goal, idempotency_key=self._k("create"))
+        if with_pending_plan:
+            planner = DeterministicFakePlanner(proposal())
+            self.service.propose_plan(actor, task.id, planner, idempotency_key=self._k("plan"))
+        return self.service.cancel_task(actor, task.id, idempotency_key=self._k("cancel"))
+
+    def _make_interrupted_task(self, actor="owner", workspace_id="ws",
+                               goal="Synthetic interrupted task"):
+        task = self.service.create_task(actor, workspace_id, goal, idempotency_key=self._k("create"))
+        planner = DeterministicFakePlanner(proposal(dependencies=("one",)))
+        plan = self.service.propose_plan(actor, task.id, planner, idempotency_key=self._k("plan"))
+        self.service.approve_plan(actor, task.id, plan.revision, plan.plan_sha256,
+                                  idempotency_key=self._k("approve"))
+        worker = DeterministicFakeWorker({"one": (SimulationStep(35, "SIMULATED: partial"),)})
+        self.service.simulate_next_step(actor, task.id, worker, idempotency_key=self._k("sim"))
+        interrupted = self.service.recover_after_restart(actor, workspace_id,
+                                                         idempotency_key_prefix=self._k("recover"))
+        self.assertIn(task.id, interrupted)
+        return self.service.get_task(actor, task.id)
+
+    def test_retention_policy_defaults_and_expired_policy_fail_closed(self):
+        completed = self._make_completed_task()
+        cancelled = self._make_cancelled_task()
+
+        default_policy = self.service.get_retention_policy("owner", "ws")
+        self.assertIsNone(default_policy.completed_retention_days)
+        self.assertIsNone(default_policy.cancelled_retention_days)
+        self.assertIsNone(default_policy.failed_retention_days)
+        self.assertIsNone(default_policy.interrupted_retention_days)
+        self.assertFalse(default_policy.auto_delete_enabled)
+        self.assertFalse(default_policy.is_expired)
+
+        far_future = (datetime.now(timezone.utc) + timedelta(days=4000)).isoformat(timespec="microseconds")
+        empty_preview = self.service.preview_purge(
+            "owner", "ws", use_retention_policy=True, as_of=far_future
+        )
+        self.assertEqual(empty_preview.task_count, 0)
+        self.assertIsNone(empty_preview.confirmation_phrase)
+
+        policy = self.service.set_retention_policy(
+            "owner", "ws",
+            completed_retention_days=30,
+            cancelled_retention_days=7,
+            failed_retention_days=14,
+            interrupted_retention_days=21,
+            policy_lifetime_days=10,
+        )
+        self.assertEqual(policy.completed_retention_days, 30)
+        self.assertEqual(policy.cancelled_retention_days, 7)
+        self.assertEqual(policy.failed_retention_days, 14)
+        self.assertEqual(policy.interrupted_retention_days, 21)
+        self.assertFalse(policy.auto_delete_enabled)
+        self.assertFalse(policy.is_expired)
+        # Configuring a retention policy never automatically deletes records.
+        self.assertEqual(self.service.get_task("owner", completed.id).state, TaskState.SIMULATION_COMPLETED)
+        self.assertEqual(self.service.get_task("owner", cancelled.id).state, TaskState.CANCELLED)
+
+        with self.db._connection() as connection:
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "UPDATE orchestration_retention_policies SET auto_delete_enabled=1 WHERE workspace_id='ws'"
+                )
+
+        day_8 = (datetime.now(timezone.utc) + timedelta(days=8)).isoformat(timespec="microseconds")
+        day_8_preview = self.service.preview_purge("owner", "ws", use_retention_policy=True, as_of=day_8)
+        self.assertEqual(day_8_preview.task_ids, (cancelled.id,))
+
+        day_12 = (datetime.now(timezone.utc) + timedelta(days=12)).isoformat(timespec="microseconds")
+        expired_view = self.service.get_retention_policy("owner", "ws", as_of=day_12)
+        self.assertTrue(expired_view.is_expired)
+        with self.assertRaisesRegex(OrchestrationError, "retention_policy_expired"):
+            self.service.preview_purge("owner", "ws", use_retention_policy=True, as_of=day_12)
+        with self.assertRaisesRegex(OrchestrationError, "retention_policy_expired"):
+            self.service.purge_tasks(
+                "owner", "ws",
+                task_ids=day_8_preview.task_ids,
+                expected_preview_sha256=day_8_preview.preview_sha256,
+                confirmation=day_8_preview.confirmation_phrase,
+                idempotency_key=self._k("expired-purge"),
+                use_retention_policy=True,
+                as_of=day_12,
+            )
+
+    def test_workspace_isolation_and_cross_workspace_denial(self):
+        ws1_task = self._make_cancelled_task("owner", "ws", "WS1 private goal")
+        ws2_task = self._make_cancelled_task("other", "ws2", "WS2 private goal")
+        member_task = self._make_cancelled_task("member", "ws", "Member task")
+
+        self.service.set_retention_policy("owner", "ws", cancelled_retention_days=1)
+        ws2_policy = self.service.get_retention_policy("other", "ws2")
+        self.assertIsNone(ws2_policy.cancelled_retention_days)
+
+        history_ws1 = self.service.list_task_history("owner", "ws")
+        self.assertEqual({t.id for t in history_ws1.items}, {ws1_task.id, member_task.id})
+        history_member = self.service.list_task_history("member", "ws")
+        self.assertEqual({t.id for t in history_member.items}, {member_task.id})
+
+        with self.assertRaises(AccessDenied):
+            self.service.get_retention_policy("owner", "ws2")
+        with self.assertRaises(AccessDenied):
+            self.service.set_retention_policy("owner", "ws2", cancelled_retention_days=1)
+        with self.assertRaisesRegex(OrchestrationError, "task_unavailable"):
+            self.service.preview_purge("owner", "ws", task_ids=(ws2_task.id,))
+        with self.assertRaisesRegex(OrchestrationError, "task_unavailable"):
+            self.service.preview_purge("owner", "ws", task_ids=(ws1_task.id, ws2_task.id))
+        with self.assertRaises(AccessDenied):
+            self.service.archive_task("owner", ws2_task.id, idempotency_key=self._k("xws-arch"))
+
+        preview_ws2 = self.service.preview_purge("other", "ws2", task_ids=(ws2_task.id,))
+        with self.assertRaises(AccessDenied):
+            self.service.purge_tasks(
+                "owner", "ws2",
+                task_ids=preview_ws2.task_ids,
+                expected_preview_sha256=preview_ws2.preview_sha256,
+                confirmation=preview_ws2.confirmation_phrase,
+                idempotency_key=self._k("xws-purge"),
+            )
+        # Cross-workspace task_id inside owner's own workspace is also rejected.
+        fake_phrase = f"PURGE ws {preview_ws2.preview_sha256}"
+        with self.assertRaisesRegex(OrchestrationError, "task_unavailable"):
+            self.service.purge_tasks(
+                "owner", "ws",
+                task_ids=(ws2_task.id,),
+                expected_preview_sha256=preview_ws2.preview_sha256,
+                confirmation=fake_phrase,
+                idempotency_key=self._k("xws-purge-2"),
+            )
+        self.assertEqual(self.service.get_task("other", ws2_task.id).id, ws2_task.id)
+
+        self.service.purge_tasks(
+            "other", "ws2",
+            task_ids=preview_ws2.task_ids,
+            expected_preview_sha256=preview_ws2.preview_sha256,
+            confirmation=preview_ws2.confirmation_phrase,
+            idempotency_key=self._k("ws2-purge"),
+        )
+        with self.assertRaises(AccessDenied):
+            self.service.list_purge_tombstones("owner", "ws2")
+        with self.assertRaises(AccessDenied):
+            self.service.get_purge_tombstone("owner", "ws2", ws2_task.id)
+
+    def test_archive_restore_visibility_bounded_history_and_mutation_guards(self):
+        completed = self._make_completed_task(goal="Completed archival candidate")
+        interrupted = self._make_interrupted_task(goal="Interrupted archival candidate")
+        cancelled = self._make_cancelled_task(goal="Cancelled archival candidate")
+
+        with self.db._connection() as connection:
+            before_count = connection.execute("SELECT COUNT(*) FROM orchestration_tasks").fetchone()[0]
+
+        archived = self.service.archive_task("owner", interrupted.id, idempotency_key=self._k("arch1"))
+        self.assertIsNotNone(archived.archived_at)
+        self.assertEqual(archived.archived_by, "owner")
+        # Archiving in-place does not duplicate rows or reset updated_at retention clock.
+        self.assertEqual(archived.updated_at, interrupted.updated_at)
+        with self.db._connection() as connection:
+            after_count = connection.execute("SELECT COUNT(*) FROM orchestration_tasks").fetchone()[0]
+        self.assertEqual(before_count, after_count)
+
+        # Hidden from default list_tasks, visible with include_archived=True and direct reads.
+        default_ids = {t.id for t in self.service.list_tasks("owner", "ws")}
+        self.assertNotIn(interrupted.id, default_ids)
+        self.assertIn(completed.id, default_ids)
+        all_ids = {t.id for t in self.service.list_tasks("owner", "ws", include_archived=True)}
+        self.assertIn(interrupted.id, all_ids)
+        self.assertEqual(self.service.get_task("owner", interrupted.id).archived_by, "owner")
+        self.assertEqual(len(self.service.list_plans("owner", interrupted.id)), 1)
+        self.assertTrue(any(e["event_type"] == "task_archived" for e in self.service.events("owner", interrupted.id)))
+
+        # Mutations blocked while archived.
+        with self.assertRaisesRegex(OrchestrationError, "task_archived"):
+            self.service.resume_simulation("owner", interrupted.id, idempotency_key=self._k("res-arch"))
+        with self.assertRaisesRegex(OrchestrationError, "task_archived"):
+            self.service.cancel_task("owner", interrupted.id, idempotency_key=self._k("can-arch"))
+
+        # Bounded history queries & pagination.
+        archived_page = self.service.list_task_history("owner", "ws", archived_only=True)
+        self.assertEqual([t.id for t in archived_page.items], [interrupted.id])
+        self.assertEqual(archived_page.total_count, 1)
+        self.assertFalse(archived_page.has_more)
+
+        page1 = self.service.list_task_history("owner", "ws", include_archived=True, limit=2, offset=0)
+        page2 = self.service.list_task_history("owner", "ws", include_archived=True, limit=2, offset=2)
+        self.assertEqual(page1.total_count, 3)
+        self.assertTrue(page1.has_more)
+        self.assertFalse(page2.has_more)
+        self.assertEqual(len(page1.items) + len(page2.items), 3)
+        self.assertEqual(
+            {t.id for t in page1.items} | {t.id for t in page2.items},
+            {completed.id, interrupted.id, cancelled.id},
+        )
+        with self.assertRaises(ValueError):
+            self.service.list_task_history("owner", "ws", limit=101)
+        with self.assertRaises(ValueError):
+            self.service.list_task_history("owner", "ws", offset=10_001)
+
+        # Restoring restores visibility and allows explicit resume.
+        restored = self.service.restore_archived_task("owner", interrupted.id, idempotency_key=self._k("rest1"))
+        self.assertIsNone(restored.archived_at)
+        self.assertIsNone(restored.archived_by)
+        self.assertIn(interrupted.id, {t.id for t in self.service.list_tasks("owner", "ws")})
+        resumed = self.service.resume_simulation("owner", interrupted.id, idempotency_key=self._k("res-ok"))
+        self.assertEqual(resumed.state, TaskState.SIMULATING)
+
+    def test_purge_preview_accuracy_bounds_cascade_and_non_sensitive_tombstones(self):
+        secret_goal = "SENSITIVE_SYNTHETIC_GOAL_MARKER_99182"
+        task_a = self._make_completed_task(goal=secret_goal, revisions=2)
+        task_b = self._make_cancelled_task(goal="Secondary cancelled task")
+        survivor = self._make_completed_task(goal="Surviving task for trigger verification")
+
+        self.service.set_retention_policy("owner", "ws", completed_retention_days=1, cancelled_retention_days=1)
+        future = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(timespec="microseconds")
+
+        bounded = self.service.preview_purge("owner", "ws", use_retention_policy=True, as_of=future, limit=1)
+        self.assertEqual(bounded.task_count, 1)
+        self.assertTrue(bounded.truncated)
+
+        preview = self.service.preview_purge("owner", "ws", task_ids=(task_a.id, task_b.id))
+        self.assertEqual(preview.task_count, 2)
+        self.assertEqual(preview.plan_count, 2)
+        self.assertEqual(preview.subtask_count, 4)
+        self.assertEqual(preview.dependency_count, 2)
+        self.assertEqual(preview.approval_count, 1)
+        self.assertGreaterEqual(preview.event_count, 9)
+        self.assertEqual(preview.confirmation_phrase, f"PURGE ws {preview.preview_sha256}")
+
+        receipt = self.service.purge_tasks(
+            "owner", "ws",
+            task_ids=preview.task_ids,
+            expected_preview_sha256=preview.preview_sha256,
+            confirmation=preview.confirmation_phrase,
+            idempotency_key=self._k("purge-main"),
+        )
+        self.assertFalse(receipt.already_purged)
+        self.assertEqual(receipt.task_count, 2)
+        self.assertEqual(receipt.plan_count, preview.plan_count)
+        self.assertEqual(receipt.subtask_count, preview.subtask_count)
+        self.assertEqual(receipt.dependency_count, preview.dependency_count)
+        self.assertEqual(receipt.approval_count, preview.approval_count)
+        self.assertEqual(receipt.event_count, preview.event_count)
+
+        # Verify zero remaining rows across all 6 task tables for purged tasks.
+        with self.db._connection() as connection:
+            for tid in (task_a.id, task_b.id):
+                self.assertEqual(connection.execute(
+                    "SELECT COUNT(*) FROM orchestration_tasks WHERE id=?", (tid,)).fetchone()[0], 0)
+                for table in ("orchestration_plans", "orchestration_subtasks",
+                              "orchestration_dependencies", "orchestration_approvals",
+                              "orchestration_task_events"):
+                    self.assertEqual(connection.execute(
+                        f"SELECT COUNT(*) FROM {table} WHERE task_id=?", (tid,)).fetchone()[0], 0)
+
+            # Verify no plaintext goal leaked into tombstones, purge ops, or audit_events.
+            for table in ("orchestration_purge_tombstones", "orchestration_purge_operations", "audit_events"):
+                rows = connection.execute(f"SELECT * FROM {table}").fetchall()
+                joined = "\n".join(str(dict(row)) for row in rows)
+                self.assertNotIn(secret_goal, joined)
+
+            # Immutability triggers remain enforced for tombstones, operations, and surviving tasks.
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("DELETE FROM orchestration_purge_tombstones WHERE task_id=?", (task_a.id,))
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("UPDATE orchestration_purge_tombstones SET task_state='draft' WHERE task_id=?", (task_a.id,))
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("DELETE FROM orchestration_purge_operations WHERE purge_id=?", (receipt.purge_id,))
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("DELETE FROM orchestration_approvals WHERE task_id=?", (survivor.id,))
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("DELETE FROM orchestration_task_events WHERE task_id=?", (survivor.id,))
+
+        tombstone = self.service.get_purge_tombstone("owner", "ws", task_a.id)
+        self.assertEqual(tombstone.goal_sha256, task_a.goal_sha256)
+        self.assertEqual(tombstone.approval_count, 1)
+        self.assertEqual(tombstone.plan_count, 2)
+        self.assertEqual(tombstone.purged_by, "owner")
+
+    def test_exact_confirmation_validation_and_operator_workflow(self):
+        task = self._make_cancelled_task(goal="Operator purge target")
+        preview = self.service.preview_purge("owner", "ws", task_ids=(task.id,))
+        bad_confirmations = (
+            "",
+            "PURGE",
+            f"purge ws {preview.preview_sha256}",
+            f"PURGE ws {preview.preview_sha256} ",
+            f"PURGE other_ws {preview.preview_sha256}",
+            f"PURGE ws {'0' * 64}",
+        )
+        for bad in bad_confirmations:
+            with self.assertRaisesRegex(OrchestrationError, "purge_confirmation_mismatch"):
+                self.service.purge_tasks(
+                    "owner", "ws",
+                    task_ids=preview.task_ids,
+                    expected_preview_sha256=preview.preview_sha256,
+                    confirmation=bad,
+                    idempotency_key=self._k("bad-confirm"),
+                )
+        self.assertEqual(self.service.get_task("owner", task.id).state, TaskState.CANCELLED)
+
+        # Operator workflow: policy, archive, restore, cancelled purge, confirmed purge, tombstones.
+        prompts_seen: list[str] = []
+        actions = iter([
+            "SET RETENTION ws",
+            f"ARCHIVE {task.id}",
+            f"RESTORE {task.id}",
+            "WRONG CONFIRMATION",
+        ])
+
+        def answer(prompt: str) -> str:
+            prompts_seen.append(prompt)
+            try:
+                return next(actions)
+            except StopIteration:
+                # Extract exact PURGE phrase from final prompt.
+                return prompt.removeprefix("Type ").removesuffix(" to purge: ")
+
+        output = StringIO()
+        workflow = OrchestrationOperatorWorkflow("owner", "ws", self.db, self.service,
+                                                 input_fn=answer, output=output)
+        workflow.inspect_retention_policy()
+        self.assertIsNotNone(workflow.configure_retention_policy(cancelled_retention_days=7))
+        self.assertEqual(workflow.archive_task(task.id), "archived")
+        self.assertEqual(workflow.restore_archived_task(task.id), "restored")
+        self.assertIsNone(workflow.purge_tasks(task_ids=(task.id,)))
+        self.assertEqual(self.service.get_task("owner", task.id).id, task.id)
+        receipt = workflow.purge_tasks(task_ids=(task.id,))
+        self.assertIsNotNone(receipt)
+        tombstones = workflow.inspect_purge_tombstones()
+        self.assertEqual(len(tombstones), 1)
+        rendered = output.getvalue()
+        self.assertIn("auto_delete=False", rendered)
+        self.assertIn("SSD physical erasure", rendered)
+
+    def test_stale_preview_rejection(self):
+        # Case 1: Archiving after preview mutates snapshot -> purge_preview_stale.
+        interrupted = self._make_interrupted_task()
+        preview1 = self.service.preview_purge("owner", "ws", task_ids=(interrupted.id,))
+        self.service.archive_task("owner", interrupted.id, idempotency_key=self._k("arch-stale"))
+        with self.assertRaisesRegex(OrchestrationError, "purge_preview_stale"):
+            self.service.purge_tasks(
+                "owner", "ws",
+                task_ids=preview1.task_ids,
+                expected_preview_sha256=preview1.preview_sha256,
+                confirmation=preview1.confirmation_phrase,
+                idempotency_key=self._k("stale-1"),
+            )
+
+        # Case 2: Policy tightened between preview and confirm -> purge_preview_stale.
+        cancelled = self._make_cancelled_task()
+        self.service.set_retention_policy("owner", "ws", cancelled_retention_days=5)
+        day_6 = (datetime.now(timezone.utc) + timedelta(days=6)).isoformat(timespec="microseconds")
+        preview2 = self.service.preview_purge("owner", "ws", use_retention_policy=True, as_of=day_6)
+        self.assertEqual(preview2.task_ids, (cancelled.id,))
+        self.service.set_retention_policy("owner", "ws", cancelled_retention_days=30)
+        with self.assertRaisesRegex(OrchestrationError, "purge_preview_stale"):
+            self.service.purge_tasks(
+                "owner", "ws",
+                task_ids=preview2.task_ids,
+                expected_preview_sha256=preview2.preview_sha256,
+                confirmation=preview2.confirmation_phrase,
+                idempotency_key=self._k("stale-2"),
+                use_retention_policy=True,
+                as_of=day_6,
+            )
+
+        # Case 3: Interrupted task resumed to active state -> protected from purge.
+        interrupted2 = self._make_interrupted_task()
+        preview3 = self.service.preview_purge("owner", "ws", task_ids=(interrupted2.id,))
+        self.service.resume_simulation("owner", interrupted2.id, idempotency_key=self._k("res-stale"))
+        with self.assertRaisesRegex(OrchestrationError, "task_protected_from_purge"):
+            self.service.purge_tasks(
+                "owner", "ws",
+                task_ids=preview3.task_ids,
+                expected_preview_sha256=preview3.preview_sha256,
+                confirmation=preview3.confirmation_phrase,
+                idempotency_key=self._k("stale-3"),
+            )
+
+    def test_active_task_and_pending_approval_protection(self):
+        # DRAFT
+        draft = self.service.create_task("owner", "ws", "Draft active task", idempotency_key=self._k("draft"))
+        # AWAITING_APPROVAL (pending human approval)
+        awaiting = self.service.create_task("owner", "ws", "Awaiting approval task", idempotency_key=self._k("await"))
+        self.service.propose_plan("owner", awaiting.id, DeterministicFakePlanner(proposal()),
+                                  idempotency_key=self._k("await-plan"))
+        # QUEUED
+        queued = self.service.create_task("owner", "ws", "Queued active task", idempotency_key=self._k("queued"))
+        qplan = self.service.propose_plan("owner", queued.id, DeterministicFakePlanner(proposal()),
+                                          idempotency_key=self._k("qplan"))
+        self.service.approve_plan("owner", queued.id, qplan.revision, qplan.plan_sha256,
+                                  idempotency_key=self._k("qapprove"))
+        # SIMULATING
+        simulating = self.service.create_task("owner", "ws", "Simulating active task", idempotency_key=self._k("sim"))
+        splan = self.service.propose_plan("owner", simulating.id, DeterministicFakePlanner(proposal()),
+                                          idempotency_key=self._k("splan"))
+        self.service.approve_plan("owner", simulating.id, splan.revision, splan.plan_sha256,
+                                  idempotency_key=self._k("sapprove"))
+        self.service.simulate_next_step(
+            "owner", simulating.id,
+            DeterministicFakeWorker({"one": (SimulationStep(25, "SIMULATED: active"),)}),
+            idempotency_key=self._k("sstep"),
+        )
+        # CANCELLED after pending plan (should be allowed!)
+        cancelled_after_plan = self._make_cancelled_task(with_pending_plan=True)
+
+        for active_task in (draft, queued, simulating):
+            with self.assertRaisesRegex(OrchestrationError, "task_not_archivable"):
+                self.service.archive_task("owner", active_task.id, idempotency_key=self._k("arch-act"))
+            with self.assertRaisesRegex(OrchestrationError, "task_protected_from_purge"):
+                self.service.preview_purge("owner", "ws", task_ids=(active_task.id,))
+            fake_hash = "a" * 64
+            with self.assertRaisesRegex(OrchestrationError, "task_protected_from_purge"):
+                self.service.purge_tasks(
+                    "owner", "ws",
+                    task_ids=(active_task.id,),
+                    expected_preview_sha256=fake_hash,
+                    confirmation=f"PURGE ws {fake_hash}",
+                    idempotency_key=self._k("direct-act"),
+                )
+
+        with self.assertRaisesRegex(OrchestrationError, "task_not_archivable"):
+            self.service.archive_task("owner", awaiting.id, idempotency_key=self._k("arch-pend"))
+        with self.assertRaisesRegex(OrchestrationError, "task_has_pending_approval"):
+            self.service.preview_purge("owner", "ws", task_ids=(awaiting.id,))
+        fake_hash = "b" * 64
+        with self.assertRaisesRegex(OrchestrationError, "task_has_pending_approval"):
+            self.service.purge_tasks(
+                "owner", "ws",
+                task_ids=(awaiting.id,),
+                expected_preview_sha256=fake_hash,
+                confirmation=f"PURGE ws {fake_hash}",
+                idempotency_key=self._k("direct-pend"),
+            )
+
+        # Policy-based preview skips all active/pending tasks and only picks the cancelled one.
+        self.service.set_retention_policy(
+            "owner", "ws", completed_retention_days=1, cancelled_retention_days=1,
+            failed_retention_days=1, interrupted_retention_days=1,
+        )
+        future = (datetime.now(timezone.utc) + timedelta(days=5)).isoformat(timespec="microseconds")
+        policy_preview = self.service.preview_purge("owner", "ws", use_retention_policy=True, as_of=future)
+        self.assertEqual(policy_preview.task_ids, (cancelled_after_plan.id,))
+        self.assertEqual(policy_preview.protected_skipped_count, 4)
+
+    def test_atomic_rollback_on_sqlite_failure(self):
+        task = self._make_completed_task(goal="Must survive injected SQLite interruption")
+        preview = self.service.preview_purge("owner", "ws", task_ids=(task.id,))
+        original_plans = self.service.list_plans("owner", task.id)
+        original_events = self.service.events("owner", task.id)
+
+        with patch.object(
+            Database, "_insert_audit",
+            side_effect=sqlite3.OperationalError("simulated SQLite I/O failure mid-purge"),
+        ):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.service.purge_tasks(
+                    "owner", "ws",
+                    task_ids=preview.task_ids,
+                    expected_preview_sha256=preview.preview_sha256,
+                    confirmation=preview.confirmation_phrase,
+                    idempotency_key=self._k("fault-purge"),
+                )
+
+        # Everything rolled back atomically: task, plans, approvals, events intact; zero tombstones.
+        self.assertEqual(self.service.get_task("owner", task.id).goal, task.goal)
+        self.assertEqual(len(self.service.list_plans("owner", task.id)), len(original_plans))
+        self.assertEqual(len(self.service.events("owner", task.id)), len(original_events))
+        self.assertEqual(self.service.list_purge_tombstones("owner", "ws"), ())
+        with self.db._connection() as connection:
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM orchestration_purge_operations").fetchone()[0], 0)
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM orchestration_approvals WHERE task_id=?", (task.id,)).fetchone()[0], 1)
+
+    def test_concurrent_deletion_and_task_updates(self):
+        # Race 1: purge vs resume on an interrupted task.
+        task1 = self._make_interrupted_task()
+        preview1 = self.service.preview_purge("owner", "ws", task_ids=(task1.id,))
+        barrier1 = Barrier(2)
+        outcomes1: dict[str, str] = {}
+
+        def do_purge1():
+            barrier1.wait()
+            try:
+                self.service.purge_tasks(
+                    "owner", "ws",
+                    task_ids=preview1.task_ids,
+                    expected_preview_sha256=preview1.preview_sha256,
+                    confirmation=preview1.confirmation_phrase,
+                    idempotency_key=self._k("race1-purge"),
+                )
+                outcomes1["purge"] = "ok"
+            except OrchestrationError as exc:
+                outcomes1["purge"] = str(exc)
+
+        def do_resume1():
+            barrier1.wait()
+            try:
+                self.service.resume_simulation("owner", task1.id, idempotency_key=self._k("race1-resume"))
+                outcomes1["resume"] = "ok"
+            except OrchestrationError as exc:
+                outcomes1["resume"] = str(exc)
+
+        t1, t2 = Thread(target=do_purge1), Thread(target=do_resume1)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        self.assertEqual(list(outcomes1.values()).count("ok"), 1, outcomes1)
+        if outcomes1["purge"] == "ok":
+            with self.assertRaises(OrchestrationError):
+                self.service.get_task("owner", task1.id)
+            self.assertEqual(self.service.get_purge_tombstone("owner", "ws", task1.id).task_id, task1.id)
+        else:
+            self.assertEqual(self.service.get_task("owner", task1.id).state, TaskState.SIMULATING)
+            with self.assertRaises(OrchestrationError):
+                self.service.get_purge_tombstone("owner", "ws", task1.id)
+
+        # Race 2: purge vs cancel on an interrupted task.
+        task2 = self._make_interrupted_task()
+        preview2 = self.service.preview_purge("owner", "ws", task_ids=(task2.id,))
+        barrier2 = Barrier(2)
+        outcomes2: dict[str, str] = {}
+
+        def do_purge2():
+            barrier2.wait()
+            try:
+                self.service.purge_tasks(
+                    "owner", "ws",
+                    task_ids=preview2.task_ids,
+                    expected_preview_sha256=preview2.preview_sha256,
+                    confirmation=preview2.confirmation_phrase,
+                    idempotency_key=self._k("race2-purge"),
+                )
+                outcomes2["purge"] = "ok"
+            except OrchestrationError as exc:
+                outcomes2["purge"] = str(exc)
+
+        def do_cancel2():
+            barrier2.wait()
+            try:
+                self.service.cancel_task("owner", task2.id, idempotency_key=self._k("race2-cancel"))
+                outcomes2["cancel"] = "ok"
+            except OrchestrationError as exc:
+                outcomes2["cancel"] = str(exc)
+
+        t3, t4 = Thread(target=do_purge2), Thread(target=do_cancel2)
+        t3.start()
+        t4.start()
+        t3.join()
+        t4.join()
+        self.assertEqual(list(outcomes2.values()).count("ok"), 1, outcomes2)
+
+        # Race 3: concurrent duplicate purge with identical idempotency key.
+        task3 = self._make_cancelled_task()
+        preview3 = self.service.preview_purge("owner", "ws", task_ids=(task3.id,))
+        shared_key = self._k("race3-samekey")
+        barrier3 = Barrier(2)
+        receipts: list[object] = []
+
+        def do_dup_purge():
+            barrier3.wait()
+            receipts.append(self.service.purge_tasks(
+                "owner", "ws",
+                task_ids=preview3.task_ids,
+                expected_preview_sha256=preview3.preview_sha256,
+                confirmation=preview3.confirmation_phrase,
+                idempotency_key=shared_key,
+            ))
+
+        t5, t6 = Thread(target=do_dup_purge), Thread(target=do_dup_purge)
+        t5.start()
+        t6.start()
+        t5.join()
+        t6.join()
+        self.assertEqual(len(receipts), 2)
+        self.assertEqual(receipts[0].purge_id, receipts[1].purge_id)
+        self.assertEqual(sorted([receipts[0].already_purged, receipts[1].already_purged]), [False, True])
+
+    def test_idempotent_deletion_and_conflict_rejection(self):
+        task_a = self._make_cancelled_task()
+        task_b = self._make_cancelled_task()
+        preview_a = self.service.preview_purge("owner", "ws", task_ids=(task_a.id,))
+        preview_b = self.service.preview_purge("owner", "ws", task_ids=(task_b.id,))
+        idem_key = self._k("idemp-purge")
+
+        first = self.service.purge_tasks(
+            "owner", "ws",
+            task_ids=preview_a.task_ids,
+            expected_preview_sha256=preview_a.preview_sha256,
+            confirmation=preview_a.confirmation_phrase,
+            idempotency_key=idem_key,
+        )
+        second = self.service.purge_tasks(
+            "owner", "ws",
+            task_ids=preview_a.task_ids,
+            expected_preview_sha256=preview_a.preview_sha256,
+            confirmation=preview_a.confirmation_phrase,
+            idempotency_key=idem_key,
+        )
+        self.assertFalse(first.already_purged)
+        self.assertTrue(second.already_purged)
+        self.assertEqual(first.purge_id, second.purge_id)
+        self.assertEqual(len(self.service.list_purge_tombstones("owner", "ws")), 1)
+
+        with self.assertRaisesRegex(OrchestrationError, "idempotency_key_conflict"):
+            self.service.purge_tasks(
+                "owner", "ws",
+                task_ids=preview_b.task_ids,
+                expected_preview_sha256=preview_b.preview_sha256,
+                confirmation=preview_b.confirmation_phrase,
+                idempotency_key=idem_key,
+            )
+        # Already-purged task with a brand-new idempotency key fails closed as stale.
+        with self.assertRaisesRegex(OrchestrationError, "purge_preview_stale"):
+            self.service.purge_tasks(
+                "owner", "ws",
+                task_ids=preview_a.task_ids,
+                expected_preview_sha256=preview_a.preview_sha256,
+                confirmation=preview_a.confirmation_phrase,
+                idempotency_key=self._k("fresh-key-after-purge"),
+            )
+
+    def test_backup_restore_behavior_and_tampered_backup_rejection(self):
+        # Grant owner full DB backup authority across workspaces in this fixture.
+        self.db.grant_permission("other", "ws2", "owner", Permission.MANAGE_WORKSPACE)
+        archived_task = self._make_completed_task(goal="Archived before backup")
+        self.service.archive_task("owner", archived_task.id, idempotency_key=self._k("arch-bk"))
+        purged_task = self._make_completed_task(goal="Purged after backup 1")
+        self.service.set_retention_policy("owner", "ws", completed_retention_days=30, cancelled_retention_days=7)
+
+        backup_before_purge = Path(self.temp.name) / "before_purge.sqlite3"
+        self.db.backup_to(backup_before_purge, "owner")
+
+        preview = self.service.preview_purge("owner", "ws", task_ids=(purged_task.id,))
+        self.service.purge_tasks(
+            "owner", "ws",
+            task_ids=preview.task_ids,
+            expected_preview_sha256=preview.preview_sha256,
+            confirmation=preview.confirmation_phrase,
+            idempotency_key=self._k("bk-purge"),
+        )
+        backup_after_purge = Path(self.temp.name) / "after_purge.sqlite3"
+        self.db.backup_to(backup_after_purge, "owner")
+
+        # Restoring post-purge backup preserves policy, archive state, and tombstone.
+        restored_post_path = Path(self.temp.name) / "restored_post.sqlite3"
+        Database.restore_from_backup(backup_after_purge, restored_post_path)
+        restored_post = Database(restored_post_path)
+        post_service = TaskOrchestrationService(restored_post)
+        self.assertEqual(post_service.get_retention_policy("owner", "ws").completed_retention_days, 30)
+        self.assertIsNotNone(post_service.get_task("owner", archived_task.id).archived_at)
+        self.assertEqual(post_service.get_purge_tombstone("owner", "ws", purged_task.id).approval_count, 1)
+        with self.assertRaises(OrchestrationError):
+            post_service.get_task("owner", purged_task.id)
+
+        # Restoring pre-purge historical backup reflects that historical snapshot.
+        restored_pre_path = Path(self.temp.name) / "restored_pre.sqlite3"
+        Database.restore_from_backup(backup_before_purge, restored_pre_path)
+        restored_pre = Database(restored_pre_path)
+        pre_service = TaskOrchestrationService(restored_pre)
+        self.assertEqual(pre_service.get_task("owner", purged_task.id).goal, "Purged after backup 1")
+
+        # Tampered v10 backup missing tombstone immutability trigger is rejected.
+        tampered = Path(self.temp.name) / "tampered.sqlite3"
+        self.db.backup_to(tampered, "owner")
+        conn = sqlite3.connect(tampered)
+        try:
+            conn.execute("DROP TRIGGER orchestration_purge_tombstones_no_delete")
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaises(sqlite3.DatabaseError):
+            Database.restore_from_backup(tampered, Path(self.temp.name) / "tampered_target.sqlite3")
+
+    def test_permission_revocation_blocks_purge_and_idempotent_replay(self):
+        task = self._make_cancelled_task()
+        # Regular member (READ+WRITE, no MANAGE_WORKSPACE) cannot configure retention or purge.
+        with self.assertRaisesRegex(OrchestrationError, "task_manager_approval_required"):
+            self.service.set_retention_policy("member", "ws", cancelled_retention_days=7)
+        with self.assertRaisesRegex(OrchestrationError, "task_manager_approval_required"):
+            self.service.preview_purge("member", "ws", task_ids=(task.id,))
+        with self.assertRaisesRegex(OrchestrationError, "task_manager_approval_required"):
+            self.service.list_purge_tombstones("member", "ws")
+
+        # Grant manager2 MANAGE_WORKSPACE, preview purge, then revoke before confirmation.
+        for perm in (Permission.READ, Permission.WRITE, Permission.MANAGE_WORKSPACE):
+            self.db.grant_permission("owner", "ws", "manager2", perm)
+        preview = self.service.preview_purge("manager2", "ws", task_ids=(task.id,))
+        self.db.revoke_permission("owner", "ws", "manager2", Permission.MANAGE_WORKSPACE)
+        with self.assertRaisesRegex(OrchestrationError, "task_manager_approval_required"):
+            self.service.purge_tasks(
+                "manager2", "ws",
+                task_ids=preview.task_ids,
+                expected_preview_sha256=preview.preview_sha256,
+                confirmation=preview.confirmation_phrase,
+                idempotency_key=self._k("revoked-purge"),
+            )
+        self.assertEqual(self.service.get_task("owner", task.id).state, TaskState.CANCELLED)
+
+        # Re-grant, complete purge, then revoke all permissions: even idempotent replay is denied.
+        self.db.grant_permission("owner", "ws", "manager2", Permission.MANAGE_WORKSPACE)
+        idem = self._k("manager2-purge")
+        self.service.purge_tasks(
+            "manager2", "ws",
+            task_ids=preview.task_ids,
+            expected_preview_sha256=preview.preview_sha256,
+            confirmation=preview.confirmation_phrase,
+            idempotency_key=idem,
+        )
+        for perm in (Permission.MANAGE_WORKSPACE, Permission.WRITE, Permission.READ):
+            self.db.revoke_permission("owner", "ws", "manager2", perm)
+        with self.assertRaises(AccessDenied):
+            self.service.purge_tasks(
+                "manager2", "ws",
+                task_ids=preview.task_ids,
+                expected_preview_sha256=preview.preview_sha256,
+                confirmation=preview.confirmation_phrase,
+                idempotency_key=idem,
+            )
+        with self.assertRaises(AccessDenied):
+            self.service.list_purge_tombstones("manager2", "ws")
+
+    def test_v9_to_v10_upgraded_task_supports_archive_and_purge(self):
+        upgrade_path = Path(self.temp.name) / "v9_to_v10_e2e.sqlite3"
+        v9_db = Database(upgrade_path, migrations=DEFAULT_MIGRATIONS[:9])
+        v9_db.initialize()
+        v9_db.create_workspace("Upgraded WS", WorkspaceKind.PROJECT, "owner", "ws_up")
+        # Insert a valid v9 task directly (schema v9 has no archived_at/archived_by columns).
+        from jarvis_core.orchestration import _canonical_json, _digest
+        manifest = {
+            "workspace_id": "ws_up", "repository_id": None,
+            "requested": [], "granted": [], "denied": [], "unavailable": [],
+            "execution_enabled": False, "file_write_enabled": False,
+            "process_execution_enabled": False, "network_enabled": False,
+            "plan_approval_is_execution_approval": False,
+        }
+        manifest_json = _canonical_json(manifest)
+        goal = "Legacy schema v9 cancelled task"
+        with v9_db._connection() as conn:
+            conn.execute(
+                "INSERT INTO orchestration_tasks(id,workspace_id,principal_id,goal,goal_sha256,"
+                "state,execution_mode,requested_capabilities_json,capability_manifest_json,"
+                "capability_manifest_sha256,created_at,updated_at,expires_at) "
+                "VALUES(?,?,?,?,?,'cancelled','planned','[]',?,?, "
+                "'2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00','2026-02-01T00:00:00+00:00')",
+                ("legacy_v9_task", "ws_up", "owner", goal, _digest(goal),
+                 manifest_json, _digest(manifest_json)),
+            )
+            conn.commit()
+
+        v10_db = Database(upgrade_path)
+        v10_db.initialize()
+        service = TaskOrchestrationService(v10_db)
+        task = service.get_task("owner", "legacy_v9_task")
+        self.assertIsNone(task.archived_at)
+        archived = service.archive_task("owner", task.id, idempotency_key=self._k("up-arch"))
+        self.assertIsNotNone(archived.archived_at)
+        preview = service.preview_purge("owner", "ws_up", task_ids=(task.id,), archived_only=True)
+        receipt = service.purge_tasks(
+            "owner", "ws_up",
+            task_ids=preview.task_ids,
+            expected_preview_sha256=preview.preview_sha256,
+            confirmation=preview.confirmation_phrase,
+            idempotency_key=self._k("up-purge"),
+            archived_only=True,
+        )
+        self.assertEqual(receipt.task_count, 1)
+        self.assertEqual(service.get_purge_tombstone("owner", "ws_up", task.id).goal_sha256, task.goal_sha256)
+
+    def test_no_regression_of_coding_agent_restrictions(self):
+        task = self._make_completed_task(goal="Verify P4 restrictions after archive/restore")
+        archived = self.service.archive_task("owner", task.id, idempotency_key=self._k("p4-arch"))
+        restored = self.service.restore_archived_task("owner", task.id, idempotency_key=self._k("p4-rest"))
+        for snapshot in (task, archived, restored):
+            self.assertFalse(snapshot.capability_manifest["execution_enabled"])
+            self.assertFalse(snapshot.capability_manifest["file_write_enabled"])
+            self.assertFalse(snapshot.capability_manifest["process_execution_enabled"])
+            self.assertFalse(snapshot.capability_manifest["network_enabled"])
+            self.assertFalse(snapshot.capability_manifest["plan_approval_is_execution_approval"])
+
+        policy = CodingCapabilityPolicy(self.db)
+        for forbidden in (
+            CodingCapability.CREATE_ISOLATED_WORKTREE,
+            CodingCapability.MODIFY_TASK_WORKTREE,
+            CodingCapability.EXECUTE_VERIFICATION,
+            CodingCapability.REQUEST_NETWORK_ACCESS,
+            CodingCapability.CREATE_COMMIT,
+            CodingCapability.PUSH_BRANCH,
+            CodingCapability.OPEN_PULL_REQUEST,
+            CodingCapability.MERGE_OR_DEPLOY,
+        ):
+            with self.assertRaises(AccessDenied):
+                policy.grant("owner", "ws", "repo-1", "owner", forbidden, confirmed=True)
+
+        draft = self.service.create_task("owner", "ws", "Reject non-fake planner/worker",
+                                         idempotency_key=self._k("p4-nonfake"))
+        class RealPlanner:
+            def propose_plan(self, request):
+                return proposal()
+        with self.assertRaisesRegex(OrchestrationError, "model_planning_disabled"):
+            self.service.propose_plan("owner", draft.id, RealPlanner(), idempotency_key=self._k("p4-real"))
 
 
 if __name__ == "__main__":

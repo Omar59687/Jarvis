@@ -48,7 +48,7 @@ class StorageTests(unittest.TestCase):
             self.assertTrue(path.exists())
             with db._connection() as connection:
                 self.assertEqual(
-                    connection.execute("PRAGMA user_version").fetchone()[0], 9
+                    connection.execute("PRAGMA user_version").fetchone()[0], 10
                 )
                 tables = {
                     row[0]
@@ -62,7 +62,9 @@ class StorageTests(unittest.TestCase):
             )
             with db._connection() as connection:
                 file_columns = {row[1] for row in connection.execute("PRAGMA table_info(developer_files)")}
+                task_columns = {row[1] for row in connection.execute("PRAGMA table_info(orchestration_tasks)")}
             self.assertIn("analysis_status", file_columns)
+            self.assertTrue({"archived_at", "archived_by"} <= task_columns)
             self.assertTrue(
                 {
                     "ingested_documents",
@@ -81,6 +83,9 @@ class StorageTests(unittest.TestCase):
                     "orchestration_dependencies",
                     "orchestration_approvals",
                     "orchestration_task_events",
+                    "orchestration_retention_policies",
+                    "orchestration_purge_operations",
+                    "orchestration_purge_tombstones",
                 }
                 <= tables
             )
@@ -89,7 +94,7 @@ class StorageTests(unittest.TestCase):
         for _ in range(3):
             self.db.initialize()
         with self.db._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 9)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 10)
             count = connection.execute(
                 "SELECT COUNT(*) FROM workspaces WHERE id = ?", ("project-1",)
             ).fetchone()[0]
@@ -102,17 +107,17 @@ class StorageTests(unittest.TestCase):
         version_one.create_workspace(
             "Preserved", WorkspaceKind.PERSONAL, "upgrade-owner", "upgrade-1"
         )
-        version_three = Database(path)
-        version_three.initialize()
-        version_ten_migrations = (
+        version_current = Database(path)
+        version_current.initialize()
+        version_next_migrations = (
             *DEFAULT_MIGRATIONS,
-            Migration(10, ("CREATE TABLE migration_marker (value TEXT NOT NULL)",)),
+            Migration(11, ("CREATE TABLE migration_marker (value TEXT NOT NULL)",)),
         )
-        version_ten = Database(path, migrations=version_ten_migrations)
-        version_ten.initialize()
-        version_ten.initialize()
-        with version_ten._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 10)
+        version_next = Database(path, migrations=version_next_migrations)
+        version_next.initialize()
+        version_next.initialize()
+        with version_next._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 11)
             self.assertEqual(
                 connection.execute(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type = ? AND name = ?",
@@ -120,7 +125,7 @@ class StorageTests(unittest.TestCase):
                 ).fetchone()[0],
                 1,
             )
-        self.assertEqual(version_ten.get_workspace("upgrade-owner", "upgrade-1").name, "Preserved")
+        self.assertEqual(version_next.get_workspace("upgrade-owner", "upgrade-1").name, "Preserved")
 
     def test_v8_upgrade_adds_orchestration_schema_and_v9_failure_rolls_back(self) -> None:
         path = self.directory / "v8-orchestration.sqlite3"
@@ -151,13 +156,80 @@ class StorageTests(unittest.TestCase):
         upgraded = Database(path)
         upgraded.initialize()
         with upgraded._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 9)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 10)
             tables = {row[0] for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({"orchestration_tasks", "orchestration_plans",
-                         "orchestration_task_events"} <= tables)
+                         "orchestration_task_events",
+                         "orchestration_retention_policies",
+                         "orchestration_purge_operations",
+                         "orchestration_purge_tombstones"} <= tables)
         self.assertEqual(upgraded.get_workspace("upgrade-owner", "upgrade-p4").name,
                          "Preserved P4")
+
+    def test_v9_upgrade_adds_retention_schema_and_v10_failure_rolls_back(self) -> None:
+        path = self.directory / "v9-retention.sqlite3"
+        version_nine = Database(path, migrations=DEFAULT_MIGRATIONS[:9])
+        version_nine.initialize()
+        version_nine.create_workspace(
+            "Preserved V9", WorkspaceKind.PROJECT, "upgrade-owner", "upgrade-v9"
+        )
+        with version_nine._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 9)
+            connection.execute(
+                "INSERT INTO orchestration_tasks(id,workspace_id,principal_id,goal,goal_sha256,"
+                "state,execution_mode,requested_capabilities_json,capability_manifest_json,"
+                "capability_manifest_sha256,created_at,updated_at,expires_at) "
+                "VALUES('v9task','upgrade-v9','upgrade-owner','Legacy task',"
+                "'0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',"
+                "'cancelled','planned','[]','{}',"
+                "'0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',"
+                "'2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00','2026-02-01T00:00:00+00:00')"
+            )
+            connection.commit()
+
+        broken_v10 = Database(path, migrations=(
+            *DEFAULT_MIGRATIONS[:9],
+            Migration(10, (
+                "ALTER TABLE orchestration_tasks ADD COLUMN archived_at TEXT",
+                "CREATE TABLE retention_upgrade_probe (id INTEGER PRIMARY KEY)",
+                "INVALID V10 SQL",
+            )),
+        ))
+        with self.assertRaises(sqlite3.OperationalError):
+            broken_v10.initialize()
+        with broken_v10._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 9)
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(orchestration_tasks)")}
+            self.assertNotIn("archived_at", columns)
+            self.assertIsNone(connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                ("retention_upgrade_probe",),
+            ).fetchone())
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM orchestration_tasks WHERE id='v9task'"
+            ).fetchone()[0], 1)
+
+        upgraded = Database(path)
+        upgraded.initialize()
+        with upgraded._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 10)
+            row = connection.execute(
+                "SELECT state,archived_at,archived_by FROM orchestration_tasks WHERE id='v9task'"
+            ).fetchone()
+            triggers = {item[0] for item in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger'")}
+        self.assertEqual(row["state"], "cancelled")
+        self.assertIsNone(row["archived_at"])
+        self.assertIsNone(row["archived_by"])
+        self.assertTrue({
+            "orchestration_purge_operations_no_update",
+            "orchestration_purge_operations_no_delete",
+            "orchestration_purge_tombstones_no_update",
+            "orchestration_purge_tombstones_no_delete",
+            "orchestration_task_events_no_delete",
+            "orchestration_approvals_no_delete",
+        } <= triggers)
 
     def test_migration_failure_rolls_back_schema_and_version(self) -> None:
         migrations = (
