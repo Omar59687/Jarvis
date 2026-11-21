@@ -7,7 +7,10 @@ import {
   applyTaskDetailResponse,
   applyTaskEventsPageResponse,
   applyTaskListResponse,
+  beginTaskDetailLoad,
+  beginTaskListLoad,
   clearTaskControlState,
+  clearTaskDetailState,
   createTaskControlState,
   formatEventType,
   formatPlanApprovalState,
@@ -1089,7 +1092,7 @@ function renderTaskDetail() {
           ? `${ar ? "تعتمد على" : "Depends on"}: ${sub.dependencies.map((d) => sanitizeTaskText(d, 40, { singleLine: true })).join(", ")}`
           : (ar ? "تعتمد على: لا توجد تبعيات" : "Depends on: none");
         const capsText = Array.isArray(sub.required_capabilities) && sub.required_capabilities.length
-          ? ` · ${ar ? "الصلاحيات" : "Capabilities"}: ${sub.required_capabilities.join(", ")}`
+          ? ` · ${ar ? "الصلاحيات" : "Capabilities"}: ${sub.required_capabilities.map((c) => sanitizeTaskText(String(c), 60, { singleLine: true })).join(", ")}`
           : "";
         const depsNote = document.createElement("p");
         depsNote.className = "task-deps-note";
@@ -1137,17 +1140,18 @@ function clearTaskControlCenter({ en, ar, isError = false, preserveFilter = fals
   renderTaskDetail();
 }
 
-async function loadTaskList({ offset = 0, refreshDetail = false } = {}) {
+async function loadTaskList({ offset = 0, refreshDetail = false, clearMissingDetail = false } = {}) {
   if (!authenticated || !activeWorkspaceId || workspaceServiceUnavailable) {
     clearTaskControlCenter();
     return;
   }
   const workspace = activeWorkspaceId;
   const previousSelected = refreshDetail ? taskState.selectedTaskId : null;
-  taskState.generation += 1;
-  const generation = taskState.generation;
-  taskState.listOffset = Math.max(0, offset);
-  taskState.loadingList = true;
+  const hadLoadingDetail = taskState.loadingDetail;
+  const generation = beginTaskListLoad(taskState, { offset });
+  if (hadLoadingDetail) {
+    renderTaskDetail();
+  }
   updateTaskControls();
   setTaskStatusCopy("Loading authorized workspace tasks…", "جارٍ تحميل مهام مساحة العمل المصرح بها…", false);
   try {
@@ -1191,7 +1195,12 @@ async function loadTaskList({ offset = 0, refreshDetail = false } = {}) {
     if (!response.ok) {
       throw new Error(value.error || "task_service_unavailable");
     }
-    const applied = applyTaskListResponse(taskState, { generation, workspaceId: workspace, payload: value });
+    const applied = applyTaskListResponse(taskState, {
+      generation,
+      workspaceId: workspace,
+      payload: value,
+      clearMissingDetail,
+    });
     if (!applied.applied) {
       throw new Error("task_service_unavailable");
     }
@@ -1211,9 +1220,9 @@ async function loadTaskList({ offset = 0, refreshDetail = false } = {}) {
     );
     renderTaskSummary();
     renderTaskList();
-    if (previousSelected && taskState.tasks.some((item) => item.id === previousSelected)) {
+    if (previousSelected) {
       await selectTask(previousSelected);
-    } else if (!taskState.detail || taskState.detail.workspace_id !== workspace) {
+    } else {
       renderTaskDetail();
     }
   } catch (error) {
@@ -1237,13 +1246,7 @@ async function loadTaskList({ offset = 0, refreshDetail = false } = {}) {
 async function selectTask(taskId) {
   if (!authenticated || !activeWorkspaceId || workspaceServiceUnavailable || typeof taskId !== "string") return;
   const workspace = activeWorkspaceId;
-  const generation = taskState.generation;
-  taskState.detailGeneration += 1;
-  const detailGeneration = taskState.detailGeneration;
-  taskState.selectedTaskId = taskId;
-  taskState.eventsOffset = 0;
-  taskState.detailErrorCode = null;
-  taskState.loadingDetail = true;
+  const { generation, detailGeneration } = beginTaskDetailLoad(taskState, taskId);
   renderTaskList();
   taskDetailContent.hidden = true;
   taskDetailEmpty.hidden = false;
@@ -1290,11 +1293,7 @@ async function selectTask(taskId) {
         await loadWorkspaces(null).catch(() => {});
         return;
       }
-      taskState.selectedTaskId = null;
-      taskState.detail = null;
-      taskState.plans = [];
-      taskState.events = [];
-      taskState.detailErrorCode = "task_unavailable";
+      clearTaskDetailState(taskState, { detailErrorCode: "task_unavailable" });
       renderTaskDetail();
       await loadTaskList({ offset: taskState.listOffset });
       return;
@@ -1319,10 +1318,7 @@ async function selectTask(taskId) {
     renderTaskDetail();
   } catch (error) {
     if (generation === taskState.generation && detailGeneration === taskState.detailGeneration) {
-      taskState.detail = null;
-      taskState.plans = [];
-      taskState.events = [];
-      taskState.detailErrorCode = error?.message || "task_service_unavailable";
+      clearTaskDetailState(taskState, { detailErrorCode: error?.message || "task_service_unavailable" });
       renderTaskDetail();
     }
   } finally {
@@ -1362,6 +1358,23 @@ async function loadTaskEventsPage(offset) {
         isError: true,
         preserveFilter: true,
       });
+      return;
+    }
+    if (response.status === 409) {
+      clearTaskControlCenter();
+      await restoreSession();
+      return;
+    }
+    if (response.status === 404) {
+      if (payload.error === "workspace_unavailable") {
+        activeWorkspaceId = null;
+        clearEphemeralWorkspaceView();
+        await loadWorkspaces(null).catch(() => {});
+        return;
+      }
+      clearTaskDetailState(taskState, { detailErrorCode: "task_unavailable" });
+      renderTaskDetail();
+      await loadTaskList({ offset: taskState.listOffset });
       return;
     }
     if (!response.ok) throw new Error(payload.error || "task_service_unavailable");
@@ -2375,11 +2388,11 @@ developerSearchForm.addEventListener("submit", searchDeveloperFiles);
 developerChatForm.addEventListener("submit", askDeveloper);
 taskStatusFilter.addEventListener("change", () => {
   taskState.statusFilter = taskStatusFilter.value || "all";
-  loadTaskList({ offset: 0 });
+  loadTaskList({ offset: 0, clearMissingDetail: true });
 });
 taskIncludeHistory.addEventListener("change", () => {
   taskState.includeHistory = Boolean(taskIncludeHistory.checked);
-  loadTaskList({ offset: 0 });
+  loadTaskList({ offset: 0, clearMissingDetail: true });
 });
 taskRefreshButton.addEventListener("click", () => {
   loadTaskList({ offset: taskState.listOffset, refreshDetail: true });

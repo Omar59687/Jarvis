@@ -1,4 +1,4 @@
-const BIDI_AND_CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200e\u200f\u061c\u202a-\u202e\u2066-\u2069]/g;
+const BIDI_AND_CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u061c\u200b\u200e\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
 
 export const TASK_LIST_LIMIT = 20;
 export const TASK_PLANS_LIMIT = 10;
@@ -51,9 +51,22 @@ export function createTaskControlState() {
   };
 }
 
+export function clearTaskDetailState(state, { detailErrorCode = null } = {}) {
+  state.detailGeneration += 1;
+  state.selectedTaskId = null;
+  state.detail = null;
+  state.plans = [];
+  state.plansPagination = null;
+  state.events = [];
+  state.eventsPagination = null;
+  state.eventsOffset = 0;
+  state.detailErrorCode = detailErrorCode;
+  state.loadingDetail = false;
+  return state;
+}
+
 export function clearTaskControlState(state, { preserveFilter = false } = {}) {
   state.generation += 1;
-  state.detailGeneration += 1;
   state.workspaceId = null;
   if (!preserveFilter) {
     state.statusFilter = "all";
@@ -63,18 +76,35 @@ export function clearTaskControlState(state, { preserveFilter = false } = {}) {
   state.summary = null;
   state.pagination = null;
   state.tasks = [];
-  state.selectedTaskId = null;
-  state.detail = null;
-  state.plans = [];
-  state.plansPagination = null;
-  state.events = [];
-  state.eventsPagination = null;
-  state.eventsOffset = 0;
   state.errorCode = null;
-  state.detailErrorCode = null;
   state.loadingList = false;
-  state.loadingDetail = false;
+  clearTaskDetailState(state);
   return state;
+}
+
+export function beginTaskListLoad(state, { offset = 0 } = {}) {
+  state.generation += 1;
+  // Superseding the list generation invalidates any in-flight detail/event fetch
+  // so it cannot strand loadingDetail=true or overwrite newer UI state.
+  if (state.loadingDetail) {
+    state.detailGeneration += 1;
+    state.loadingDetail = false;
+    if (!state.detail) {
+      state.selectedTaskId = null;
+    }
+  }
+  state.listOffset = Math.max(0, offset);
+  state.loadingList = true;
+  return state.generation;
+}
+
+export function beginTaskDetailLoad(state, taskId) {
+  state.detailGeneration += 1;
+  state.selectedTaskId = taskId;
+  state.eventsOffset = 0;
+  state.detailErrorCode = null;
+  state.loadingDetail = true;
+  return { generation: state.generation, detailGeneration: state.detailGeneration };
 }
 
 function nonNegativeInt(value) {
@@ -111,7 +141,10 @@ export function formatSummaryCount(value) {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? String(value) : "—";
 }
 
-export function applyTaskListResponse(state, { generation, workspaceId, payload }) {
+export function applyTaskListResponse(
+  state,
+  { generation, workspaceId, payload, clearMissingDetail = false },
+) {
   if (generation !== state.generation || !workspaceId || !payload || typeof payload !== "object") {
     return { applied: false, reason: "stale_or_invalid" };
   }
@@ -147,14 +180,13 @@ export function applyTaskListResponse(state, { generation, workspaceId, payload 
   state.tasks = validTasks;
   state.errorCode = null;
   state.loadingList = false;
-  if (state.selectedTaskId && !validTasks.some((task) => task.id === state.selectedTaskId)) {
-    // Keep detail only if currently loaded detail matches workspace; otherwise clear on explicit selection/404.
-    if (state.detail && state.detail.workspace_id !== workspaceId) {
-      state.selectedTaskId = null;
-      state.detail = null;
-      state.plans = [];
-      state.events = [];
-    }
+  if (state.detail && state.detail.workspace_id !== workspaceId) {
+    clearTaskDetailState(state);
+  } else if (clearMissingDetail && state.selectedTaskId
+      && !validTasks.some((task) => task.id === state.selectedTaskId)) {
+    clearTaskDetailState(state);
+  } else if (state.selectedTaskId && !state.detail) {
+    state.selectedTaskId = null;
   }
   return { applied: true, reason: null };
 }

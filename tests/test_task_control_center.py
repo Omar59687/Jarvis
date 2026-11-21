@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+import socket
 import sqlite3
 import subprocess
 import tempfile
@@ -119,11 +120,15 @@ class TaskControlCenterAPITests(unittest.TestCase):
         self.temp.cleanup()
 
     def request(self, method: str, path: str, payload=None, *,
-                include_cookie: bool = True, include_csrf: bool = True):
+                include_cookie: bool = True, include_csrf: bool = True,
+                origin: str | None = "__DEFAULT__"):
         headers = {
             "Host": self.server.expected_host,
-            "Origin": self.server.expected_origin,
         }
+        if origin == "__DEFAULT__":
+            headers["Origin"] = self.server.expected_origin
+        elif origin is not None:
+            headers["Origin"] = origin
         if include_cookie and hasattr(self, "cookie"):
             headers["Cookie"] = self.cookie
         data = None
@@ -580,6 +585,246 @@ class TaskControlCenterAPITests(unittest.TestCase):
         self.assertIn("text/javascript", headers["Content-Type"])
         self.assertIn("default-src 'self'", headers["Content-Security-Policy"])
         self.assertIn(b"applyTaskListResponse", body)
+
+    def test_mid_request_manage_and_read_revocation_blocks_response_before_200(self):
+        ids = self._seed_workspace_a_tasks()
+        task_id = ids["simulated"]
+        self.db.grant_permission("alice", "ws-a", "co_manager", Permission.READ)
+        self.db.grant_permission("alice", "ws-a", "co_manager", Permission.MANAGE_WORKSPACE)
+
+        cases = (
+            ("list_tasks", f"{API_PREFIX}/tasks"),
+            ("get_task", f"{API_PREFIX}/tasks/{task_id}"),
+            ("get_plan", f"{API_PREFIX}/tasks/{task_id}/plans"),
+            ("events", f"{API_PREFIX}/tasks/{task_id}/events"),
+        )
+        for hook_name, path in cases:
+            original = getattr(self.server.orchestration, hook_name)
+            revoked = [False]
+
+            def wrapped(*args, _orig=original, _revoked=revoked, **kwargs):
+                result = _orig(*args, **kwargs)
+                if not _revoked[0]:
+                    _revoked[0] = True
+                    self.db.revoke_permission("co_manager", "ws-a", "alice", Permission.MANAGE_WORKSPACE)
+                return result
+
+            setattr(self.server.orchestration, hook_name, wrapped)
+            try:
+                status, _, body = self.request("GET", path)
+            finally:
+                setattr(self.server.orchestration, hook_name, original)
+                self.db.grant_permission("co_manager", "ws-a", "alice", Permission.MANAGE_WORKSPACE)
+
+            self.assertEqual(status, 403, (hook_name, path, body))
+            self.assertEqual(json.loads(body), {"error": "manage_permission_required"})
+            self.assertNotIn("Simulated rollout verification", body.decode("utf-8"))
+
+        # Mid-request READ revocation on detail must fail with 404 workspace_unavailable
+        # and clear the active workspace selection from the session.
+        original_get = self.server.orchestration.get_task
+        revoked_read = [False]
+
+        def revoke_read_mid_flight(*args, **kwargs):
+            result = original_get(*args, **kwargs)
+            if not revoked_read[0]:
+                revoked_read[0] = True
+                self.db.revoke_permission("co_manager", "ws-a", "alice", Permission.READ)
+            return result
+
+        self.server.orchestration.get_task = revoke_read_mid_flight
+        try:
+            status, _, body = self.request("GET", f"{API_PREFIX}/tasks/{task_id}")
+        finally:
+            self.server.orchestration.get_task = original_get
+
+        self.assertEqual(status, 404, body)
+        self.assertEqual(json.loads(body), {"error": "workspace_unavailable"})
+        status, _, body = self.request("GET", f"{API_PREFIX}/session")
+        self.assertEqual(status, 200)
+        self.assertIsNone(json.loads(body)["active_workspace_id"])
+
+    def test_corrupt_or_naive_expires_at_fails_closed_as_task_evidence_corrupt(self):
+        task = self.orch.create_task("alice", "ws-a", "Expiry integrity check", idempotency_key="exp_corrupt_key_0001")
+        for bad_expires_at in ("not-a-timestamp", "2026-01-01T00:00:00", ""):
+            conn = sqlite3.connect(self.db_path)
+            try:
+                conn.execute(
+                    "UPDATE orchestration_tasks SET expires_at = ? WHERE id = ?",
+                    (bad_expires_at, task.id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            for path in (f"{API_PREFIX}/tasks", f"{API_PREFIX}/tasks/{task.id}"):
+                status, _, body = self.request("GET", path)
+                self.assertEqual(status, 503, (bad_expires_at, path, body))
+                self.assertEqual(json.loads(body), {"error": "task_evidence_corrupt"})
+
+    def test_foreign_origin_and_non_ascii_digits_are_rejected_on_task_get(self):
+        self.orch.create_task("alice", "ws-a", "Origin check task", idempotency_key="origin_check_key_0001")
+
+        # Foreign Origin header on GET /api/v1/tasks* must be rejected with 403
+        for path in (f"{API_PREFIX}/tasks", f"{API_PREFIX}/tasks/nonexistenttaskid123"):
+            status, _, body = self.request("GET", path, origin="https://evil.example")
+            self.assertEqual(status, 403, path)
+            self.assertEqual(json.loads(body), {"error": "origin_not_allowed"})
+
+        # Absent Origin header on same-host GET remains allowed
+        status, _, body = self.request("GET", f"{API_PREFIX}/tasks", origin=None)
+        self.assertEqual(status, 200, body)
+
+        # Non-ASCII Unicode decimal digits (e.g. Arabic-Indic '١٠' or fullwidth '１') must fail with 400
+        for bad_query in (
+            f"{API_PREFIX}/tasks?limit=%D9%A1%D9%A0",
+            f"{API_PREFIX}/tasks?offset=%EF%BC%91",
+        ):
+            status, _, body = self.request("GET", bad_query)
+            self.assertEqual(status, 400, bad_query)
+            self.assertEqual(json.loads(body), {"error": "invalid_query"})
+
+    def test_plan_pagination_bounds_single_revision_offset_and_bounded_db_loading(self):
+        planner = _two_step_planner()
+        task = self.orch.create_task("alice", "ws-a", "Multi-revision plan task", idempotency_key="multi_rev_task_0001")
+        p1 = self.orch.propose_plan("alice", task.id, planner, idempotency_key="multi_rev_p1_0001")
+        self.orch.reject_plan("alice", task.id, p1.revision, p1.plan_sha256, idempotency_key="multi_rev_r1_0001")
+        p2 = self.orch.propose_plan("alice", task.id, planner, idempotency_key="multi_rev_p2_0001")
+        self.orch.reject_plan("alice", task.id, p2.revision, p2.plan_sha256, idempotency_key="multi_rev_r2_0001")
+        p3 = self.orch.propose_plan("alice", task.id, planner, idempotency_key="multi_rev_p3_0001")
+        self.assertEqual(p3.revision, 3)
+
+        # Explicit ?revision=2 respects offset pagination invariants
+        status, _, body = self.request("GET", f"{API_PREFIX}/tasks/{task.id}/plans?revision=2&offset=0")
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+        self.assertEqual([p["revision"] for p in data["plans"]], [2])
+        self.assertEqual(data["pagination"]["total"], 1)
+        self.assertEqual(data["pagination"]["returned"], 1)
+        self.assertFalse(data["pagination"]["has_more"])
+
+        status, _, body = self.request("GET", f"{API_PREFIX}/tasks/{task.id}/plans?revision=2&offset=1")
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+        self.assertEqual(data["plans"], [])
+        self.assertEqual(data["pagination"]["total"], 1)
+        self.assertEqual(data["pagination"]["returned"], 0)
+        self.assertFalse(data["pagination"]["has_more"])
+
+        # Detail endpoint and paginated /plans endpoint must NOT call list_plans()
+        # and /plans?limit=1&offset=1 must load only the single requested revision (rev 2).
+        list_plans_calls = []
+        get_plan_revisions = []
+        orig_list_plans = self.server.orchestration.list_plans
+        orig_get_plan = self.server.orchestration.get_plan
+
+        def spy_list_plans(*args, **kwargs):
+            list_plans_calls.append((args, kwargs))
+            return orig_list_plans(*args, **kwargs)
+
+        def spy_get_plan(actor_id, task_id_arg, revision=None):
+            get_plan_revisions.append(revision)
+            return orig_get_plan(actor_id, task_id_arg, revision=revision)
+
+        self.server.orchestration.list_plans = spy_list_plans
+        self.server.orchestration.get_plan = spy_get_plan
+        try:
+            status, _, body = self.request("GET", f"{API_PREFIX}/tasks/{task.id}")
+            self.assertEqual(status, 200)
+            detail_task = json.loads(body)["task"]
+            self.assertEqual(detail_task["plan_revision_count"], 3)
+            self.assertEqual(detail_task["current_plan_revision"], 3)
+            self.assertEqual(list_plans_calls, [])
+
+            get_plan_revisions.clear()
+            status, _, body = self.request("GET", f"{API_PREFIX}/tasks/{task.id}/plans?limit=1&offset=1")
+            self.assertEqual(status, 200)
+            paged = json.loads(body)
+            self.assertEqual([p["revision"] for p in paged["plans"]], [2])
+            self.assertEqual(paged["pagination"]["total"], 3)
+            self.assertTrue(paged["pagination"]["has_more"])
+            self.assertEqual(list_plans_calls, [])
+            self.assertEqual(set(get_plan_revisions), {2})
+        finally:
+            self.server.orchestration.list_plans = orig_list_plans
+            self.server.orchestration.get_plan = orig_get_plan
+
+        # If an expected revision in 1..current_plan_revision is missing, fail closed as 503
+        from jarvis_core.orchestration import OrchestrationError
+
+        def missing_plan(*args, **kwargs):
+            raise OrchestrationError("plan_unavailable")
+
+        self.server.orchestration.get_plan = missing_plan
+        try:
+            status, _, body = self.request("GET", f"{API_PREFIX}/tasks/{task.id}/plans?limit=1&offset=0")
+        finally:
+            self.server.orchestration.get_plan = orig_get_plan
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(body), {"error": "task_evidence_corrupt"})
+
+    def test_head_patch_options_protocol_framing_and_allow_header_on_task_routes(self):
+        # Raw TCP check for HEAD /api/v1/tasks: must return 405, Allow: GET, and ZERO body bytes
+        host, port_str = self.server.expected_host.split(":")
+        raw_req = (
+            f"HEAD {API_PREFIX}/tasks HTTP/1.1\r\n"
+            f"Host: {self.server.expected_host}\r\n"
+            f"Cookie: {self.cookie}\r\n"
+            f"Connection: close\r\n\r\n"
+        ).encode("ascii")
+        with socket.create_connection((host, int(port_str)), timeout=5) as sock:
+            sock.sendall(raw_req)
+            chunks = []
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        raw_resp = b"".join(chunks)
+        header_block, sep, body_bytes = raw_resp.partition(b"\r\n\r\n")
+        self.assertEqual(sep, b"\r\n\r\n")
+        self.assertTrue(header_block.startswith(b"HTTP/1.1 405"), header_block)
+        self.assertIn(b"\r\nAllow: GET\r\n", header_block + b"\r\n")
+        self.assertEqual(body_bytes, b"")
+
+        # Foreign Origin on HEAD /api/v1/tasks returns 403 with zero body bytes
+        raw_foreign_head = (
+            f"HEAD {API_PREFIX}/tasks HTTP/1.1\r\n"
+            f"Host: {self.server.expected_host}\r\n"
+            f"Origin: https://evil.example\r\n"
+            f"Connection: close\r\n\r\n"
+        ).encode("ascii")
+        with socket.create_connection((host, int(port_str)), timeout=5) as sock:
+            sock.sendall(raw_foreign_head)
+            chunks = []
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        header_block, _, body_bytes = b"".join(chunks).partition(b"\r\n\r\n")
+        self.assertTrue(header_block.startswith(b"HTTP/1.1 403"), header_block)
+        self.assertEqual(body_bytes, b"")
+
+        # PATCH and OPTIONS on task routes emit Allow: GET
+        for method, path, payload in (
+            ("PATCH", f"{API_PREFIX}/tasks", {"state": "cancelled"}),
+            ("OPTIONS", f"{API_PREFIX}/tasks/nonexistenttaskid123", None),
+        ):
+            status, headers, body = self.request(method, path, payload)
+            self.assertEqual(status, 405, (method, path))
+            self.assertEqual(headers.get("Allow"), "GET", (method, path))
+            self.assertEqual(json.loads(body), {"error": "method_not_allowed"})
+
+    def test_crlf_sanitization_normalizes_line_breaks_cleanly(self):
+        task = self.orch.create_task(
+            "alice", "ws-a", "Line one\r\nLine two\rLine three",
+            idempotency_key="crlf_sanitize_key_0001",
+        )
+        status, _, body = self.request("GET", f"{API_PREFIX}/tasks/{task.id}")
+        self.assertEqual(status, 200)
+        goal = json.loads(body)["task"]["goal"]
+        self.assertEqual(goal, "Line one\nLine two\nLine three")
+        self.assertNotIn("\r", goal)
 
 
 if __name__ == "__main__":
