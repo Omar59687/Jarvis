@@ -12,7 +12,12 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from unittest.mock import patch
 
-from jarvis_core.developer import DeveloperRepositoryService, RepositoryError, StaleRepository
+from jarvis_core.developer import (
+    DeveloperRepositoryService,
+    MAX_SEARCH_RESULTS,
+    RepositoryError,
+    StaleRepository,
+)
 from jarvis_core.model_provider import GenerationResult
 from jarvis_core.storage import AccessDenied, Database, DEFAULT_MIGRATIONS, Migration, Permission, WorkspaceKind
 from prototypes.m03_b1.service import API_PREFIX, make_server
@@ -539,6 +544,288 @@ def compute_total(values):
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+
+class DeveloperSearchRankingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.base = Path(self.temp.name)
+        self.db = Database(self.base / "jarvis.sqlite3")
+        self.db.initialize()
+        self.db.create_workspace("Synthetic Ranking Workspace", WorkspaceKind.PROJECT, "alice", "ws-rank")
+        self.root = self.base / "approved"
+        self.root.mkdir()
+        self.root_record = self.db.register_approved_root("alice", "ws-rank", self.root)
+        self.service = DeveloperRepositoryService(self.db)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def _create_repo(self, name: str, files: dict[str, str], *,
+                     root: Path | None = None, root_id: str | None = None,
+                     workspace_id: str = "ws-rank", actor_id: str = "alice"):
+        repo_path = (root or self.root) / name
+        repo_path.mkdir(parents=True, exist_ok=True)
+        self._git(repo_path, "init", "-q")
+        self._git(repo_path, "config", "user.email", "synthetic@example.invalid")
+        self._git(repo_path, "config", "user.name", "Synthetic Test")
+        for relative_path, content in files.items():
+            target = repo_path / relative_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        self._git(repo_path, "add", ".")
+        self._git(repo_path, "commit", "-qm", "synthetic ranking snapshot")
+        repository = self.service.register(
+            actor_id, workspace_id, root_id or self.root_record.id, repo_path, confirmed=True
+        )
+        return repo_path, self.service.index(actor_id, workspace_id, repository.id)
+
+    @staticmethod
+    def _git(repo_path: Path, *args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(repo_path), *args],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    def test_exact_function_definition_outranks_incidental_documentation(self):
+        _, repo = self._create_repo("ExactSymbolRepo", {
+            "docs/fare_notes.md": (
+                "# calculate_fare\n"
+                "Use calculate_fare to estimate trips. Always call calculate_fare "
+                "before billing; calculate_fare is documented here.\n"
+            ),
+            "src/caller.py": (
+                "def run_billing(miles):\n"
+                "    first = calculate_fare(miles)\n"
+                "    second = calculate_fare(miles + 1)\n"
+                "    return first + second\n"
+            ),
+            "src/fare.py": (
+                "def helper_one(value):\n"
+                "    return value + 1\n\n"
+                "def helper_two(value):\n"
+                "    return value + 2\n\n"
+                "def helper_three(value):\n"
+                "    return value + 3\n\n"
+                "def calculate_fare(miles, base=3.0):\n"
+                "    return base + miles * 2.5\n"
+            ),
+            "src/ui.ts": "export function displayTotal(value: number) { return value; }\n",
+            "docs/ui_notes.md": "displayTotal renders displayTotal totals in the UI displayTotal.\n",
+        })
+
+        hits = self.service.search("alice", "ws-rank", repo.id, "calculate_fare")
+        self.assertEqual(hits[0]["relative_path"], "src/fare.py")
+        self.assertEqual(hits[0]["analysis_status"], "complete")
+        self.assertIn("docs/fare_notes.md", [item["relative_path"] for item in hits[1:]])
+
+        question_hits = self.service.search("alice", "ws-rank", repo.id, "Where is calculate_fare defined?")
+        self.assertEqual(question_hits[0]["relative_path"], "src/fare.py")
+
+        ts_hits = self.service.search("alice", "ws-rank", repo.id, "displayTotal")
+        self.assertEqual(ts_hits[0]["relative_path"], "src/ui.ts")
+        self.assertEqual(ts_hits[0]["analysis_status"], "partial")
+
+    def test_qualified_symbol_matches_are_ranked_appropriately(self):
+        _, repo = self._create_repo("QualifiedSymbolRepo", {
+            "docs/pricing_api.md": (
+                "# Pricing API\n"
+                "PricingService.calculate_fare and calculate_fare compute fares. "
+                "Call PricingService.calculate_fare for quoted rates.\n"
+            ),
+            "src/standalone_fare.py": (
+                "def pad_one(x):\n    return x\n\n"
+                "def pad_two(x):\n    return x\n\n"
+                "def calculate_fare(miles):\n    return miles * 2.0\n"
+            ),
+            "src/pricing_service.py": (
+                "class PricingService:\n"
+                "    def warm_cache(self):\n        return None\n\n"
+                "    def calculate_fare(self, miles):\n        return miles * 2.5\n"
+            ),
+            "src/nested_pricing.py": (
+                "class Outer:\n"
+                "    class PricingService:\n"
+                "        def calculate_fare(self, miles):\n            return miles * 3.0\n"
+            ),
+        })
+
+        unqualified = self.service.search("alice", "ws-rank", repo.id, "calculate_fare")
+        paths = [item["relative_path"] for item in unqualified]
+        self.assertEqual(paths[0], "src/standalone_fare.py")
+        self.assertEqual(set(paths[1:3]), {"src/pricing_service.py", "src/nested_pricing.py"})
+        self.assertEqual(paths[3], "docs/pricing_api.md")
+
+        qualified = self.service.search("alice", "ws-rank", repo.id, "PricingService.calculate_fare")
+        qualified_paths = [item["relative_path"] for item in qualified]
+        self.assertEqual(qualified_paths[0], "src/pricing_service.py")
+        self.assertEqual(qualified_paths[1], "src/nested_pricing.py")
+        self.assertIn("docs/pricing_api.md", qualified_paths[2:])
+
+    def test_case_insensitive_symbol_matching(self):
+        _, repo = self._create_repo("CaseInsensitiveRepo", {
+            "docs/notes.md": (
+                "calculate_fare PricingService.calculate_fare displayTotal café "
+                "calculate_fare PricingService.calculate_fare displayTotal café\n"
+            ),
+            "src/fare.py": (
+                "def filler():\n    return 0\n\n"
+                "def calculate_fare(miles):\n    return miles * 2\n"
+            ),
+            "src/pricing.py": (
+                "class PricingService:\n"
+                "    def calculate_fare(self, miles):\n        return miles * 2\n"
+            ),
+            "src/ui.ts": "export function displayTotal(v: number) { return v; }\n",
+            "src/unicode_ops.py": "def café():\n    return 7\n",
+        })
+
+        for query, expected_path in (
+            ("CALCULATE_FARE", "src/fare.py"),
+            ("CaLcUlAtE_fArE", "src/fare.py"),
+            ("pricingservice.calculate_fare", "src/pricing.py"),
+            ("PRICINGSERVICE.CALCULATE_FARE", "src/pricing.py"),
+            ("DISPLAYTOTAL", "src/ui.ts"),
+            ("CAFÉ", "src/unicode_ops.py"),
+        ):
+            with self.subTest(query=query):
+                hits = self.service.search("alice", "ws-rank", repo.id, query)
+                self.assertTrue(hits)
+                self.assertEqual(hits[0]["relative_path"], expected_path)
+
+    def test_repeated_searches_return_deterministic_ordering(self):
+        same_code = "def calculate_fare(miles):\n    return miles * 2\n"
+        same_doc = "Offline release verification checklist for local builds.\n"
+        _, repo = self._create_repo("DeterministicRepo", {
+            "src/zeta.py": same_code,
+            "src/alpha.py": same_code,
+            "src/middle.py": same_code,
+            "docs/zeta.md": same_doc,
+            "docs/alpha.md": same_doc,
+            "docs/middle.md": same_doc,
+        })
+
+        expected_code = ["src/alpha.py", "src/middle.py", "src/zeta.py"]
+        expected_docs = ["docs/alpha.md", "docs/middle.md", "docs/zeta.md"]
+        for _ in range(5):
+            code_hits = self.service.search("alice", "ws-rank", repo.id, "calculate_fare")
+            self.assertEqual([item["relative_path"] for item in code_hits], expected_code)
+            doc_hits = self.service.search("alice", "ws-rank", repo.id, "offline release checklist")
+            self.assertEqual([item["relative_path"] for item in doc_hits], expected_docs)
+
+    def test_documentation_only_queries_still_return_results(self):
+        _, repo = self._create_repo("DocsOnlyRepo", {
+            "src/fare.py": "def calculate_fare(miles):\n    return miles * 2\n",
+            "docs/onboarding.md": "# Local Onboarding\nRun the offline release checklist before tagging.\n",
+            "docs/faq.md": "# FAQ\nSee the local onboarding checklist for setup steps.\n",
+        })
+
+        hits = self.service.search("alice", "ws-rank", repo.id, "offline release checklist")
+        self.assertTrue(hits)
+        self.assertEqual(hits[0]["relative_path"], "docs/onboarding.md")
+        self.assertEqual(hits[0]["language"], "markdown")
+        self.assertEqual(hits[0]["analysis_status"], "partial")
+
+    def test_search_limits_remain_enforced_and_symbol_ranks_before_limit(self):
+        files = {
+            f"docs/noise_{index:02d}.md": (
+                f"Noise {index}: calculate_fare calculate_fare calculate_fare.\n"
+            )
+            for index in range(1, 15)
+        }
+        files["src/fare.py"] = (
+            "def helper_a(x):\n    return x + 1\n\n"
+            "def helper_b(x):\n    return x + 2\n\n"
+            "def helper_c(x):\n    return x + 3\n\n"
+            "def calculate_fare(miles):\n    return miles * 2\n"
+        )
+        _, repo = self._create_repo("LimitRepo", files)
+
+        default_hits = self.service.search("alice", "ws-rank", repo.id, "calculate_fare")
+        self.assertEqual(len(default_hits), MAX_SEARCH_RESULTS)
+        self.assertEqual(default_hits[0]["relative_path"], "src/fare.py")
+
+        small_hits = self.service.search("alice", "ws-rank", repo.id, "calculate_fare", limit=3)
+        self.assertEqual(len(small_hits), 3)
+        self.assertEqual(small_hits[0]["relative_path"], "src/fare.py")
+
+        for invalid_limit in (0, -1, MAX_SEARCH_RESULTS + 1, True):
+            with self.subTest(limit=invalid_limit):
+                with self.assertRaises(ValueError):
+                    self.service.search("alice", "ws-rank", repo.id, "calculate_fare", limit=invalid_limit)
+
+    def test_unauthorized_repositories_remain_inaccessible_for_symbol_search(self):
+        _, repo = self._create_repo("AuthRepo", {
+            "src/fare.py": "def calculate_fare(miles):\n    return miles * 2\n",
+        })
+        with self.assertRaises(AccessDenied):
+            self.service.search("bob", "ws-rank", repo.id, "calculate_fare")
+
+        self.db.create_workspace("Other Workspace", WorkspaceKind.PROJECT, "bob", "ws-other")
+        self.db.grant_permission("bob", "ws-other", "alice", Permission.READ)
+        self.db.grant_permission("bob", "ws-other", "alice", Permission.MANAGE_SOURCES)
+        other_root = self.base / "other-approved"
+        other_root.mkdir()
+        other_root_record = self.db.register_approved_root("bob", "ws-other", other_root)
+        _, other_repo = self._create_repo(
+            "OtherRepo",
+            {"src/fare.py": "def calculate_fare(miles):\n    return miles * 9\n"},
+            root=other_root,
+            root_id=other_root_record.id,
+            workspace_id="ws-other",
+            actor_id="alice",
+        )
+        with self.assertRaises(AccessDenied):
+            self.service.search("alice", "ws-rank", other_repo.id, "calculate_fare")
+
+        self.db.revoke_approved_root("alice", "ws-rank", self.root_record.id)
+        with self.assertRaises(AccessDenied):
+            self.service.search("alice", "ws-rank", repo.id, "calculate_fare")
+
+    def test_stale_repository_evidence_remains_blocked_for_symbol_search(self):
+        repo_path, repo = self._create_repo("StaleRepo", {
+            "src/fare.py": "def calculate_fare(miles):\n    return miles * 2\n",
+        })
+        self.assertEqual(
+            self.service.search("alice", "ws-rank", repo.id, "calculate_fare")[0]["relative_path"],
+            "src/fare.py",
+        )
+        (repo_path / "src/fare.py").write_text("def calculate_fare(miles):\n    return miles * 3\n", encoding="utf-8")
+        self._git(repo_path, "add", ".")
+        self._git(repo_path, "commit", "-qm", "advance head")
+        with self.assertRaises(StaleRepository):
+            self.service.search("alice", "ws-rank", repo.id, "calculate_fare")
+
+    def test_existing_fts_behavior_preserved_when_no_symbol_match_exists(self):
+        _, repo = self._create_repo("FtsFallbackRepo", {
+            "docs/dense_tariff.md": (
+                "Tariff schedule tariff schedule tariff schedule.\n"
+                "Fare rules apply to every fare zone.\n"
+            ),
+            "docs/sparse_notes.md": (
+                "General repository history and release overview with many unrelated words "
+                "about packaging, layout, formatting, and one mention of tariff.\n"
+            ),
+            "src/fare.py": (
+                "def unrelated_helper():\n"
+                "    return 'general module documentation and filler words for length'\n\n"
+                "def calculate_fare(miles):\n"
+                "    return miles * 2\n"
+            ),
+        })
+
+        tariff_hits = self.service.search("alice", "ws-rank", repo.id, "tariff schedule")
+        self.assertEqual(
+            [item["relative_path"] for item in tariff_hits],
+            ["docs/dense_tariff.md", "docs/sparse_notes.md"],
+        )
+
+        # Partial identifier tokens like "fare" should not falsely elevate
+        # calculate_fare above stronger FTS content matches.
+        partial_hits = self.service.search("alice", "ws-rank", repo.id, "fare")
+        self.assertEqual(partial_hits[0]["relative_path"], "docs/dense_tariff.md")
 
 
 if __name__ == "__main__":
