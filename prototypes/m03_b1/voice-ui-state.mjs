@@ -1,5 +1,6 @@
 export const VOICE_STATES = Object.freeze([
   "stopped",
+  "requesting_permission",
   "listening",
   "transcribing",
   "thinking",
@@ -16,6 +17,7 @@ const ARABIC_CHAR_RE = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/;
 
 const STATE_LABELS = Object.freeze({
   stopped: ["Stopped · Push to talk", "متوقف · اضغط للتحدث"],
+  requesting_permission: ["Waiting for microphone permission…", "بانتظار إذن الميكروفون…"],
   listening: ["Listening…", "جارٍ الاستماع…"],
   transcribing: ["Transcribing locally…", "جارٍ التحويل المحلي للنص…"],
   thinking: ["Thinking locally…", "جارٍ التفكير محليًا…"],

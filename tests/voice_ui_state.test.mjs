@@ -19,6 +19,7 @@ import {
 test("voice state machine covers full push-to-talk lifecycle and required states", () => {
   assert.deepEqual(VOICE_STATES, [
     "stopped",
+    "requesting_permission",
     "listening",
     "transcribing",
     "thinking",
@@ -141,4 +142,15 @@ test("encodePcm16Wav downsamples cleanly and enforces duration and size limits",
     () => encodePcm16Wav([new Float32Array(16000)], 16000, { maxBytes: 1000 }),
     (err) => err.code === "audio_too_large",
   );
+});
+
+test("pending microphone permission can be cancelled and invalidates the acquisition generation", () => {
+  let state = createVoiceState();
+  state = transitionVoiceState(state, "requesting_permission");
+  assert.equal(voiceStateLabel(state.status, "en"), "Waiting for microphone permission…");
+  assert.equal(voiceStateLabel(state.status, "ar"), "بانتظار إذن الميكروفون…");
+  assert.equal(canStartPushToTalk(state, { authenticated: true, sending: false, workspaceServiceUnavailable: false }), false);
+  const cancelled = interruptVoiceState(state);
+  assert.equal(cancelled.status, "stopped");
+  assert.equal(cancelled.generation, state.generation + 1);
 });

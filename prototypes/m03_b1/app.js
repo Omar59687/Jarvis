@@ -1662,7 +1662,8 @@ function teardownVoiceForSessionEnd() {
 function renderVoiceUI() {
   if (!voiceStateBadge || !voicePttButton) return;
   const listening = voiceState.status === "listening";
-  const active = listening || voiceState.status === "transcribing"
+  const requestingPermission = voiceState.status === "requesting_permission";
+  const active = requestingPermission || listening || voiceState.status === "transcribing"
     || voiceState.status === "thinking" || voiceState.status === "speaking";
 
   voiceStateBadge.dataset.state = voiceState.status;
@@ -1683,11 +1684,13 @@ function renderVoiceUI() {
     sending,
     workspaceServiceUnavailable,
   });
-  voicePttButton.disabled = !(listening || canStart);
-  voicePttButton.setAttribute("aria-pressed", String(listening));
-  voicePttLabel.textContent = listening
-    ? (language === "ar" ? "إيقاف الإملاء" : "Stop mic")
-    : (language === "ar" ? "تحدث" : "Talk");
+  voicePttButton.disabled = !(requestingPermission || listening || canStart);
+  voicePttButton.setAttribute("aria-pressed", String(listening || requestingPermission));
+  voicePttLabel.textContent = requestingPermission
+    ? (language === "ar" ? "إلغاء الطلب" : "Cancel request")
+    : listening
+      ? (language === "ar" ? "إيقاف الإملاء" : "Stop mic")
+      : (language === "ar" ? "تحدث" : "Talk");
   voicePttButton.title = !authenticated
     ? (language === "ar" ? "اربط المتصفح أولًا" : "Pair browser first")
     : !voiceState.sttConfigured
@@ -1768,6 +1771,10 @@ async function loadVoiceStatus() {
 
 async function handlePushToTalkClick() {
   if (!authenticated || workspaceServiceUnavailable) return;
+  if (voiceState.status === "requesting_permission") {
+    interruptVoice({ clearReply: false });
+    return;
+  }
   if (voiceState.status === "listening") {
     await stopListeningAndTranscribe();
     return;
@@ -1803,6 +1810,8 @@ async function startVoiceListening() {
   const sessionToken = csrfToken;
   const workspaceId = activeWorkspaceId;
   voiceMicAcquisitionPending = true;
+  voiceState = transitionVoiceState(voiceState, "requesting_permission");
+  renderVoiceUI();
 
   let stream;
   try {
