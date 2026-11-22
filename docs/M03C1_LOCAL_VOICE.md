@@ -35,10 +35,16 @@ Measured host hardware during M03-C1 development:
 - **Strengths:** Natural neural prosody with native bilingual English (`en`) and Arabic (`ar`) support in a single model, plus optional local reference voice WAV (`--tts-voice-ref`) for an original Jarvis voice identity. Fits within the RTX 5060's 8 GiB VRAM (~3–5 GiB active).
 - **Windows 11 compatibility caveat:** `chatterbox-tts` depends on PyTorch + `torchaudio` and does **not** currently ship wheels for Python 3.14. On RTX 50-series (Blackwell `sm_120`), it also requires a PyTorch build with CUDA 12.8+ support inside a **Python 3.11 or 3.12** isolated environment.
 - **Offline loading:** `ChatterboxMultilingualTTSAdapter` loads strictly via `ChatterboxMultilingualTTS.from_local(model_dir, device=...)` from an explicitly downloaded local checkpoint directory.
+- **Pinned bundle check:** readiness requires `ve.safetensors`, `t3_mtl23ls_v2.safetensors`, `s3gen.safetensors`, and `tokenizer.json`, matching the pinned `chatterbox-tts==0.1.7` local multilingual bundle. The runtime forces Hugging Face/Transformers offline environment flags before loading.
 
 ### Option B — Piper ONNX (`--tts-backend piper`) — Lightweight Fallback
 - **Strengths:** Self-contained native Windows binary (`piper.exe`) + small local `.onnx` / `.onnx.json` voices (~60–100 MB each, e.g. `en_GB-alan-medium` for composed British English and `ar_JO-kareem-medium` for Arabic). Runs fast on CPU with **zero** PyTorch/CUDA/Python-version constraints — works even when running the service on Python 3.14.
 - **Offline loading:** `PiperTTSAdapter` executes the explicit local `piper` binary with `shell=False` and `--output-raw`, streaming PCM16 directly from stdout into an in-memory WAV container (no temporary files written to disk).
+- Piper output is read in bounded chunks and the process is killed on output-budget overflow or timeout. Chatterbox inference runs under a per-adapter lock and cannot be interrupted inside PyTorch; a Stop action aborts the browser request and suppresses late playback, while the server inference may finish before another call uses that adapter.
+
+### Offline boundary
+
+The environment flags and explicit local paths are application-level offline controls. They prevent supported model loaders from resolving remote model identifiers and prevent this voice code from initiating download requests. They are **not** OS-enforced network isolation and do not guarantee that unrelated libraries or the host process cannot access the network. For a hard offline guarantee, run Jarvis under an OS/network policy that denies outbound connections.
 
 ## Isolated Python Environment Setup (Windows 11)
 

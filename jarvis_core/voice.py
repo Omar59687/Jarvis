@@ -24,6 +24,7 @@ from pathlib import Path
 import re
 import struct
 import subprocess
+import threading
 from typing import Any, Callable, Protocol
 import wave
 
@@ -455,8 +456,8 @@ class FasterWhisperSTTAdapter:
                     "faster-whisper is not installed in the active Python environment"
                 ) from exc
             factory = WhisperModel
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")
-        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
         try:
             self._model = factory(
                 str(self.model_path),
@@ -554,18 +555,16 @@ class ChatterboxMultilingualTTSAdapter:
         self.max_tts_chars = max_tts_chars
         self._model_loader = model_loader
         self._model: Any = None
+        self._inference_lock = threading.Lock()
 
     def _model_files_present(self) -> bool:
         if not self.model_dir.is_dir():
             return False
         if self.voice_prompt_path is not None and not self.voice_prompt_path.is_file():
             return False
-        # Chatterbox Multilingual local bundles contain checkpoint safetensors/pt files.
-        has_weights = any(
-            (self.model_dir / name).is_file()
-            for name in ("ve.safetensors", "t3_mtl23ls_v2.safetensors", "s3gen.safetensors", "ve.pt")
-        )
-        return has_weights
+        # chatterbox-tts 0.1.7 from_local requires this complete multilingual bundle.
+        required = ("ve.safetensors", "t3_mtl23ls_v2.safetensors", "s3gen.safetensors", "tokenizer.json")
+        return all((self.model_dir / name).is_file() for name in required)
 
     def is_ready(self) -> bool:
         if not self._model_files_present():
@@ -585,6 +584,8 @@ class ChatterboxMultilingualTTSAdapter:
             raise VoiceModelUnavailableError(
                 "Configured Chatterbox Multilingual local model directory is incomplete or missing"
             )
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
         loader = self._model_loader
         if loader is None:
             try:
@@ -594,8 +595,6 @@ class ChatterboxMultilingualTTSAdapter:
                     "chatterbox-tts is not installed in the active Python environment"
                 ) from exc
             loader = lambda path, dev: ChatterboxMultilingualTTS.from_local(path, device=dev)
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")
-        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
         try:
             self._model = loader(str(self.model_dir), self.device)
         except VoiceError:
@@ -605,15 +604,19 @@ class ChatterboxMultilingualTTSAdapter:
         return self._model
 
     @staticmethod
-    def _samples_to_pcm16(waveform: Any) -> bytes:
+    def _samples_to_pcm16(waveform: Any, *, max_samples: int) -> bytes:
         """Convert a 1D/2D float waveform (tensor, ndarray, or sequence) to PCM16 bytes."""
         data = waveform
+        if hasattr(data, "numel") and int(data.numel()) > max_samples:
+            raise VoiceSynthesisError("Synthesized audio exceeds maximum size limit")
         if hasattr(data, "detach"):
             data = data.detach()
         if hasattr(data, "cpu"):
             data = data.cpu()
         if hasattr(data, "squeeze"):
             data = data.squeeze()
+        if hasattr(data, "__len__") and len(data) > max_samples:
+            raise VoiceSynthesisError("Synthesized audio exceeds maximum size limit")
         if hasattr(data, "tolist"):
             data = data.tolist()
         if isinstance(data, list) and data and isinstance(data[0], list):
@@ -641,9 +644,13 @@ class ChatterboxMultilingualTTSAdapter:
             }
             if self.voice_prompt_path is not None:
                 kwargs["audio_prompt_path"] = str(self.voice_prompt_path)
-            waveform = model.generate(cleaned, **kwargs)
+            with self._inference_lock:
+                waveform = model.generate(cleaned, **kwargs)
             sample_rate = int(getattr(model, "sr", 24000))
-            pcm_bytes = self._samples_to_pcm16(waveform)
+            if not VOICE_MIN_SAMPLE_RATE <= sample_rate <= VOICE_MAX_SAMPLE_RATE:
+                raise VoiceSynthesisError("Chatterbox returned an unsupported sample rate")
+            max_samples = (VOICE_MAX_TTS_AUDIO_BYTES - 44) // 2
+            pcm_bytes = self._samples_to_pcm16(waveform, max_samples=max_samples)
             wav_bytes = wrap_pcm16_as_wav(pcm_bytes, sample_rate=sample_rate, channels=1)
             validated = validate_wav_audio(
                 wav_bytes,
@@ -703,7 +710,43 @@ class PiperTTSAdapter:
         self.supported_languages = frozenset(resolved_models.keys())
         self.timeout = float(timeout)
         self.max_tts_chars = max_tts_chars
-        self._runner = runner or subprocess.run
+        self._runner = runner
+        self._inference_lock = threading.Lock()
+
+    def _run_bounded(self, argv: list[str], input_bytes: bytes) -> subprocess.CompletedProcess:
+        """Capture Piper output incrementally and terminate once its PCM budget is exceeded."""
+        if self._runner is not None:
+            return self._runner(argv, input=input_bytes, capture_output=True,
+                                timeout=self.timeout, check=False, shell=False)
+        process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, shell=False)
+        timer = threading.Timer(self.timeout, process.kill)
+        timer.daemon = True
+        timer.start()
+        output = bytearray()
+        try:
+            assert process.stdin is not None and process.stdout is not None
+            process.stdin.write(input_bytes)
+            process.stdin.close()
+            while True:
+                chunk = process.stdout.read(65536)
+                if not chunk:
+                    break
+                if len(output) + len(chunk) > VOICE_MAX_TTS_AUDIO_BYTES - 44:
+                    process.kill()
+                    raise VoiceSynthesisError("Synthesized audio exceeds maximum size limit")
+                output.extend(chunk)
+            returncode = process.wait(timeout=max(0.1, self.timeout))
+        except subprocess.TimeoutExpired as exc:
+            process.kill()
+            process.wait()
+            raise VoiceTimeoutError("Local Piper TTS synthesis timed out") from exc
+        finally:
+            timer.cancel()
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+        return subprocess.CompletedProcess(argv, returncode, stdout=bytes(output), stderr=b"")
 
     @staticmethod
     def _config_path_for(model_path: Path) -> Path:
@@ -753,25 +796,20 @@ class PiperTTSAdapter:
             "--output-raw",
         ]
         try:
-            completed = self._runner(
-                argv,
-                input=cleaned.encode("utf-8"),
-                capture_output=True,
-                timeout=self.timeout,
-                check=False,
-                shell=False,
-            )
+            with self._inference_lock:
+                completed = self._run_bounded(argv, cleaned.encode("utf-8"))
         except subprocess.TimeoutExpired as exc:
             raise VoiceTimeoutError("Local Piper TTS synthesis timed out") from exc
         except OSError as exc:
             raise VoiceModelUnavailableError("Failed to launch local Piper executable") from exc
         if completed.returncode != 0:
             raise VoiceSynthesisError("Local Piper TTS process exited with an error")
-        pcm_bytes = bytes(completed.stdout or b"")
+        stdout = completed.stdout or b""
+        if len(stdout) > VOICE_MAX_TTS_AUDIO_BYTES - 44:
+            raise VoiceSynthesisError("Synthesized audio exceeds maximum size limit")
+        pcm_bytes = bytes(stdout)
         if not pcm_bytes:
             raise VoiceSynthesisError("Local Piper TTS returned empty audio")
-        if len(pcm_bytes) > VOICE_MAX_TTS_AUDIO_BYTES - 44:
-            raise VoiceSynthesisError("Synthesized audio exceeds maximum size limit")
         wav_bytes = wrap_pcm16_as_wav(pcm_bytes, sample_rate=sample_rate, channels=1)
         validated = validate_wav_audio(
             wav_bytes,

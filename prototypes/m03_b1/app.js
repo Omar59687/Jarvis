@@ -143,6 +143,7 @@ let authenticated = false;
 let configuredModel = null;
 let configuredProvider = null;
 let sending = false;
+let voiceChatInFlight = false;
 let chatStateKey = "checking";
 let activeWorkspaceId = null;
 let voiceState = createVoiceState();
@@ -155,6 +156,7 @@ let voiceCapturedChunks = [];
 let voiceCaptureSampleRate = 16000;
 let voiceCaptureStopTimer = null;
 let voiceAbortController = null;
+let voiceMicAcquisitionPending = false;
 let voiceAudioElement = null;
 let voiceAudioObjectUrl = null;
 let voiceCachedReplyKey = null;
@@ -1739,6 +1741,8 @@ async function loadVoiceStatus() {
     teardownVoiceForSessionEnd();
     return;
   }
+  const statusSessionToken = csrfToken;
+  const statusGeneration = voiceState.generation;
   try {
     const response = await fetch("/api/v1/voice/status", { credentials: "same-origin", cache: "no-store" });
     if (response.status === 401) {
@@ -1751,8 +1755,12 @@ async function loadVoiceStatus() {
       return;
     }
     const payload = await responseJson(response);
+    if (!authenticated || csrfToken !== statusSessionToken
+        || voiceState.generation !== statusGeneration) return;
     voiceState = applyVoiceStatus(voiceState, payload);
   } catch (_error) {
+    if (!authenticated || csrfToken !== statusSessionToken
+        || voiceState.generation !== statusGeneration) return;
     voiceState = applyVoiceStatus(voiceState, null);
   }
   renderVoiceUI();
@@ -1766,6 +1774,8 @@ async function handlePushToTalkClick() {
   }
   if (voiceState.status === "speaking") {
     interruptVoice({ clearReply: false });
+  } else if (voiceState.status === "thinking") {
+    interruptVoice({ clearReply: false });
   }
   if (!canStartPushToTalk(voiceState, { authenticated, sending, workspaceServiceUnavailable })) {
     return;
@@ -1774,6 +1784,7 @@ async function handlePushToTalkClick() {
 }
 
 async function startVoiceListening() {
+  if (voiceMicAcquisitionPending) return;
   if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function") {
     voiceState = transitionVoiceState(voiceState, "error", { errorCode: "mic_unavailable" });
     renderVoiceUI();
@@ -1789,6 +1800,9 @@ async function startVoiceListening() {
   releaseMicrophone();
   voiceCapturedChunks = [];
   const generation = voiceState.generation;
+  const sessionToken = csrfToken;
+  const workspaceId = activeWorkspaceId;
+  voiceMicAcquisitionPending = true;
 
   let stream;
   try {
@@ -1802,6 +1816,9 @@ async function startVoiceListening() {
       video: false,
     });
   } catch (error) {
+    voiceMicAcquisitionPending = false;
+    if (generation !== voiceState.generation || !authenticated || sessionToken !== csrfToken
+        || workspaceId !== activeWorkspaceId) return;
     const denied = error && (error.name === "NotAllowedError" || error.name === "PermissionDeniedError");
     voiceState = transitionVoiceState(voiceState, "error", {
       errorCode: denied ? "mic_permission_denied" : "mic_unavailable",
@@ -1809,8 +1826,10 @@ async function startVoiceListening() {
     renderVoiceUI();
     return;
   }
+  voiceMicAcquisitionPending = false;
 
-  if (!authenticated || generation !== voiceState.generation) {
+  if (!authenticated || sessionToken !== csrfToken || workspaceId !== activeWorkspaceId
+      || generation !== voiceState.generation) {
     for (const track of stream.getTracks()) track.stop();
     return;
   }
@@ -1852,6 +1871,11 @@ async function startVoiceListening() {
       }
     }, Math.max(1000, Math.floor(voiceState.maxAudioSeconds * 1000)));
   } catch (_error) {
+    if (generation !== voiceState.generation || !authenticated || sessionToken !== csrfToken
+        || workspaceId !== activeWorkspaceId) {
+      releaseMicrophone();
+      return;
+    }
     releaseMicrophone();
     voiceCapturedChunks = [];
     voiceState = transitionVoiceState(voiceState, "error", { errorCode: "mic_unavailable" });
@@ -1866,6 +1890,8 @@ async function stopListeningAndTranscribe() {
   voiceCapturedChunks = [];
   releaseMicrophone();
   const generation = voiceState.generation;
+  const sessionToken = csrfToken;
+  const workspaceId = activeWorkspaceId;
 
   let encoded;
   try {
@@ -1902,7 +1928,7 @@ async function stopListeningAndTranscribe() {
       body: encoded.wavBytes,
     });
     const value = await responseJson(response);
-    if (generation !== voiceState.generation) return;
+    if (!isVoiceOperationCurrent(generation, sessionToken, workspaceId)) return;
     if (response.status === 401) {
       markSessionExpired();
       return;
@@ -1928,9 +1954,10 @@ async function stopListeningAndTranscribe() {
       replyLanguage: replyLang,
     });
     renderVoiceUI();
-    await sendChatMessage(transcript, { fromVoice: true, voiceGeneration: generation });
+    await sendChatMessage(transcript, { fromVoice: true, voiceGeneration: generation,
+      voiceSessionToken: sessionToken, voiceWorkspaceId: workspaceId });
   } catch (error) {
-    if (generation !== voiceState.generation) return;
+    if (!isVoiceOperationCurrent(generation, sessionToken, workspaceId)) return;
     voiceState = transitionVoiceState(voiceState, "error", {
       errorCode: error?.name === "AbortError" ? "transcription_timeout" : "transcription_failed",
     });
@@ -1941,6 +1968,11 @@ async function stopListeningAndTranscribe() {
   }
 }
 
+function isVoiceOperationCurrent(generation, sessionToken, workspaceId) {
+  return authenticated && csrfToken === sessionToken && activeWorkspaceId === workspaceId
+    && voiceState.generation === generation;
+}
+
 async function playSpokenReply({ text = voiceState.lastReplyText, replyLanguage = voiceState.lastReplyLanguage, voiceGeneration = voiceState.generation } = {}) {
   if (!authenticated || !csrfToken || !text) return;
   if (!voiceState.ttsConfigured) {
@@ -1949,6 +1981,8 @@ async function playSpokenReply({ text = voiceState.lastReplyText, replyLanguage 
     return;
   }
   const targetLang = detectReplyLanguage(text, replyLanguage || language);
+  const sessionToken = csrfToken;
+  const workspaceId = activeWorkspaceId;
   const cacheKey = `${targetLang}:${text}`;
 
   stopVoicePlayback({ revokeAudio: false });
@@ -1959,6 +1993,8 @@ async function playSpokenReply({ text = voiceState.lastReplyText, replyLanguage 
   }
 
   abortVoiceRequests();
+  voiceState = transitionVoiceState(voiceState, "thinking");
+  renderVoiceUI();
   const controller = new AbortController();
   voiceAbortController = controller;
   const timeout = setTimeout(() => controller.abort(), 90000);
@@ -1974,7 +2010,7 @@ async function playSpokenReply({ text = voiceState.lastReplyText, replyLanguage 
       },
       body: JSON.stringify({ text, language: targetLang }),
     });
-    if (voiceGeneration !== voiceState.generation) return;
+    if (!isVoiceOperationCurrent(voiceGeneration, sessionToken, workspaceId)) return;
     if (response.status === 401) {
       markSessionExpired();
       return;
@@ -1994,7 +2030,7 @@ async function playSpokenReply({ text = voiceState.lastReplyText, replyLanguage 
       return;
     }
     const wavBlob = await response.blob();
-    if (voiceGeneration !== voiceState.generation) return;
+    if (!isVoiceOperationCurrent(voiceGeneration, sessionToken, workspaceId)) return;
     revokeVoiceAudioObjectUrl();
     voiceAudioObjectUrl = URL.createObjectURL(wavBlob);
     voiceCachedReplyKey = cacheKey;
@@ -2005,7 +2041,7 @@ async function playSpokenReply({ text = voiceState.lastReplyText, replyLanguage 
     renderVoiceUI();
     await startAudioElementPlayback(voiceAudioObjectUrl, voiceGeneration);
   } catch (error) {
-    if (voiceGeneration !== voiceState.generation) return;
+    if (!isVoiceOperationCurrent(voiceGeneration, sessionToken, workspaceId)) return;
     voiceState = transitionVoiceState(voiceState, "error", {
       errorCode: error?.name === "AbortError" ? "synthesis_timeout" : "synthesis_failed",
     });
@@ -2479,7 +2515,8 @@ async function loadWorkspaces(preferredWorkspaceId = null) {
 }
 
 async function selectWorkspace() {
-  if (!authenticated || !csrfToken || sending) return;
+  if (!authenticated || !csrfToken || (sending && !voiceChatInFlight)) return;
+  interruptVoice({ clearReply: true });
   workspaceSelect.disabled = true;
   const selected = workspaceSelect.value;
   try {
@@ -2602,17 +2639,19 @@ async function sendChat(event) {
   await sendChatMessage(chatInput.value.trim(), { fromVoice: false });
 }
 
-async function sendChatMessage(message, { fromVoice = false, voiceGeneration = voiceState.generation } = {}) {
+async function sendChatMessage(message, { fromVoice = false, voiceGeneration = voiceState.generation,
+  voiceSessionToken = csrfToken, voiceWorkspaceId = activeWorkspaceId } = {}) {
   if (!authenticated || sending || !csrfToken || workspaceServiceUnavailable) return;
   if (!message || message.length > 1000) return;
   sending = true;
+  if (fromVoice) voiceChatInFlight = true;
   chatInput.disabled = true;
   chatSend.disabled = true;
-  workspaceSelect.disabled = true;
+  workspaceSelect.disabled = !fromVoice;
   setChatState("sending", "busy");
   setStatusLine("");
   renderVoiceUI();
-  appendChatEntry("user", message);
+  const userEntry = appendChatEntry("user", message);
   const pending = appendChatEntry("assistant pending", language === "ar" ? "جارٍ إنشاء رد محلي…" : "Generating a local response…");
   if (!fromVoice) chatInput.value = "";
   const controller = new AbortController();
@@ -2628,6 +2667,11 @@ async function sendChatMessage(message, { fromVoice = false, voiceGeneration = v
       body: JSON.stringify(payload)
     });
     const value = await responseJson(response);
+    if (fromVoice && !isVoiceOperationCurrent(voiceGeneration, voiceSessionToken, voiceWorkspaceId)) {
+      pending.remove();
+      userEntry.remove();
+      return;
+    }
     if (response.status === 401) {
       pending.remove();
       markSessionExpired();
@@ -2693,6 +2737,7 @@ async function sendChatMessage(message, { fromVoice = false, voiceGeneration = v
   } catch (error) {
     if (fromVoice && voiceGeneration !== voiceState.generation) {
       pending.remove();
+      userEntry.remove();
       setChatState("ready", "ready");
       return;
     }
@@ -2709,6 +2754,7 @@ async function sendChatMessage(message, { fromVoice = false, voiceGeneration = v
     clearTimeout(timeout);
     if (voiceAbortController === controller) voiceAbortController = null;
     sending = false;
+    if (fromVoice) voiceChatInFlight = false;
     chatInput.disabled = !authenticated;
     chatSend.disabled = !authenticated;
     workspaceSelect.disabled = !authenticated;

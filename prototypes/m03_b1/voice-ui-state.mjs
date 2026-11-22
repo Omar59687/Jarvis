@@ -176,7 +176,8 @@ export function applyVoiceStatus(state, payload) {
 export function canStartPushToTalk(state, { authenticated, sending, workspaceServiceUnavailable }) {
   if (!authenticated || sending || workspaceServiceUnavailable) return false;
   if (!state.sttConfigured) return false;
-  return state.status === "stopped" || state.status === "error" || state.status === "speaking";
+  return state.status === "stopped" || state.status === "error"
+    || state.status === "speaking" || state.status === "thinking";
 }
 
 export function transitionVoiceState(state, nextStatus, options = {}) {
@@ -274,6 +275,15 @@ export function encodePcm16Wav(
     throw Object.assign(new Error("audio_too_short"), { code: "audio_too_short" });
   }
 
+  const outRate = Math.min(Math.max(8000, Math.round(targetSampleRate)), 48000);
+  const estimatedOutputSamples = Math.ceil(totalInputSamples * outRate / inputSampleRate);
+  if (estimatedOutputSamples / outRate > maxSeconds) {
+    throw Object.assign(new Error("audio_too_long"), { code: "audio_too_long" });
+  }
+  if (44 + estimatedOutputSamples * 2 > maxBytes) {
+    throw Object.assign(new Error("audio_too_large"), { code: "audio_too_large" });
+  }
+
   const merged = new Float32Array(totalInputSamples);
   let offset = 0;
   for (const chunk of chunks) {
@@ -281,7 +291,6 @@ export function encodePcm16Wav(
     offset += chunk.length;
   }
 
-  const outRate = Math.min(Math.max(8000, Math.round(targetSampleRate)), 48000);
   let resampled;
   if (Math.round(inputSampleRate) === outRate) {
     resampled = merged;

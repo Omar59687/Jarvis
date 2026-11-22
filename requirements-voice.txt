@@ -13,7 +13,7 @@ faster-whisper>=1.1.0,<2.0.0
 #      On NVIDIA RTX 50-series (Blackwell, sm_120, CUDA 12.8+/13.0):
 #        pip install --pre torch torchaudio --index-url https://download.pytorch.org/whl/cu128
 #      Then install Chatterbox:
-#        pip install chatterbox-tts
+#        pip install chatterbox-tts==0.1.7
 #
 #   3) Optional Option B — Lightweight offline Piper ONNX TTS (CPU-only, no PyTorch needed):
 #      Download a prebuilt Windows `piper.exe` release + local `.onnx` and `.onnx.json`
@@ -22,3 +22,4 @@ faster-whisper>=1.1.0,<2.0.0
 #
 # All models MUST be downloaded manually ahead of time into explicit local directories.
 # Jarvis sets local_files_only=True / HF_HUB_OFFLINE=1 and never auto-downloads models at runtime.
+# Optional, install only for Chatterbox: chatterbox-tts==0.1.7

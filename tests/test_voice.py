@@ -227,6 +227,11 @@ class LocalTTSAdaptersTests(unittest.TestCase):
 
             model_dir.mkdir()
             (model_dir / "ve.safetensors").write_bytes(b"fake")
+            self.assertFalse(adapter_missing.is_ready(), "a single checkpoint must not advertise readiness")
+            with self.assertRaises(VoiceModelUnavailableError):
+                adapter_missing.synthesize("Hello", language="en")
+            for name in ("t3_mtl23ls_v2.safetensors", "s3gen.safetensors", "tokenizer.json"):
+                (model_dir / name).write_bytes(b"fake")
             voice_ref = model_dir / "jarvis_ref.wav"
             voice_ref.write_bytes(make_test_wav(0.2))
 
@@ -257,6 +262,16 @@ class LocalTTSAdaptersTests(unittest.TestCase):
             res_ar = adapter.synthesize("على الرحب والسعة.", language="ar")
             self.assertEqual(res_ar.language, "ar")
             self.assertEqual(calls[1][1]["language_id"], "ar")
+
+    def test_chatterbox_rejects_oversized_tensor_before_list_materialization(self) -> None:
+        class HugeTensor:
+            def numel(self):
+                return 10_000_000
+
+        with self.assertRaises(VoiceSynthesisError):
+            ChatterboxMultilingualTTSAdapter._samples_to_pcm16(
+                HugeTensor(), max_samples=100
+            )
 
     def test_piper_adapter_runs_offline_in_memory_and_enforces_local_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
