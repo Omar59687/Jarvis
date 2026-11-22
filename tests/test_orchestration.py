@@ -1346,6 +1346,195 @@ class OrchestrationRetentionTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIsInstance(errors[0], AccessDenied)
 
+    def test_bounded_purge_preview_with_500_plus_synthetic_tasks(self):
+        from jarvis_core.orchestration import MAX_PURGE_BATCH, _canonical_json, _digest
+
+        as_of_dt = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+        as_of_iso = as_of_dt.isoformat(timespec="microseconds")
+        expires_iso = datetime(2027, 1, 1, 0, 0, 0, tzinfo=timezone.utc).isoformat(timespec="microseconds")
+        manifest = {
+            "workspace_id": "ws", "repository_id": None,
+            "requested": [], "granted": [], "denied": [], "unavailable": [],
+            "execution_enabled": False, "file_write_enabled": False,
+            "process_execution_enabled": False, "network_enabled": False,
+            "plan_approval_is_execution_approval": False,
+        }
+        manifest_json = _canonical_json(manifest)
+        manifest_sha = _digest(manifest_json)
+
+        task_rows: list[tuple[object, ...]] = []
+        pending_plan_rows: list[tuple[object, ...]] = []
+
+        def add_task(tid: str, state: str, updated_dt: datetime, *, archived: bool = False) -> None:
+            goal = f"Synthetic task {tid}"
+            ts = updated_dt.isoformat(timespec="microseconds")
+            archived_at = ts if archived else None
+            archived_by = "owner" if archived else None
+            task_rows.append((
+                tid, "ws", "owner", None, None, goal, _digest(goal),
+                state, "planned", "[]", manifest_json, manifest_sha,
+                1 if state == "interrupted" else 0, None, None,
+                ts, ts, expires_iso, archived_at, archived_by,
+            ))
+
+        # 100 active protected tasks across all 5 protected states (very old timestamps).
+        protected_states = ("draft", "awaiting_approval", "queued", "simulating", "blocked")
+        base_protected = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        for i in range(100):
+            add_task(
+                f"prot_{i:03d}",
+                protected_states[i % len(protected_states)],
+                base_protected + timedelta(minutes=i),
+            )
+
+        # 20 interrupted tasks protected by a pending awaiting_approval plan.
+        base_pending = datetime(2026, 1, 2, 0, 0, 0, tzinfo=timezone.utc)
+        for i in range(20):
+            tid = f"pend_{i:03d}"
+            ts = (base_pending + timedelta(minutes=i)).isoformat(timespec="microseconds")
+            add_task(tid, "interrupted", base_pending + timedelta(minutes=i))
+            pending_plan_rows.append((
+                tid, "ws", "owner", 1, _digest(f"plan-{tid}"), "awaiting_approval", ts,
+            ))
+
+        # 300 expired eligible tasks (interleaved states & archived flags, oldest-first).
+        base_eligible = datetime(2026, 2, 1, 0, 0, 0, tzinfo=timezone.utc)
+        eligible_ids_ordered: list[str] = []
+        archived_eligible_ids_ordered: list[str] = []
+        for i in range(300):
+            tid = f"elig_{i:03d}"
+            state = "cancelled" if i % 2 == 0 else "simulation_completed"
+            is_archived = (i % 3 == 0)
+            add_task(tid, state, base_eligible + timedelta(minutes=i), archived=is_archived)
+            eligible_ids_ordered.append(tid)
+            if is_archived:
+                archived_eligible_ids_ordered.append(tid)
+
+        # 140 unexpired tasks (70 within the 1-day SQL prefilter margin, 70 well within window).
+        margin_base = as_of_dt - timedelta(days=9, hours=12)
+        for i in range(70):
+            add_task(f"unexp_margin_{i:03d}", "cancelled", margin_base + timedelta(minutes=i))
+        recent_base = as_of_dt - timedelta(days=5)
+        for i in range(70):
+            add_task(f"unexp_recent_{i:03d}", "simulation_completed", recent_base + timedelta(minutes=i))
+
+        self.assertEqual(len(task_rows), 560)
+        with self.db._connection() as conn:
+            conn.executemany(
+                "INSERT INTO orchestration_tasks("
+                "id,workspace_id,principal_id,repository_id,repository_commit,goal,goal_sha256,"
+                "state,execution_mode,requested_capabilities_json,capability_manifest_json,"
+                "capability_manifest_sha256,current_plan_revision,approved_plan_revision,"
+                "result_summary,created_at,updated_at,expires_at,archived_at,archived_by) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                task_rows,
+            )
+            conn.executemany(
+                "INSERT INTO orchestration_plans("
+                "task_id,workspace_id,principal_id,revision,plan_sha256,state,created_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                pending_plan_rows,
+            )
+            conn.commit()
+
+        # Default policy (no retention days): scans 0 candidate rows, reports exact protected count.
+        hydrated = [0]
+        orig_task = TaskOrchestrationService._task
+
+        def counting_task(row):
+            hydrated[0] += 1
+            return orig_task(row)
+
+        with patch.object(TaskOrchestrationService, "_task", staticmethod(counting_task)):
+            default_preview = self.service.preview_purge(
+                "owner", "ws", use_retention_policy=True, as_of=as_of_iso,
+            )
+        self.assertEqual(default_preview.task_count, 0)
+        self.assertFalse(default_preview.truncated)
+        self.assertEqual(default_preview.protected_skipped_count, 120)
+        self.assertEqual(hydrated[0], 0)
+
+        # Configure retention policy covering completed, cancelled, and interrupted tasks.
+        self.service.set_retention_policy(
+            "owner", "ws",
+            completed_retention_days=30,
+            cancelled_retention_days=10,
+            interrupted_retention_days=5,
+        )
+
+        # Full-batch preview (limit=50) must hydrate only O(limit) rows, never all 560.
+        hydrated[0] = 0
+        with patch.object(TaskOrchestrationService, "_task", staticmethod(counting_task)):
+            preview = self.service.preview_purge(
+                "owner", "ws", use_retention_policy=True, as_of=as_of_iso, limit=MAX_PURGE_BATCH,
+            )
+        self.assertEqual(preview.task_count, MAX_PURGE_BATCH)
+        self.assertTrue(preview.truncated)
+        self.assertEqual(preview.protected_skipped_count, 120)
+        self.assertEqual(preview.task_ids, tuple(sorted(eligible_ids_ordered[:MAX_PURGE_BATCH])))
+        self.assertLessEqual(hydrated[0], MAX_PURGE_BATCH + 1)
+
+        # Archived-only preview selects exact oldest 50 archived eligible tasks in bounded memory.
+        hydrated[0] = 0
+        with patch.object(TaskOrchestrationService, "_task", staticmethod(counting_task)):
+            arch_preview = self.service.preview_purge(
+                "owner", "ws",
+                use_retention_policy=True,
+                archived_only=True,
+                as_of=as_of_iso,
+                limit=MAX_PURGE_BATCH,
+            )
+        self.assertEqual(arch_preview.task_count, MAX_PURGE_BATCH)
+        self.assertTrue(arch_preview.truncated)
+        self.assertEqual(arch_preview.protected_skipped_count, 0)
+        self.assertEqual(
+            arch_preview.task_ids,
+            tuple(sorted(archived_eligible_ids_ordered[:MAX_PURGE_BATCH])),
+        )
+        self.assertLessEqual(hydrated[0], MAX_PURGE_BATCH + 1)
+
+        # Exact preview SHA-256 binds purge_tasks cleanly, and the next batch selects oldest 50..99.
+        receipt = self.service.purge_tasks(
+            "owner", "ws",
+            task_ids=preview.task_ids,
+            expected_preview_sha256=preview.preview_sha256,
+            confirmation=preview.confirmation_phrase,
+            idempotency_key=self._k("batch-500-1"),
+            use_retention_policy=True,
+            as_of=as_of_iso,
+        )
+        self.assertEqual(receipt.task_count, MAX_PURGE_BATCH)
+        self.assertEqual(receipt.preview_sha256, preview.preview_sha256)
+
+        next_preview = self.service.preview_purge(
+            "owner", "ws", use_retention_policy=True, as_of=as_of_iso, limit=MAX_PURGE_BATCH,
+        )
+        self.assertEqual(next_preview.task_count, MAX_PURGE_BATCH)
+        self.assertTrue(next_preview.truncated)
+        self.assertEqual(
+            next_preview.task_ids,
+            tuple(sorted(eligible_ids_ordered[MAX_PURGE_BATCH:MAX_PURGE_BATCH * 2])),
+        )
+
+        # Stale preview is still rejected when a selected task changes before purge.
+        small_preview = self.service.preview_purge(
+            "owner", "ws", use_retention_policy=True, as_of=as_of_iso, limit=5,
+        )
+        self.assertEqual(small_preview.task_count, 5)
+        self.assertTrue(small_preview.truncated)
+        unarchived_target = next(item.task_id for item in small_preview.items if item.archived_at is None)
+        self.service.archive_task("owner", unarchived_target, idempotency_key=self._k("stale-500-arch"))
+        with self.assertRaisesRegex(OrchestrationError, "purge_preview_stale"):
+            self.service.purge_tasks(
+                "owner", "ws",
+                task_ids=small_preview.task_ids,
+                expected_preview_sha256=small_preview.preview_sha256,
+                confirmation=small_preview.confirmation_phrase,
+                idempotency_key=self._k("stale-500-purge"),
+                use_retention_policy=True,
+                as_of=as_of_iso,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
