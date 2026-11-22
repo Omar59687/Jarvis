@@ -311,6 +311,12 @@ class P2AWorkspaceChatTests(unittest.TestCase):
         self.assertEqual(result[0][0], 409)
         self.assertEqual(json.loads(result[0][2]), {"error": "workspace_selection_changed"})
 
+        # The stale response is not retained, and changing workspace starts a fresh context.
+        self.provider.on_generate = None
+        status, _, body = self.request("POST", f"{API_PREFIX}/chat", {"message": "follow-up after switch"})
+        self.assertEqual(status, 200)
+        self.assertNotIn("RECENT CONVERSATION CONTEXT", self.provider.calls[-1][0])
+
     def test_rejection_is_explicit_authenticated_and_not_replayable(self):
         status, _, body = self.request("POST", f"{API_PREFIX}/memory-candidates", {
             "content": "A user-authored synthetic preference.", "user_authored": True,
@@ -335,6 +341,17 @@ class P2AWorkspaceChatTests(unittest.TestCase):
         self.assertEqual(status, 409)
         self.assertEqual(json.loads(body)["error"], "candidate_changed")
 
+    def test_workspace_follow_up_receives_bounded_untrusted_conversation_context(self):
+        status, _, _ = self.request("POST", f"{API_PREFIX}/chat", {"message": "What was the room code?"})
+        self.assertEqual(status, 200)
+        status, _, _ = self.request("POST", f"{API_PREFIX}/chat", {"message": "Tell me more about the room code."})
+        self.assertEqual(status, 200)
+        prompt = self.provider.calls[-1][0]
+        self.assertIn("RECENT CONVERSATION CONTEXT", prompt)
+        self.assertIn("untrusted session data", prompt)
+        self.assertIn("What was the room code?", prompt)
+        self.assertIn("not factual workspace evidence", prompt)
+
     def test_workspace_can_be_cleared_to_return_to_general_chat(self):
         status, _, body = self.request("DELETE", f"{API_PREFIX}/session/workspace")
         self.assertEqual(status, 200)
@@ -344,7 +361,7 @@ class P2AWorkspaceChatTests(unittest.TestCase):
         response = json.loads(body)
         self.assertEqual(response["reply"], self.provider.text)
         self.assertNotIn("outcome", response)
-        self.assertIn("no access to the user's memories", self.provider.calls[-1][2])
+        self.assertIn("no access to the user's other memories", self.provider.calls[-1][2])
 
 
 class AcceptanceMemoryProposalRegressionTests(unittest.TestCase):

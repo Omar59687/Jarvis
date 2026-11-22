@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import http.client
+import socket
 import json
 from pathlib import Path
 import threading
@@ -12,9 +13,12 @@ from urllib.request import Request, urlopen
 from jarvis_core.ollama import GenerationResult, OllamaClient, OllamaModelUnavailable, OllamaTimeout
 from jarvis_core.lmstudio import LMStudioBionicClient
 from prototypes.m03_b1.service import (
+    CHAT_HISTORY_CONTEXT_MAX_BYTES,
+    CHAT_HISTORY_MAX_TURNS,
     API_PREFIX,
     GENERAL_CHAT_SYSTEM_PROMPT,
     SESSION_IDLE_SECONDS,
+    _bounded_conversation_turns,
     make_server,
 )
 
@@ -29,6 +33,7 @@ class FakeGenerator:
         self.calls = []
         self.entered = threading.Event()
         self.release = threading.Event()
+        self.completed = threading.Event()
         self.block = False
 
     def generate(self, prompt, model, *, system_prompt=None, max_output_tokens=192):
@@ -37,7 +42,9 @@ class FakeGenerator:
         if self.block:
             self.release.wait(timeout=4)
         if self.error is not None:
+            self.completed.set()
             raise self.error
+        self.completed.set()
         return self.result
 
 
@@ -218,9 +225,10 @@ class M03B1LocalChatTests(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertEqual(self.generator.calls, [])
 
-    def test_authorized_chat_uses_fixed_model_general_prompt_and_no_history(self):
+    def test_authorized_chat_uses_fixed_model_and_temporary_session_context(self):
         cookie, csrf = self.pair()
-        for message in ("How are you?", "Please say hello in Arabic."):
+        for message in ("How are you?", "What was my previous question?"):
+            self.generator.result = GenerationResult(model=MODEL, text="I'm doing well, thanks!", done=True)
             status, headers, body = self.chat(cookie=cookie, csrf=csrf, message=message)
             self.assertEqual(status, 200)
             self.assertEqual(json.loads(body), {"reply": "I'm doing well, thanks!", "model": MODEL,
@@ -228,12 +236,91 @@ class M03B1LocalChatTests(unittest.TestCase):
             self.assertIsNone(headers.get("Access-Control-Allow-Origin"))
         self.assertEqual(len(self.generator.calls), 2)
         prompt, model, system_prompt, max_output_tokens = self.generator.calls[0]
-        self.assertEqual(prompt, "How are you?")
+        self.assertIn('"How are you?"', prompt)
+        self.assertIn('"What was my previous question?"', self.generator.calls[1][0])
+        self.assertIn('"assistant":"I\'m doing well, thanks!"', self.generator.calls[1][0])
         self.assertEqual(model, MODEL)
         self.assertEqual(system_prompt, GENERAL_CHAT_SYSTEM_PROMPT)
-        self.assertIn("no access to the user's memories", system_prompt)
+        self.assertIn("no access to the user's other memories", system_prompt)
         self.assertNotIn("[D1]", system_prompt)
         self.assertEqual(max_output_tokens, 192)
+
+    def test_transcribed_voice_text_shares_the_same_authenticated_history(self):
+        cookie, csrf = self.pair()
+        status, _, _ = self.request(f"{API_PREFIX}/chat", payload={"message": "First spoken question"},
+                                    headers={"Cookie": cookie, "X-Jarvis-CSRF": csrf})
+        self.assertEqual(status, 200)
+        status, _, _ = self.chat(cookie=cookie, csrf=csrf, message="Follow-up from text")
+        self.assertEqual(status, 200)
+        self.assertIn('"First spoken question"', self.generator.calls[1][0])
+
+    def test_conversation_history_isolated_between_authenticated_sessions(self):
+        first_cookie, first_csrf = self.pair()
+        self.assertEqual(self.chat(cookie=first_cookie, csrf=first_csrf, message="Private first question")[0], 200)
+        second_session_id, second_record = self.server.sessions.issue()
+        second_cookie = f"jarvis_local_session={second_session_id}"
+        second_csrf = second_record.csrf_token
+        self.assertEqual(self.chat(cookie=second_cookie, csrf=second_csrf, message="Second session")[0], 200)
+        self.assertNotIn("Private first question", self.generator.calls[1][0])
+
+    def test_disconnected_chat_request_does_not_store_generated_turn(self):
+        cookie, csrf = self.pair()
+        self.generator.block = True
+        conn = http.client.HTTPConnection(self.server.expected_host, timeout=5)
+        result = []
+        payload = json.dumps({"message": "Cancelled private question"}).encode("utf-8")
+        headers = {"Host": self.server.expected_host, "Origin": self.server.expected_origin,
+                   "Cookie": cookie, "X-Jarvis-CSRF": csrf,
+                   "Content-Type": "application/json", "Content-Length": str(len(payload))}
+        worker = threading.Thread(target=lambda: self._send_raw_chat(conn, payload, headers, result), daemon=True)
+        worker.start()
+        self.assertTrue(self.generator.entered.wait(timeout=2))
+        if conn.sock is not None:
+            conn.sock.shutdown(socket.SHUT_RDWR)
+        conn.close()
+        self.generator.release.set()
+        self.assertTrue(self.generator.completed.wait(timeout=2))
+        worker.join(timeout=2)
+        self.generator.block = False
+        self.assertEqual(self.chat(cookie=cookie, csrf=csrf, message="Next question")[0], 200)
+        self.assertNotIn("Cancelled private question", self.generator.calls[-1][0])
+
+    @staticmethod
+    def _send_raw_chat(conn, payload, headers, result):
+        try:
+            conn.request("POST", f"{API_PREFIX}/chat", body=payload, headers=headers)
+            response = conn.getresponse()
+            result.append(response.status)
+        except OSError:
+            pass
+
+    def test_context_window_is_recent_ordered_and_byte_bounded(self):
+        turns = [(f"q{i}", f"a{i}") for i in range(CHAT_HISTORY_MAX_TURNS + 4)]
+        bounded = _bounded_conversation_turns(turns, CHAT_HISTORY_CONTEXT_MAX_BYTES)
+        self.assertLessEqual(len(bounded), CHAT_HISTORY_MAX_TURNS)
+        self.assertEqual(bounded, turns[-len(bounded):])
+        serialized = json.dumps([{"user": u, "assistant": a} for u, a in bounded],
+                                ensure_ascii=False, separators=(",", ":"))
+        self.assertLessEqual(len(serialized.encode("utf-8")), CHAT_HISTORY_CONTEXT_MAX_BYTES)
+
+    def test_logout_revokes_session_and_drops_its_conversation_context(self):
+        cookie, csrf = self.pair()
+        self.assertEqual(self.chat(cookie=cookie, csrf=csrf, message="Temporary session question")[0], 200)
+        session_id = cookie.split("=", 1)[1]
+        status, _, body = self.request(f"{API_PREFIX}/session", method="DELETE",
+                                       headers={"Cookie": cookie, "X-Jarvis-CSRF": csrf})
+        self.assertEqual(status, 200)
+        self.assertIsNone(self.server.sessions.resolve(session_id))
+        status, _, body = self.chat(cookie=cookie, csrf=csrf, message="After logout")
+        self.assertEqual(status, 401)
+        self.assertEqual(len(self.generator.calls), 1)
+    def test_failed_generation_does_not_enter_conversation_history(self):
+        cookie, csrf = self.pair()
+        self.generator.error = RuntimeError("synthetic provider failure")
+        self.assertEqual(self.chat(cookie=cookie, csrf=csrf, message="Do not retain this failed turn")[0], 502)
+        self.generator.error = None
+        self.assertEqual(self.chat(cookie=cookie, csrf=csrf, message="Next turn")[0], 200)
+        self.assertNotIn("Do not retain this failed turn", self.generator.calls[1][0])
 
     def test_duplicate_generation_is_rejected_and_chat_rate_is_bounded(self):
         cookie, csrf = self.pair()

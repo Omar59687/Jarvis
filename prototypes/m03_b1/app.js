@@ -143,7 +143,7 @@ let taskStatusCopy = [
 const CHAT_STATUS = {
   checking: ["Checking local session…", "جارٍ التحقق من الجلسة المحلية…"],
   pairing: ["Pair this browser to start", "اربط هذا المتصفح للبدء"],
-  ready: ["Configured local model · single-turn · no history saved", "نموذج محلي مضبوط · محادثة مستقلة · لا يُحفظ السجل"],
+  ready: ["Configured local model · session context · not saved", "نموذج محلي مضبوط · سياق الجلسة · لا يُحفظ"],
   sending: ["Waiting for the configured local model…", "بانتظار النموذج المحلي المضبوط…"],
   unavailable: ["Local chat service is unavailable", "خدمة الدردشة المحلية غير متاحة"],
   expired: ["Local session expired · pair again", "انتهت الجلسة المحلية · أعد الربط"],
@@ -239,8 +239,8 @@ function setChatState(key, state = "checking") {
   let text = CHAT_STATUS[key] ?? CHAT_STATUS.failed;
   if (configuredModel && configuredProvider && (key === "ready" || key === "sending")) {
     text = key === "ready"
-      ? [`${configuredProvider} · ${configuredModel} · single-turn · no history saved`,
-        `${configuredProvider} · ${configuredModel} · محادثة مستقلة · لا يُحفظ السجل`]
+      ? [`${configuredProvider} · ${configuredModel} · session context · not saved`,
+        `${configuredProvider} · ${configuredModel} · سياق الجلسة · لا يُحفظ`]
       : [`Waiting for ${configuredProvider} · ${configuredModel}…`,
         `بانتظار ${configuredProvider} · ${configuredModel}…`];
   }
