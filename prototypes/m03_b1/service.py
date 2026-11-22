@@ -56,6 +56,18 @@ from jarvis_core.ollama import (
     OllamaModelUnavailable,
     OllamaTimeout,
 )
+from jarvis_core.voice import (
+    VOICE_MAX_AUDIO_BYTES,
+    VoiceAudioValidationError,
+    VoiceConfigurationError,
+    VoiceModelUnavailableError,
+    VoiceService,
+    VoiceSynthesisError,
+    VoiceTimeoutError,
+    VoiceTranscriptionError,
+    build_voice_service_from_options,
+    normalize_stt_language_hint,
+)
 
 HOST = "127.0.0.1"
 COOKIE_NAME = "jarvis_local_session"
@@ -66,15 +78,18 @@ PAIR_MAX_ATTEMPTS = 5
 CHAT_MAX_REQUEST_BYTES = 4096
 PAIR_MAX_REQUEST_BYTES = 2048
 WORKSPACE_MAX_REQUEST_BYTES = 2048
+VOICE_SYNTHESIZE_MAX_REQUEST_BYTES = 8192
 MAX_MESSAGE_CHARS = 1000
 MAX_REPLY_CHARS = 16000
 CHAT_HISTORY_MAX_TURNS = 6
 CHAT_HISTORY_STORAGE_MAX_BYTES = 8192
 CHAT_HISTORY_CONTEXT_MAX_BYTES = 3072
 MAX_CHATS_PER_MINUTE = 6
+MAX_VOICE_OPS_PER_MINUTE = 20
 MAX_SESSIONS = 8
 MAX_HANDLER_THREADS = 16
 API_PREFIX = "/api/v1"
+_WAV_CONTENT_TYPES = frozenset({"audio/wav", "audio/wave", "audio/x-wav"})
 TASK_ID_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 TASK_LIST_DEFAULT_LIMIT = 20
 TASK_LIST_MAX_LIMIT = 50
@@ -255,6 +270,7 @@ STATIC_FILES = {
     "/app.js": (Path(__file__).with_name("app.js"), "text/javascript; charset=utf-8"),
     "/chat-ui-state.mjs": (Path(__file__).with_name("chat-ui-state.mjs"), "text/javascript; charset=utf-8"),
     "/task-control-state.mjs": (Path(__file__).with_name("task-control-state.mjs"), "text/javascript; charset=utf-8"),
+    "/voice-ui-state.mjs": (Path(__file__).with_name("voice-ui-state.mjs"), "text/javascript; charset=utf-8"),
     "/galaxy-model.mjs": (M03A_ROOT / "galaxy-model.mjs", "text/javascript; charset=utf-8"),
     "/vendor/three.core.js": (M03A_ROOT / "vendor/three.core.js", "text/javascript; charset=utf-8"),
     "/vendor/three.module.js": (M03A_ROOT / "vendor/three.module.js", "text/javascript; charset=utf-8"),
@@ -266,7 +282,7 @@ SECURITY_HEADERS = {
     "Cache-Control": "no-store",
     "Content-Security-Policy": (
         "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; "
-        "img-src 'self' data:; object-src 'none'; base-uri 'none'; "
+        "img-src 'self' data:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; "
         "frame-ancestors 'none'; form-action 'self'"
     ),
 }
@@ -314,6 +330,8 @@ class SessionRecord:
     evidence_requests: deque = field(default_factory=deque)
     memory_times: deque[float] = field(default_factory=deque)
     conversation_turns: list[tuple[str, str]] = field(default_factory=list)
+    voice_times: deque[float] = field(default_factory=deque)
+    voice_in_flight: bool = False
 
 
 class SessionStore:
@@ -392,9 +410,10 @@ class SessionStore:
     def conversation_history(self, session_id: str, expected_workspace_id: str | None) -> list[tuple[str, str]] | None:
         now = self._clock()
         with self._lock:
-            record = self._records.get(self._key(session_id))
+            key = self._key(session_id)
+            record = self._records.get(key)
             if record is None or self._expired(record, now):
-                self._records.pop(self._key(session_id), None)
+                self._records.pop(key, None)
                 return None
             if record.active_workspace_id != expected_workspace_id:
                 return None
@@ -413,12 +432,36 @@ class SessionStore:
                 return False
             if record.active_workspace_id != expected_workspace_id:
                 return False
-            turns = _bounded_conversation_turns(
+            record.conversation_turns = _bounded_conversation_turns(
                 [*record.conversation_turns, (user_text, assistant_text)],
                 CHAT_HISTORY_STORAGE_MAX_BYTES,
             )
-            record.conversation_turns = turns
             return True
+
+    def begin_voice(self, session_id: str) -> tuple[str, SessionRecord | None]:
+        now = self._clock()
+        with self._lock:
+            key = self._key(session_id)
+            record = self._records.get(key)
+            if record is None or self._expired(record, now):
+                self._records.pop(key, None)
+                return "unauthorized", None
+            while record.voice_times and now - record.voice_times[0] >= 60:
+                record.voice_times.popleft()
+            if record.voice_in_flight:
+                return "busy", record
+            if len(record.voice_times) >= MAX_VOICE_OPS_PER_MINUTE:
+                return "rate_limited", record
+            record.voice_in_flight = True
+            record.voice_times.append(now)
+            record.last_seen = now
+            return "ok", record
+
+    def end_voice(self, session_id: str) -> None:
+        with self._lock:
+            record = self._records.get(self._key(session_id))
+            if record is not None:
+                record.voice_in_flight = False
 
     def set_active_workspace(self, session_id: str, workspace_id: str) -> bool:
         now = self._clock()
@@ -469,6 +512,7 @@ class LocalChatServer(ThreadingHTTPServer):
                  actor_id: str | None = None, database: Database | None = None,
                  database_path: str | Path | None = None,
                  pairing_code: str | None = None,
+                 voice_service: VoiceService | None = None,
                  clock: Callable[[], float] = time.monotonic):
         if actor_id is None:
             if database is not None or database_path is not None:
@@ -487,6 +531,8 @@ class LocalChatServer(ThreadingHTTPServer):
             configured_database.initialize()
             if not configured_database.list_workspaces(configured_actor):
                 raise ValueError("configured actor must have READ access to an existing workspace")
+        if voice_service is not None and not isinstance(voice_service, VoiceService):
+            raise ValueError("voice_service must be a VoiceService instance")
         super().__init__((HOST, port), LocalChatHandler)
         actual_port = self.server_address[1]
         self.expected_host = f"{HOST}:{actual_port}"
@@ -505,6 +551,7 @@ class LocalChatServer(ThreadingHTTPServer):
             TaskOrchestrationService(configured_database, repositories=self.developer)
             if configured_database else None
         )
+        self.voice_service = voice_service if voice_service is not None else VoiceService()
         self.pairing = PairingAuthority(code=pairing_code, clock=clock)
         self.sessions = SessionStore(clock=clock)
         self._handler_slots = threading.BoundedSemaphore(MAX_HANDLER_THREADS)
@@ -707,6 +754,42 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             return None
         return value
 
+    def _read_wav_audio(self, max_bytes: int) -> bytes | None:
+        if self.headers.get("Transfer-Encoding") is not None:
+            self.close_connection = True
+            self._json(400, {"error": "invalid_request"})
+            return None
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type not in _WAV_CONTENT_TYPES:
+            self._discard_bounded_request_body(8192)
+            self._json(415, {"error": "wav_audio_required"})
+            return None
+        lengths = self.headers.get_all("Content-Length", [])
+        if len(lengths) != 1 or len(lengths[0]) > 10 or not lengths[0].isdecimal():
+            self.close_connection = True
+            self._json(400, {"error": "invalid_content_length"})
+            return None
+        length = int(lengths[0])
+        if length > max_bytes:
+            self.close_connection = True
+            self._json(413, {"error": "audio_too_large"})
+            return None
+        if length < 44:
+            self._discard_bounded_request_body(length)
+            self._json(400, {"error": "invalid_audio"})
+            return None
+        try:
+            body = self.rfile.read(length)
+        except (OSError, TimeoutError, socket.timeout):
+            self.close_connection = True
+            self._json(408, {"error": "request_timeout"})
+            return None
+        if len(body) != length:
+            self.close_connection = True
+            self._json(400, {"error": "invalid_audio"})
+            return None
+        return body
+
     def do_GET(self) -> None:
         if self._reject_host():
             return
@@ -739,6 +822,11 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             self._json(200, {"authenticated": True, "csrf_token": record.csrf_token,
                              "model": self.server.model, "provider": self.server.provider_name,
                              "active_workspace_id": active_workspace_id})
+            return
+        if path == f"{API_PREFIX}/voice/status":
+            if self._reject_foreign_origin_if_present():
+                return
+            self._voice_status()
             return
         if path == f"{API_PREFIX}/workspaces":
             session_id = self._cookie_session_id()
@@ -807,6 +895,10 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             self._pair()
         elif path == f"{API_PREFIX}/chat":
             self._chat()
+        elif path == f"{API_PREFIX}/voice/transcribe":
+            self._voice_transcribe()
+        elif path == f"{API_PREFIX}/voice/synthesize":
+            self._voice_synthesize()
         elif path == f"{API_PREFIX}/developer/chat":
             self._developer_chat()
         elif path == f"{API_PREFIX}/memory-candidates":
@@ -1891,6 +1983,143 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             self._json(200, {"state": "approved" if action == "approve" else "rejected",
                              "memory_id": result.id if result is not None else None})
 
+    def _voice_status(self) -> None:
+        session_id = self._cookie_session_id()
+        record = self.server.sessions.resolve(session_id, touch=True)
+        if record is None:
+            self._json(401, {"error": "authentication_required"})
+            return
+        self._json(200, self.server.voice_service.status_payload())
+
+    def _voice_transcribe(self) -> None:
+        session_id = self._cookie_session_id()
+        record = self.server.sessions.resolve(session_id)
+        if record is None or session_id is None:
+            self._discard_bounded_request_body(8192)
+            self._json(401, {"error": "authentication_required"})
+            return
+        csrf = self.headers.get("X-Jarvis-CSRF", "")
+        if not _secret_matches(csrf, record.csrf_token):
+            self._discard_bounded_request_body(8192)
+            self._json(403, {"error": "csrf_rejected"})
+            return
+        if self.server.voice_service.stt is None:
+            self._discard_bounded_request_body(8192)
+            self._json(503, {"error": "voice_stt_not_configured"})
+            return
+        raw_lang = self.headers.get("X-Jarvis-Voice-Language")
+        try:
+            lang_hint = normalize_stt_language_hint(raw_lang)
+        except VoiceAudioValidationError:
+            self._discard_bounded_request_body(8192)
+            self._json(400, {"error": "invalid_language"})
+            return
+        audio_bytes = self._read_wav_audio(self.server.voice_service.max_audio_bytes)
+        if audio_bytes is None:
+            return
+        state, _ = self.server.sessions.begin_voice(session_id)
+        if state == "unauthorized":
+            self._json(401, {"error": "authentication_required"})
+            return
+        if state == "busy":
+            self._json(409, {"error": "voice_in_progress"})
+            return
+        if state == "rate_limited":
+            self._json(429, {"error": "rate_limited"})
+            return
+        try:
+            result = self.server.voice_service.transcribe(audio_bytes, language=lang_hint)
+        except VoiceAudioValidationError:
+            self._json(400, {"error": "invalid_audio"})
+        except VoiceModelUnavailableError:
+            self._json(503, {"error": "stt_model_unavailable"})
+        except VoiceTimeoutError:
+            self._json(504, {"error": "transcription_timeout"})
+        except (VoiceTranscriptionError, Exception):
+            self._json(502, {"error": "transcription_failed"})
+        else:
+            self._json(200, {
+                "text": result.text,
+                "language": result.language,
+                "duration_seconds": round(result.duration_seconds, 3),
+                "backend": result.backend,
+            })
+        finally:
+            self.server.sessions.end_voice(session_id)
+
+    def _voice_synthesize(self) -> None:
+        session_id = self._cookie_session_id()
+        record = self.server.sessions.resolve(session_id)
+        if record is None or session_id is None:
+            self._discard_bounded_request_body(VOICE_SYNTHESIZE_MAX_REQUEST_BYTES)
+            self._json(401, {"error": "authentication_required"})
+            return
+        csrf = self.headers.get("X-Jarvis-CSRF", "")
+        if not _secret_matches(csrf, record.csrf_token):
+            self._discard_bounded_request_body(VOICE_SYNTHESIZE_MAX_REQUEST_BYTES)
+            self._json(403, {"error": "csrf_rejected"})
+            return
+        if self.server.voice_service.tts is None:
+            self._discard_bounded_request_body(VOICE_SYNTHESIZE_MAX_REQUEST_BYTES)
+            self._json(503, {"error": "voice_tts_not_configured"})
+            return
+        value = self._read_json(VOICE_SYNTHESIZE_MAX_REQUEST_BYTES)
+        if value is None:
+            return
+        if _contains_client_identity(value) or (set(value) - {"text", "language"}):
+            self._json(400, {"error": "invalid_request"})
+            return
+        text = value.get("text")
+        if (not isinstance(text, str) or not text.strip()
+                or len(text) > self.server.voice_service.max_tts_chars or "\x00" in text):
+            self._json(400, {"error": "invalid_message"})
+            return
+        try:
+            text.encode("utf-8")
+        except UnicodeEncodeError:
+            self._json(400, {"error": "invalid_message"})
+            return
+        raw_lang = value.get("language")
+        if raw_lang is not None:
+            if not isinstance(raw_lang, str) or raw_lang.strip().lower() not in {"", "auto", "en", "ar"}:
+                self._json(400, {"error": "invalid_language"})
+                return
+            lang_hint = raw_lang.strip().lower() or None
+        else:
+            lang_hint = None
+        state, _ = self.server.sessions.begin_voice(session_id)
+        if state == "unauthorized":
+            self._json(401, {"error": "authentication_required"})
+            return
+        if state == "busy":
+            self._json(409, {"error": "voice_in_progress"})
+            return
+        if state == "rate_limited":
+            self._json(429, {"error": "rate_limited"})
+            return
+        try:
+            result = self.server.voice_service.synthesize(text, language=lang_hint)
+        except VoiceModelUnavailableError:
+            self._json(503, {"error": "tts_model_unavailable"})
+        except VoiceTimeoutError:
+            self._json(504, {"error": "synthesis_timeout"})
+        except VoiceConfigurationError:
+            self._json(400, {"error": "invalid_language"})
+        except (VoiceSynthesisError, VoiceAudioValidationError, Exception):
+            self._json(502, {"error": "synthesis_failed"})
+        else:
+            self._send(
+                200,
+                result.audio_bytes,
+                "audio/wav",
+                extra_headers={
+                    "X-Jarvis-Voice-Backend": result.backend,
+                    "X-Jarvis-Voice-Language": result.language,
+                },
+            )
+        finally:
+            self.server.sessions.end_voice(session_id)
+
     def _chat(self) -> None:
         session_id = self._cookie_session_id()
         record = self.server.sessions.resolve(session_id)
@@ -1907,6 +2136,10 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         if value is None:
             return
         if _contains_client_identity(value):
+            self._json(400, {"error": "invalid_request"})
+            return
+        voice_mode = value.get("voice_mode", False)
+        if type(voice_mode) is not bool:
             self._json(400, {"error": "invalid_request"})
             return
         message = value.get("message")
@@ -1940,9 +2173,13 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         )
         try:
             if record.active_workspace_id is None:
+                system_prompt = self.server.voice_service.system_prompt_for_chat(
+                    GENERAL_CHAT_SYSTEM_PROMPT,
+                    voice_mode=voice_mode,
+                )
                 result = self.server.generator.generate(
                     _chat_prompt(message.strip(), conversation_json),
-                    self.server.model, system_prompt=GENERAL_CHAT_SYSTEM_PROMPT,
+                    self.server.model, system_prompt=system_prompt,
                     max_output_tokens=192,
                 )
                 rag_result = None
@@ -2141,11 +2378,20 @@ def make_server(port: int = 8765, *, provider: str | None = None, model: str | N
                 generator: ModelProvider | None = None, pairing_code: str | None = None,
                 actor_id: str | None = None, database: Database | None = None,
                 database_path: str | Path | None = None,
+                voice_service: VoiceService | None = None,
+                persona: str = "default",
                 clock: Callable[[], float] = time.monotonic) -> LocalChatServer:
     if type(port) is not int or not 0 <= port <= 65535:
         raise ValueError("port must be an integer between 0 and 65535")
     if not isinstance(model, str) or not model.strip():
         raise ValueError("an explicit model is required")
+    if voice_service is not None and persona != "default":
+        raise ValueError("provide persona inside voice_service or via persona, not both")
+    if voice_service is None:
+        try:
+            voice_service = VoiceService(persona=persona)
+        except VoiceConfigurationError as exc:
+            raise ValueError(str(exc)) from exc
     if generator is None:
         if not isinstance(base_url, str):
             raise ValueError("an explicit numeric loopback base URL is required")
@@ -2160,7 +2406,7 @@ def make_server(port: int = 8765, *, provider: str | None = None, model: str | N
         provider = "test"
     return LocalChatServer(port, generator=generator, model=model, provider_name=provider,
                            actor_id=actor_id, database=database, database_path=database_path,
-                           pairing_code=pairing_code, clock=clock)
+                           pairing_code=pairing_code, voice_service=voice_service, clock=clock)
 
 
 def main() -> None:
@@ -2177,12 +2423,60 @@ def main() -> None:
                         help="trusted existing Jarvis principal ID; enables workspace listing/selection")
     parser.add_argument("--database", type=Path,
                         help="SQLite database path for workspace permissions (default: per-user Jarvis database)")
+    parser.add_argument("--persona", choices=("default", "jarvis"), default="default",
+                        help="conversation persona for general chat (default or jarvis)")
+    parser.add_argument("--stt-backend", choices=("none", "faster-whisper"), default="none",
+                        help="local speech-to-text backend (explicitly configured; no auto-download)")
+    parser.add_argument("--stt-model-path", type=Path,
+                        help="explicit local CTranslate2 faster-whisper model directory")
+    parser.add_argument("--stt-device", choices=("auto", "cpu", "cuda"), default="auto",
+                        help="device for faster-whisper local inference")
+    parser.add_argument("--stt-compute-type",
+                        choices=("default", "int8", "float16", "int8_float16", "float32"),
+                        default="default",
+                        help="compute type for faster-whisper local inference")
+    parser.add_argument("--tts-backend", choices=("none", "chatterbox", "piper"), default="none",
+                        help="local offline text-to-speech backend (no browser/cloud fallback)")
+    parser.add_argument("--tts-model-path", type=Path,
+                        help="explicit local Chatterbox model directory or Piper English .onnx model")
+    parser.add_argument("--tts-model-ar-path", type=Path,
+                        help="optional explicit local Piper Arabic .onnx model")
+    parser.add_argument("--tts-binary-path", type=Path,
+                        help="explicit local piper executable path when --tts-backend=piper")
+    parser.add_argument("--tts-voice-ref", type=Path,
+                        help="optional explicit local reference WAV for Chatterbox voice identity")
+    parser.add_argument("--tts-device", choices=("cuda", "cpu"), default="cuda",
+                        help="device for Chatterbox Multilingual local inference")
     args = parser.parse_args()
+    try:
+        voice_service = build_voice_service_from_options(
+            persona=args.persona,
+            stt_backend=args.stt_backend,
+            stt_model_path=args.stt_model_path,
+            stt_device=args.stt_device,
+            stt_compute_type=args.stt_compute_type,
+            tts_backend=args.tts_backend,
+            tts_model_path=args.tts_model_path,
+            tts_model_ar_path=args.tts_model_ar_path,
+            tts_binary_path=args.tts_binary_path,
+            tts_voice_ref=args.tts_voice_ref,
+            tts_device=args.tts_device,
+        )
+    except VoiceConfigurationError as exc:
+        parser.error(str(exc))
     server = make_server(args.port, provider=args.provider, model=args.model,
                          base_url=args.base_url, timeout=args.timeout,
-                         actor_id=args.actor_id, database_path=args.database)
+                         actor_id=args.actor_id, database_path=args.database,
+                         voice_service=voice_service)
+    voice_status = server.voice_service.status_payload()
     print(f"Jarvis M03-B2 local chat: http://{server.expected_host}/")
     print(f"Local provider/model: {server.provider_name}/{server.model} (explicitly configured; no discovery or download).")
+    print(
+        "Local voice (push-to-talk, offline only, no audio/transcript storage): "
+        f"STT={voice_status['stt_backend'] or 'disabled'} (ready={voice_status['stt_ready']}), "
+        f"TTS={voice_status['tts_backend'] or 'disabled'} (ready={voice_status['tts_ready']}), "
+        f"persona={voice_status['persona']}."
+    )
     if server.actor_id is None:
         print("Workspace APIs are disabled; general local chat is unchanged.")
     else:

@@ -131,6 +131,25 @@
       </div>
       <section id="chat-transcript" class="chat-transcript" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Chat messages" data-en-aria-label="Chat messages" data-ar-aria-label="رسائل الدردشة" hidden></section>
       <p id="chat-status-line" class="chat-status-line" role="status" aria-live="polite" hidden></p>
+      <section id="voice-panel" class="voice-panel" aria-label="Local voice controls" data-en-aria-label="Local voice controls" data-ar-aria-label="عناصر التحكم بالصوت المحلي">
+        <div class="voice-header">
+          <div class="voice-status-group">
+            <span id="voice-state" class="voice-state-pill" data-state="stopped" role="status" aria-live="polite"><i></i><span id="voice-state-label" data-en="Stopped · Push to talk" data-ar="متوقف · اضغط للتحدث">Stopped · Push to talk</span></span>
+            <span id="voice-posture" class="voice-posture-badge" data-en="PUSH-TO-TALK · LOCAL ONLY · NO AUDIO SAVED" data-ar="اضغط للتحدث · محلي فقط · لا يُحفظ الصوت">PUSH-TO-TALK · LOCAL ONLY · NO AUDIO SAVED</span>
+          </div>
+          <div class="voice-controls">
+            <button id="voice-play" type="button" class="small-action" disabled data-en="Play" data-ar="تشغيل">Play</button>
+            <button id="voice-stop" type="button" class="small-action" disabled data-en="Stop" data-ar="إيقاف">Stop</button>
+            <button id="voice-mute" type="button" class="small-action" aria-pressed="false" data-en="Mute" data-ar="كتم">Mute</button>
+            <button id="voice-transcript-toggle" type="button" class="small-action" aria-pressed="true" data-en="Hide transcript" data-ar="إخفاء النص">Hide transcript</button>
+          </div>
+        </div>
+        <div id="voice-transcript-box" class="voice-transcript-box" hidden>
+          <p id="voice-recognized-text" class="voice-recognized-text" dir="auto"></p>
+          <p id="voice-spoken-meta" class="hint" dir="auto"></p>
+        </div>
+        <p id="voice-error-line" class="voice-error-line" role="alert" aria-live="assertive" hidden></p>
+      </section>
       <section id="evidence-panel" class="evidence-panel" aria-label="Answer evidence" data-en-aria-label="Answer evidence" data-ar-aria-label="أدلة الإجابة" hidden>
         <div class="evidence-heading"><span class="eyebrow" data-en="ANSWER EVIDENCE" data-ar="أدلة الإجابة">ANSWER EVIDENCE</span><span id="evidence-outcome" class="evidence-outcome"></span></div>
         <div id="citation-list" class="citation-list"></div>
@@ -271,6 +290,7 @@
       </div>
       <form id="chat-form" class="chat-form" aria-label="Chat message" data-en-aria-label="Chat message" data-ar-aria-label="رسالة الدردشة">
         <input id="chat-input" type="text" maxlength="1000" autocomplete="off" disabled aria-label="Message Jarvis" data-en-aria-label="Message Jarvis" data-ar-aria-label="أرسل رسالة إلى جارفس" data-en-placeholder="Pair this browser to start a local chat" data-ar-placeholder="اربط هذا المتصفح لبدء دردشة محلية" placeholder="Pair this browser to start a local chat">
+        <button id="voice-ptt" class="voice-ptt-button" type="button" disabled aria-pressed="false" aria-label="Push to talk" data-en-aria-label="Push to talk" data-ar-aria-label="اضغط للتحدث"><span aria-hidden="true">🎙</span><span id="voice-ptt-label" data-en="Talk" data-ar="تحدث">Talk</span></button>
         <button id="chat-send" type="submit" disabled><span data-en="Send" data-ar="إرسال">Send</span></button>
       </form>
       <button id="chat-signout" class="chat-signout" type="button" hidden data-en="Disconnect" data-ar="قطع الاتصال">Disconnect</button>
