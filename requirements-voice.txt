@@ -1,0 +1,24 @@
+# Jarvis M03-C1 — Isolated Local Voice Environment Requirements (Windows 11)
+#
+# Recommended Python version for the isolated voice environment:
+#   Python 3.11 or Python 3.12 (for example, the existing `jarvis-ai` conda env on Python 3.12).
+#   Note: Python 3.14 lacks prebuilt wheels for PyTorch / torchaudio / chatterbox-tts on Windows.
+#
+# Install inside an isolated venv or conda env (never into system Python):
+#   1) Core offline speech-to-text (required for local STT):
+faster-whisper>=1.1.0,<2.0.0
+
+#   2) Optional Option A — Chatterbox Multilingual neural bilingual TTS (English & Arabic):
+#      Requires PyTorch + torchaudio matching your CUDA runtime first.
+#      On NVIDIA RTX 50-series (Blackwell, sm_120, CUDA 12.8+/13.0):
+#        pip install --pre torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+#      Then install Chatterbox:
+#        pip install chatterbox-tts
+#
+#   3) Optional Option B — Lightweight offline Piper ONNX TTS (CPU-only, no PyTorch needed):
+#      Download a prebuilt Windows `piper.exe` release + local `.onnx` and `.onnx.json`
+#      voice files (e.g., en_GB-alan-medium and ar_JO-kareem-medium) and pass explicit
+#      local paths via --tts-binary-path, --tts-model-path, and --tts-model-ar-path.
+#
+# All models MUST be downloaded manually ahead of time into explicit local directories.
+# Jarvis sets local_files_only=True / HF_HUB_OFFLINE=1 and never auto-downloads models at runtime.

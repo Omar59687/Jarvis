@@ -21,6 +21,20 @@ import {
   sanitizeTaskText,
   taskControlError,
 } from "/task-control-state.mjs";
+import {
+  applyVoiceStatus,
+  canStartPushToTalk,
+  createVoiceState,
+  detectReplyLanguage,
+  encodePcm16Wav,
+  interruptVoiceState,
+  resetVoiceStateForSessionEnd,
+  toggleVoiceMute,
+  toggleVoiceTranscript,
+  transitionVoiceState,
+  voiceErrorMessage,
+  voiceStateLabel,
+} from "/voice-ui-state.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 const languageSelect = $("#language");
@@ -36,6 +50,19 @@ const chatSend = $("#chat-send");
 const chatState = $("#chat-state");
 const chatTranscript = $("#chat-transcript");
 const chatStatusLine = $("#chat-status-line");
+const voicePttButton = $("#voice-ptt");
+const voicePttLabel = $("#voice-ptt-label");
+const voiceStateBadge = $("#voice-state");
+const voiceStateText = $("#voice-state-label");
+const voicePostureBadge = $("#voice-posture");
+const voicePlayButton = $("#voice-play");
+const voiceStopButton = $("#voice-stop");
+const voiceMuteButton = $("#voice-mute");
+const voiceTranscriptToggle = $("#voice-transcript-toggle");
+const voiceTranscriptBox = $("#voice-transcript-box");
+const voiceRecognizedText = $("#voice-recognized-text");
+const voiceSpokenMeta = $("#voice-spoken-meta");
+const voiceErrorLine = $("#voice-error-line");
 const pairingDialog = $("#pairing-dialog");
 const pairForm = $("#pair-form");
 const pairCode = $("#pair-code");
@@ -118,6 +145,19 @@ let configuredProvider = null;
 let sending = false;
 let chatStateKey = "checking";
 let activeWorkspaceId = null;
+let voiceState = createVoiceState();
+let voiceMediaStream = null;
+let voiceAudioContext = null;
+let voiceSourceNode = null;
+let voiceProcessorNode = null;
+let voiceSilenceGain = null;
+let voiceCapturedChunks = [];
+let voiceCaptureSampleRate = 16000;
+let voiceCaptureStopTimer = null;
+let voiceAbortController = null;
+let voiceAudioElement = null;
+let voiceAudioObjectUrl = null;
+let voiceCachedReplyKey = null;
 let workspaceServiceUnavailable = false;
 let latestEvidenceRequestId = null;
 let latestCitations = [];
@@ -230,6 +270,7 @@ function applyLanguage(next) {
   if (activeWorkspaceId) loadPendingCandidates();
   if (memoryStatus.textContent) memoryStatus.textContent = "";
   renderTaskControlCenter();
+  renderVoiceUI();
   if (sceneState) sceneState.refreshLabels();
 }
 
@@ -1452,6 +1493,7 @@ function clearEphemeralWorkspaceView() {
   developerLoadGeneration += 1;
   clearDeveloperGraph();
   clearTaskControlCenter();
+  interruptVoice({ clearReply: true });
 }
 
 function setPairError(message = "") {
@@ -1469,6 +1511,7 @@ function setAuthenticated(value, token = null, model = null, provider = null, sh
   signOut.hidden = !authenticated;
   workspaceSelect.disabled = !authenticated;
   if (!authenticated) {
+    teardownVoiceForSessionEnd();
     activeWorkspaceId = null;
     developerRepositories = [];
     activeDeveloperRepoId = null;
@@ -1496,6 +1539,7 @@ function setAuthenticated(value, token = null, model = null, provider = null, sh
     }
   }
   updateChatInputPlaceholder();
+  renderVoiceUI();
 }
 
 function markSessionExpired() {
@@ -1505,6 +1549,504 @@ function markSessionExpired() {
     "Session expired. Restart the PowerShell service, then reload to pair again.",
     "انتهت الجلسة. أعد تشغيل خدمة PowerShell ثم أعد تحميل الصفحة للربط مجددًا."
   ], true);
+}
+
+function releaseMicrophone() {
+  if (voiceCaptureStopTimer !== null) {
+    clearTimeout(voiceCaptureStopTimer);
+    voiceCaptureStopTimer = null;
+  }
+  if (voiceProcessorNode) {
+    try {
+      voiceProcessorNode.onaudioprocess = null;
+      voiceProcessorNode.disconnect();
+    } catch (_error) {
+      // Ignore already-disconnected nodes.
+    }
+    voiceProcessorNode = null;
+  }
+  if (voiceSourceNode) {
+    try {
+      voiceSourceNode.disconnect();
+    } catch (_error) {
+      // Ignore already-disconnected nodes.
+    }
+    voiceSourceNode = null;
+  }
+  if (voiceSilenceGain) {
+    try {
+      voiceSilenceGain.disconnect();
+    } catch (_error) {
+      // Ignore already-disconnected nodes.
+    }
+    voiceSilenceGain = null;
+  }
+  if (voiceMediaStream) {
+    for (const track of voiceMediaStream.getTracks()) {
+      try {
+        track.stop();
+      } catch (_error) {
+        // Best-effort track stop.
+      }
+    }
+    voiceMediaStream = null;
+  }
+  if (voiceAudioContext) {
+    const context = voiceAudioContext;
+    voiceAudioContext = null;
+    if (typeof context.close === "function" && context.state !== "closed") {
+      context.close().catch(() => {});
+    }
+  }
+}
+
+function revokeVoiceAudioObjectUrl() {
+  if (voiceAudioObjectUrl) {
+    URL.revokeObjectURL(voiceAudioObjectUrl);
+    voiceAudioObjectUrl = null;
+  }
+  voiceCachedReplyKey = null;
+}
+
+function stopVoicePlayback({ revokeAudio = false } = {}) {
+  if (voiceAudioElement) {
+    voiceAudioElement.onended = null;
+    voiceAudioElement.onerror = null;
+    try {
+      voiceAudioElement.pause();
+      voiceAudioElement.currentTime = 0;
+    } catch (_error) {
+      // Ignore playback stop errors.
+    }
+    if (revokeAudio) {
+      voiceAudioElement.src = "";
+      voiceAudioElement = null;
+    }
+  }
+  if (revokeAudio) {
+    revokeVoiceAudioObjectUrl();
+  }
+}
+
+function abortVoiceRequests() {
+  if (voiceAbortController) {
+    try {
+      voiceAbortController.abort();
+    } catch (_error) {
+      // Ignore abort errors.
+    }
+    voiceAbortController = null;
+  }
+}
+
+function interruptVoice({ clearReply = false } = {}) {
+  abortVoiceRequests();
+  releaseMicrophone();
+  voiceCapturedChunks = [];
+  stopVoicePlayback({ revokeAudio: clearReply });
+  voiceState = interruptVoiceState(voiceState, { clearReply });
+  renderVoiceUI();
+}
+
+function teardownVoiceForSessionEnd() {
+  abortVoiceRequests();
+  releaseMicrophone();
+  voiceCapturedChunks = [];
+  stopVoicePlayback({ revokeAudio: true });
+  voiceState = resetVoiceStateForSessionEnd(voiceState);
+  renderVoiceUI();
+}
+
+function renderVoiceUI() {
+  if (!voiceStateBadge || !voicePttButton) return;
+  const listening = voiceState.status === "listening";
+  const active = listening || voiceState.status === "transcribing"
+    || voiceState.status === "thinking" || voiceState.status === "speaking";
+
+  voiceStateBadge.dataset.state = voiceState.status;
+  voiceStateText.textContent = voiceStateLabel(voiceState.status, language);
+
+  if (voicePostureBadge) {
+    const backendBits = [];
+    if (voiceState.sttBackend) backendBits.push(`STT: ${voiceState.sttBackend}`);
+    if (voiceState.ttsBackend) backendBits.push(`TTS: ${voiceState.ttsBackend}`);
+    const suffix = backendBits.length ? ` · ${backendBits.join(" · ")}` : "";
+    voicePostureBadge.textContent = (language === "ar"
+      ? "اضغط للتحدث · محلي فقط · لا يُحفظ الصوت"
+      : "PUSH-TO-TALK · LOCAL ONLY · NO AUDIO SAVED") + suffix;
+  }
+
+  const canStart = canStartPushToTalk(voiceState, {
+    authenticated,
+    sending,
+    workspaceServiceUnavailable,
+  });
+  voicePttButton.disabled = !(listening || canStart);
+  voicePttButton.setAttribute("aria-pressed", String(listening));
+  voicePttLabel.textContent = listening
+    ? (language === "ar" ? "إيقاف الإملاء" : "Stop mic")
+    : (language === "ar" ? "تحدث" : "Talk");
+  voicePttButton.title = !authenticated
+    ? (language === "ar" ? "اربط المتصفح أولًا" : "Pair browser first")
+    : !voiceState.sttConfigured
+      ? (language === "ar" ? "التحويل المحلي للكلام غير مهيأ" : "Local speech-to-text is not configured")
+      : (language === "ar" ? "اضغط للتحدث محليًا" : "Push to talk locally");
+
+  voicePlayButton.disabled = !authenticated || !voiceState.ttsConfigured
+    || !voiceState.lastReplyText || listening || voiceState.status === "transcribing"
+    || voiceState.status === "thinking";
+  voicePlayButton.textContent = language === "ar" ? "تشغيل" : "Play";
+
+  voiceStopButton.disabled = !active;
+  voiceStopButton.textContent = language === "ar" ? "إيقاف" : "Stop";
+
+  voiceMuteButton.setAttribute("aria-pressed", String(voiceState.muted));
+  voiceMuteButton.textContent = voiceState.muted
+    ? (language === "ar" ? "مكتوم" : "Muted")
+    : (language === "ar" ? "كتم" : "Mute");
+
+  voiceTranscriptToggle.setAttribute("aria-pressed", String(voiceState.showTranscript));
+  voiceTranscriptToggle.textContent = voiceState.showTranscript
+    ? (language === "ar" ? "إخفاء النص" : "Hide transcript")
+    : (language === "ar" ? "إظهار النص" : "Show transcript");
+
+  const hasTranscriptContent = Boolean(voiceState.lastTranscript || voiceState.lastReplyText);
+  voiceTranscriptBox.hidden = !voiceState.showTranscript || !hasTranscriptContent;
+  voiceRecognizedText.textContent = voiceState.lastTranscript
+    ? `${language === "ar" ? "المسموع:" : "Heard:"} ${voiceState.lastTranscript}`
+    : "";
+  voiceSpokenMeta.textContent = voiceState.lastReplyText
+    ? (voiceState.ttsConfigured
+      ? (language === "ar"
+        ? `آخر رد جاهز للتشغيل المحلي (${voiceState.ttsBackend ?? "محلي"}).`
+        : `Latest reply ready for local playback (${voiceState.ttsBackend ?? "local"}).`)
+      : (language === "ar"
+        ? "الرد النصي متاح. توليد الصوت المحلي غير مهيأ."
+        : "Text reply available. Local speech synthesis is not configured."))
+    : "";
+
+  if (voiceState.status === "error" && voiceState.errorCode) {
+    voiceErrorLine.textContent = voiceErrorMessage(voiceState.errorCode, language);
+    voiceErrorLine.hidden = false;
+  } else {
+    voiceErrorLine.textContent = "";
+    voiceErrorLine.hidden = true;
+  }
+}
+
+async function loadVoiceStatus() {
+  if (!authenticated) {
+    teardownVoiceForSessionEnd();
+    return;
+  }
+  try {
+    const response = await fetch("/api/v1/voice/status", { credentials: "same-origin", cache: "no-store" });
+    if (response.status === 401) {
+      markSessionExpired();
+      return;
+    }
+    if (!response.ok) {
+      voiceState = applyVoiceStatus(voiceState, null);
+      renderVoiceUI();
+      return;
+    }
+    const payload = await responseJson(response);
+    voiceState = applyVoiceStatus(voiceState, payload);
+  } catch (_error) {
+    voiceState = applyVoiceStatus(voiceState, null);
+  }
+  renderVoiceUI();
+}
+
+async function handlePushToTalkClick() {
+  if (!authenticated || workspaceServiceUnavailable) return;
+  if (voiceState.status === "listening") {
+    await stopListeningAndTranscribe();
+    return;
+  }
+  if (voiceState.status === "speaking") {
+    interruptVoice({ clearReply: false });
+  }
+  if (!canStartPushToTalk(voiceState, { authenticated, sending, workspaceServiceUnavailable })) {
+    return;
+  }
+  await startVoiceListening();
+}
+
+async function startVoiceListening() {
+  if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function") {
+    voiceState = transitionVoiceState(voiceState, "error", { errorCode: "mic_unavailable" });
+    renderVoiceUI();
+    return;
+  }
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if (typeof AudioCtx !== "function") {
+    voiceState = transitionVoiceState(voiceState, "error", { errorCode: "mic_unavailable" });
+    renderVoiceUI();
+    return;
+  }
+  stopVoicePlayback({ revokeAudio: false });
+  releaseMicrophone();
+  voiceCapturedChunks = [];
+  const generation = voiceState.generation;
+
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+      video: false,
+    });
+  } catch (error) {
+    const denied = error && (error.name === "NotAllowedError" || error.name === "PermissionDeniedError");
+    voiceState = transitionVoiceState(voiceState, "error", {
+      errorCode: denied ? "mic_permission_denied" : "mic_unavailable",
+    });
+    renderVoiceUI();
+    return;
+  }
+
+  if (!authenticated || generation !== voiceState.generation) {
+    for (const track of stream.getTracks()) track.stop();
+    return;
+  }
+
+  try {
+    voiceMediaStream = stream;
+    voiceAudioContext = new AudioCtx();
+    if (voiceAudioContext.state === "suspended") {
+      await voiceAudioContext.resume();
+    }
+    voiceCaptureSampleRate = voiceAudioContext.sampleRate || 16000;
+    voiceSourceNode = voiceAudioContext.createMediaStreamSource(stream);
+    voiceProcessorNode = voiceAudioContext.createScriptProcessor(4096, 1, 1);
+    voiceSilenceGain = voiceAudioContext.createGain();
+    voiceSilenceGain.gain.value = 0;
+
+    const maxSamples = Math.ceil(voiceCaptureSampleRate * voiceState.maxAudioSeconds);
+    let capturedSamples = 0;
+    voiceProcessorNode.onaudioprocess = (event) => {
+      if (voiceState.status !== "listening") return;
+      const channel = event.inputBuffer.getChannelData(0);
+      if (!channel || !channel.length) return;
+      voiceCapturedChunks.push(new Float32Array(channel));
+      capturedSamples += channel.length;
+      if (capturedSamples >= maxSamples) {
+        stopListeningAndTranscribe().catch(() => {});
+      }
+    };
+    voiceSourceNode.connect(voiceProcessorNode);
+    voiceProcessorNode.connect(voiceSilenceGain);
+    voiceSilenceGain.connect(voiceAudioContext.destination);
+
+    voiceState = transitionVoiceState(voiceState, "listening");
+    renderVoiceUI();
+
+    voiceCaptureStopTimer = setTimeout(() => {
+      if (voiceState.status === "listening") {
+        stopListeningAndTranscribe().catch(() => {});
+      }
+    }, Math.max(1000, Math.floor(voiceState.maxAudioSeconds * 1000)));
+  } catch (_error) {
+    releaseMicrophone();
+    voiceCapturedChunks = [];
+    voiceState = transitionVoiceState(voiceState, "error", { errorCode: "mic_unavailable" });
+    renderVoiceUI();
+  }
+}
+
+async function stopListeningAndTranscribe() {
+  if (voiceState.status !== "listening") return;
+  const chunks = voiceCapturedChunks;
+  const sampleRate = voiceCaptureSampleRate;
+  voiceCapturedChunks = [];
+  releaseMicrophone();
+  const generation = voiceState.generation;
+
+  let encoded;
+  try {
+    encoded = encodePcm16Wav(chunks, sampleRate, {
+      maxBytes: voiceState.maxAudioBytes,
+      maxSeconds: voiceState.maxAudioSeconds,
+    });
+  } catch (error) {
+    voiceState = transitionVoiceState(voiceState, "error", {
+      errorCode: error?.code || "invalid_audio",
+    });
+    renderVoiceUI();
+    return;
+  }
+
+  voiceState = transitionVoiceState(voiceState, "transcribing");
+  renderVoiceUI();
+
+  abortVoiceRequests();
+  const controller = new AbortController();
+  voiceAbortController = controller;
+  const timeout = setTimeout(() => controller.abort(), 90000);
+  try {
+    const response = await fetch("/api/v1/voice/transcribe", {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "audio/wav",
+        "X-Jarvis-CSRF": csrfToken,
+        "X-Jarvis-Voice-Language": "auto",
+      },
+      body: encoded.wavBytes,
+    });
+    const value = await responseJson(response);
+    if (generation !== voiceState.generation) return;
+    if (response.status === 401) {
+      markSessionExpired();
+      return;
+    }
+    if (!response.ok) {
+      voiceState = transitionVoiceState(voiceState, "error", {
+        errorCode: value.error || "transcription_failed",
+      });
+      renderVoiceUI();
+      return;
+    }
+    const transcript = typeof value.text === "string" ? value.text.trim() : "";
+    if (!transcript) {
+      voiceState = transitionVoiceState(voiceState, "error", { errorCode: "empty_transcript" });
+      renderVoiceUI();
+      return;
+    }
+    const replyLang = value.language === "ar" || value.language === "en"
+      ? value.language
+      : detectReplyLanguage(transcript, language);
+    voiceState = transitionVoiceState(voiceState, "thinking", {
+      transcript,
+      replyLanguage: replyLang,
+    });
+    renderVoiceUI();
+    await sendChatMessage(transcript, { fromVoice: true, voiceGeneration: generation });
+  } catch (error) {
+    if (generation !== voiceState.generation) return;
+    voiceState = transitionVoiceState(voiceState, "error", {
+      errorCode: error?.name === "AbortError" ? "transcription_timeout" : "transcription_failed",
+    });
+    renderVoiceUI();
+  } finally {
+    clearTimeout(timeout);
+    if (voiceAbortController === controller) voiceAbortController = null;
+  }
+}
+
+async function playSpokenReply({ text = voiceState.lastReplyText, replyLanguage = voiceState.lastReplyLanguage, voiceGeneration = voiceState.generation } = {}) {
+  if (!authenticated || !csrfToken || !text) return;
+  if (!voiceState.ttsConfigured) {
+    voiceState = transitionVoiceState(voiceState, "error", { errorCode: "voice_tts_not_configured" });
+    renderVoiceUI();
+    return;
+  }
+  const targetLang = detectReplyLanguage(text, replyLanguage || language);
+  const cacheKey = `${targetLang}:${text}`;
+
+  stopVoicePlayback({ revokeAudio: false });
+
+  if (voiceAudioObjectUrl && voiceCachedReplyKey === cacheKey) {
+    await startAudioElementPlayback(voiceAudioObjectUrl, voiceGeneration);
+    return;
+  }
+
+  abortVoiceRequests();
+  const controller = new AbortController();
+  voiceAbortController = controller;
+  const timeout = setTimeout(() => controller.abort(), 90000);
+  try {
+    const response = await fetch("/api/v1/voice/synthesize", {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Jarvis-CSRF": csrfToken,
+      },
+      body: JSON.stringify({ text, language: targetLang }),
+    });
+    if (voiceGeneration !== voiceState.generation) return;
+    if (response.status === 401) {
+      markSessionExpired();
+      return;
+    }
+    if (!response.ok) {
+      const errPayload = await responseJson(response);
+      voiceState = transitionVoiceState(voiceState, "error", {
+        errorCode: errPayload.error || "synthesis_failed",
+      });
+      renderVoiceUI();
+      return;
+    }
+    const contentType = (response.headers.get("Content-Type") || "").toLowerCase();
+    if (!contentType.startsWith("audio/wav")) {
+      voiceState = transitionVoiceState(voiceState, "error", { errorCode: "synthesis_failed" });
+      renderVoiceUI();
+      return;
+    }
+    const wavBlob = await response.blob();
+    if (voiceGeneration !== voiceState.generation) return;
+    revokeVoiceAudioObjectUrl();
+    voiceAudioObjectUrl = URL.createObjectURL(wavBlob);
+    voiceCachedReplyKey = cacheKey;
+    voiceState = transitionVoiceState(voiceState, "speaking", {
+      hasReplayAudio: true,
+      replyLanguage: targetLang,
+    });
+    renderVoiceUI();
+    await startAudioElementPlayback(voiceAudioObjectUrl, voiceGeneration);
+  } catch (error) {
+    if (voiceGeneration !== voiceState.generation) return;
+    voiceState = transitionVoiceState(voiceState, "error", {
+      errorCode: error?.name === "AbortError" ? "synthesis_timeout" : "synthesis_failed",
+    });
+    renderVoiceUI();
+  } finally {
+    clearTimeout(timeout);
+    if (voiceAbortController === controller) voiceAbortController = null;
+  }
+}
+
+async function startAudioElementPlayback(objectUrl, voiceGeneration) {
+  if (voiceGeneration !== voiceState.generation) return;
+  const audio = new Audio();
+  audio.preload = "auto";
+  audio.muted = voiceState.muted;
+  audio.src = objectUrl;
+  voiceAudioElement = audio;
+
+  audio.onended = () => {
+    if (voiceAudioElement === audio && voiceGeneration === voiceState.generation) {
+      voiceState = transitionVoiceState(voiceState, "stopped");
+      renderVoiceUI();
+    }
+  };
+  audio.onerror = () => {
+    if (voiceAudioElement === audio && voiceGeneration === voiceState.generation) {
+      voiceState = transitionVoiceState(voiceState, "error", { errorCode: "playback_failed" });
+      renderVoiceUI();
+    }
+  };
+
+  voiceState = transitionVoiceState(voiceState, "speaking", { hasReplayAudio: true });
+  renderVoiceUI();
+  try {
+    await audio.play();
+  } catch (_error) {
+    if (voiceGeneration === voiceState.generation) {
+      voiceState = transitionVoiceState(voiceState, "error", { errorCode: "playback_failed" });
+      renderVoiceUI();
+    }
+  }
 }
 
 function appendChatEntry(kind, text) {
@@ -2006,6 +2548,7 @@ async function restoreSession() {
     chatInput.disabled = true;
     chatSend.disabled = true;
     await loadWorkspaces(value.active_workspace_id);
+    await loadVoiceStatus();
   } catch (_error) {
     setAuthenticated(false, null, null, null, false);
     setChatState("unavailable", "error");
@@ -2045,6 +2588,7 @@ async function pairBrowser(event) {
     chatInput.disabled = true;
     chatSend.disabled = true;
     await loadWorkspaces(null);
+    await loadVoiceStatus();
     chatInput.focus();
   } catch (_error) {
     setPairError(language === "ar" ? "تعذر الاتصال بالخدمة المحلية." : "Could not connect to the local service.");
@@ -2055,8 +2599,11 @@ async function pairBrowser(event) {
 
 async function sendChat(event) {
   event.preventDefault();
+  await sendChatMessage(chatInput.value.trim(), { fromVoice: false });
+}
+
+async function sendChatMessage(message, { fromVoice = false, voiceGeneration = voiceState.generation } = {}) {
   if (!authenticated || sending || !csrfToken || workspaceServiceUnavailable) return;
-  const message = chatInput.value.trim();
   if (!message || message.length > 1000) return;
   sending = true;
   chatInput.disabled = true;
@@ -2064,16 +2611,21 @@ async function sendChat(event) {
   workspaceSelect.disabled = true;
   setChatState("sending", "busy");
   setStatusLine("");
+  renderVoiceUI();
   appendChatEntry("user", message);
   const pending = appendChatEntry("assistant pending", language === "ar" ? "جارٍ إنشاء رد محلي…" : "Generating a local response…");
-  chatInput.value = "";
+  if (!fromVoice) chatInput.value = "";
   const controller = new AbortController();
+  if (fromVoice) voiceAbortController = controller;
   const timeout = setTimeout(() => controller.abort(), 310000);
+  let replyToSpeak = null;
+  let replyLanguage = language;
   try {
+    const payload = fromVoice ? { message, voice_mode: true } : { message };
     const response = await fetch("/api/v1/chat", {
       method: "POST", credentials: "same-origin", cache: "no-store", signal: controller.signal,
       headers: { "Content-Type": "application/json", "X-Jarvis-CSRF": csrfToken },
-      body: JSON.stringify({ message })
+      body: JSON.stringify(payload)
     });
     const value = await responseJson(response);
     if (response.status === 401) {
@@ -2091,6 +2643,9 @@ async function sendChat(event) {
       pending.classList.add("error");
       pending.textContent = errorMessage(value.error);
       setChatState("failed", "error");
+      if (fromVoice && voiceGeneration === voiceState.generation) {
+        voiceState = transitionVoiceState(voiceState, "error", { errorCode: "default" });
+      }
       if (value.error === "workspace_unavailable") {
         activeWorkspaceId = null;
         clearEphemeralWorkspaceView();
@@ -2118,25 +2673,57 @@ async function sendChat(event) {
       renderEvidence(null);
     }
     setChatState("ready", "ready");
+    revokeVoiceAudioObjectUrl();
+    replyLanguage = detectReplyLanguage(value.reply, language);
+    replyToSpeak = value.reply;
+    if (fromVoice && voiceGeneration === voiceState.generation) {
+      voiceState = transitionVoiceState(voiceState, "stopped", {
+        replyText: value.reply,
+        replyLanguage,
+        hasReplayAudio: false,
+      });
+    } else {
+      voiceState = {
+        ...voiceState,
+        lastReplyText: value.reply,
+        lastReplyLanguage: replyLanguage,
+        hasReplayAudio: false,
+      };
+    }
   } catch (error) {
+    if (fromVoice && voiceGeneration !== voiceState.generation) {
+      pending.remove();
+      setChatState("ready", "ready");
+      return;
+    }
     pending.classList.remove("pending");
     pending.classList.add("error");
     pending.textContent = error.name === "AbortError"
       ? (language === "ar" ? "انتهت مهلة انتظار النموذج المحلي." : "Timed out waiting for the local model.")
       : errorMessage("default");
     setChatState("unavailable", "error");
+    if (fromVoice && voiceGeneration === voiceState.generation) {
+      voiceState = transitionVoiceState(voiceState, "error", { errorCode: "default" });
+    }
   } finally {
     clearTimeout(timeout);
+    if (voiceAbortController === controller) voiceAbortController = null;
     sending = false;
     chatInput.disabled = !authenticated;
     chatSend.disabled = !authenticated;
     workspaceSelect.disabled = !authenticated;
-    if (authenticated) chatInput.focus();
+    renderVoiceUI();
+    if (authenticated && !fromVoice) chatInput.focus();
+  }
+  if (fromVoice && replyToSpeak && authenticated && voiceGeneration === voiceState.generation
+      && voiceState.ttsConfigured && !voiceState.muted) {
+    await playSpokenReply({ text: replyToSpeak, replyLanguage, voiceGeneration });
   }
 }
 
 async function disconnectBrowser() {
   if (!authenticated || !csrfToken) return;
+  teardownVoiceForSessionEnd();
   signOut.disabled = true;
   try {
     await fetch("/api/v1/session", {
@@ -2450,6 +3037,20 @@ taskEventsNext.addEventListener("click", () => {
 search.addEventListener("input", updateSearch);
 pairForm.addEventListener("submit", pairBrowser);
 chatForm.addEventListener("submit", sendChat);
+voicePttButton.addEventListener("click", () => { handlePushToTalkClick(); });
+voicePlayButton.addEventListener("click", () => { playSpokenReply(); });
+voiceStopButton.addEventListener("click", () => { interruptVoice({ clearReply: false }); });
+voiceMuteButton.addEventListener("click", () => {
+  voiceState = toggleVoiceMute(voiceState);
+  if (voiceAudioElement) voiceAudioElement.muted = voiceState.muted;
+  renderVoiceUI();
+});
+voiceTranscriptToggle.addEventListener("click", () => {
+  voiceState = toggleVoiceTranscript(voiceState);
+  renderVoiceUI();
+});
+window.addEventListener("pagehide", () => { teardownVoiceForSessionEnd(); });
+window.addEventListener("beforeunload", () => { teardownVoiceForSessionEnd(); });
 signOut.addEventListener("click", disconnectBrowser);
 createCandidateOpen.addEventListener("click", openCandidateEditor);
 candidateEditorForm.addEventListener("submit", submitMemoryCandidate);
@@ -2470,6 +3071,10 @@ $("#motion-toggle").addEventListener("click", (event) => {
   sceneState?.setMotion(reduceMotion);
 });
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && (voiceState.status === "listening" || voiceState.status === "speaking")) {
+    interruptVoice({ clearReply: false });
+    return;
+  }
   if (event.key === "/" && !["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) { event.preventDefault(); search.focus(); }
 });
 applyLanguage("en");
