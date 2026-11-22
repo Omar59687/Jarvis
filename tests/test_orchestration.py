@@ -655,11 +655,22 @@ class OrchestrationRetentionTests(unittest.TestCase):
                     self.assertEqual(connection.execute(
                         f"SELECT COUNT(*) FROM {table} WHERE task_id=?", (tid,)).fetchone()[0], 0)
 
-            # Verify no plaintext goal leaked into tombstones, purge ops, or audit_events.
-            for table in ("orchestration_purge_tombstones", "orchestration_purge_operations", "audit_events"):
+            # Verify no plaintext goal or goal_sha256 leaked into purge tombstones, purge ops, or purge audit events.
+            for table in ("orchestration_purge_tombstones", "orchestration_purge_operations"):
                 rows = connection.execute(f"SELECT * FROM {table}").fetchall()
                 joined = "\n".join(str(dict(row)) for row in rows)
                 self.assertNotIn(secret_goal, joined)
+                self.assertNotIn(task_a.goal_sha256, joined)
+                self.assertNotIn(task_b.goal_sha256, joined)
+            audit_rows = connection.execute("SELECT * FROM audit_events").fetchall()
+            self.assertNotIn(secret_goal, "\n".join(str(dict(row)) for row in audit_rows))
+            purge_audit_rows = connection.execute(
+                "SELECT * FROM audit_events WHERE event_type='orchestration.tasks_purged'"
+            ).fetchall()
+            self.assertEqual(len(purge_audit_rows), 1)
+            purge_audit_joined = "\n".join(str(dict(row)) for row in purge_audit_rows)
+            self.assertNotIn(task_a.goal_sha256, purge_audit_joined)
+            self.assertNotIn(task_b.goal_sha256, purge_audit_joined)
 
             # Immutability triggers remain enforced for tombstones, operations, and surviving tasks.
             with self.assertRaises(sqlite3.IntegrityError):
@@ -674,7 +685,9 @@ class OrchestrationRetentionTests(unittest.TestCase):
                 connection.execute("DELETE FROM orchestration_task_events WHERE task_id=?", (survivor.id,))
 
         tombstone = self.service.get_purge_tombstone("owner", "ws", task_a.id)
-        self.assertEqual(tombstone.goal_sha256, task_a.goal_sha256)
+        self.assertFalse(hasattr(tombstone, "goal_sha256"))
+        self.assertEqual(tombstone.task_id, task_a.id)
+        self.assertEqual(tombstone.task_state, task_a.state)
         self.assertEqual(tombstone.approval_count, 1)
         self.assertEqual(tombstone.plan_count, 2)
         self.assertEqual(tombstone.purged_by, "owner")
@@ -729,8 +742,14 @@ class OrchestrationRetentionTests(unittest.TestCase):
         self.assertEqual(self.service.get_task("owner", task.id).id, task.id)
         receipt = workflow.purge_tasks(task_ids=(task.id,))
         self.assertIsNotNone(receipt)
-        tombstones = workflow.inspect_purge_tombstones()
+        tombstone_output = StringIO()
+        tombstone_workflow = OrchestrationOperatorWorkflow(
+            "owner", "ws", self.db, self.service, input_fn=answer, output=tombstone_output
+        )
+        tombstones = tombstone_workflow.inspect_purge_tombstones()
         self.assertEqual(len(tombstones), 1)
+        self.assertNotIn("goal_sha256", tombstone_output.getvalue())
+        self.assertIn(task.id, tombstone_output.getvalue())
         rendered = output.getvalue()
         self.assertIn("auto_delete=False", rendered)
         self.assertIn("SSD physical erasure", rendered)
@@ -1170,7 +1189,10 @@ class OrchestrationRetentionTests(unittest.TestCase):
             archived_only=True,
         )
         self.assertEqual(receipt.task_count, 1)
-        self.assertEqual(service.get_purge_tombstone("owner", "ws_up", task.id).goal_sha256, task.goal_sha256)
+        tombstone = service.get_purge_tombstone("owner", "ws_up", task.id)
+        self.assertFalse(hasattr(tombstone, "goal_sha256"))
+        self.assertEqual(tombstone.task_id, task.id)
+        self.assertEqual(tombstone.task_state, TaskState.CANCELLED)
 
     def test_no_regression_of_coding_agent_restrictions(self):
         task = self._make_completed_task(goal="Verify P4 restrictions after archive/restore")
@@ -1534,6 +1556,184 @@ class OrchestrationRetentionTests(unittest.TestCase):
                 use_retention_policy=True,
                 as_of=as_of_iso,
             )
+
+    def test_v11_tombstone_privacy_snapshot_schema2_and_v10_receipt_replay(self):
+        from jarvis_core.orchestration import _canonical_json, _digest, _purge_confirmation_phrase
+
+        # 1. Fresh v11 purge preview uses schema 2 without goal_sha256 or result_summary_sha256.
+        secret_goal = "Confidential v11 goal string 9981"
+        task = self._make_completed_task(goal=secret_goal)
+        preview = self.service.preview_purge("owner", "ws", task_ids=(task.id,))
+        self.assertEqual(preview.task_count, 1)
+        with self.db._connection() as conn:
+            latest_event_id = int(conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM orchestration_task_events WHERE workspace_id=? AND task_id=?",
+                ("ws", task.id),
+            ).fetchone()[0])
+        item = preview.items[0]
+        expected_v2_snapshot = _digest(_canonical_json({
+            "schema": 2,
+            "workspace_id": "ws",
+            "archived_only": False,
+            "items": [{
+                "task_id": item.task_id,
+                "state": item.state.value,
+                "archived_at": item.archived_at,
+                "updated_at": item.updated_at,
+                "current_plan_revision": task.current_plan_revision,
+                "approved_plan_revision": task.approved_plan_revision,
+                "plan_count": item.plan_count,
+                "subtask_count": item.subtask_count,
+                "dependency_count": item.dependency_count,
+                "approval_count": item.approval_count,
+                "event_count": item.event_count,
+                "latest_event_id": latest_event_id,
+            }],
+        }))
+        self.assertEqual(preview.preview_sha256, expected_v2_snapshot)
+
+        # Updating goal & result_summary without altering structural metadata keeps preview_sha256 identical
+        # (proving neither goal_sha256 nor result_summary_sha256 is an input to persisted preview_sha256).
+        alt_goal = "Different goal text for snapshot check"
+        with self.db._connection() as conn:
+            conn.execute(
+                "UPDATE orchestration_tasks SET goal=?, goal_sha256=?, result_summary=? WHERE id=?",
+                (alt_goal, _digest(alt_goal), "Different result summary", task.id),
+            )
+            conn.commit()
+        preview_after_text_change = self.service.preview_purge("owner", "ws", task_ids=(task.id,))
+        self.assertEqual(preview_after_text_change.preview_sha256, preview.preview_sha256)
+
+        # Live task goal integrity check remains enforced (corrupted goal_sha256 fails closed).
+        with self.db._connection() as conn:
+            conn.execute(
+                "UPDATE orchestration_tasks SET goal_sha256=? WHERE id=?",
+                ("0" * 64, task.id),
+            )
+            conn.commit()
+        with self.assertRaisesRegex(OrchestrationError, "task_evidence_corrupt"):
+            self.service.get_task("owner", task.id)
+        with self.db._connection() as conn:
+            conn.execute(
+                "UPDATE orchestration_tasks SET goal=?, goal_sha256=? WHERE id=?",
+                (secret_goal, _digest(secret_goal), task.id),
+            )
+            conn.commit()
+
+        # Confirmed v11 purge persists no goal hashes in tombstones, purge ops, or purge audit events.
+        receipt = self.service.purge_tasks(
+            "owner", "ws",
+            task_ids=preview.task_ids,
+            expected_preview_sha256=preview.preview_sha256,
+            confirmation=preview.confirmation_phrase,
+            idempotency_key=self._k("v11-privacy-purge"),
+        )
+        self.assertEqual(receipt.task_count, 1)
+        tombstone = self.service.get_purge_tombstone("owner", "ws", task.id)
+        self.assertFalse(hasattr(tombstone, "goal_sha256"))
+        with self.db._connection() as conn:
+            for table in ("orchestration_purge_tombstones", "orchestration_purge_operations"):
+                joined = "\n".join(str(dict(r)) for r in conn.execute(f"SELECT * FROM {table}").fetchall())
+                self.assertNotIn(task.goal_sha256, joined)
+                self.assertNotIn(secret_goal, joined)
+            purge_audits = conn.execute(
+                "SELECT metadata_json FROM audit_events WHERE event_type='orchestration.tasks_purged'"
+            ).fetchall()
+            self.assertEqual(len(purge_audits), 1)
+            purge_audit_text = "\n".join(r["metadata_json"] for r in purge_audits)
+            self.assertNotIn(task.goal_sha256, purge_audit_text)
+            self.assertNotIn(secret_goal, purge_audit_text)
+
+        # 2. Historical v10 database with schema-1 purge receipt upgrades to v11 and stays replayable.
+        v10_path = Path(self.temp.name) / "upgrade-v10-receipt.sqlite3"
+        v10_db = Database(v10_path, migrations=DEFAULT_MIGRATIONS[:10])
+        v10_db.initialize()
+        v10_db.create_workspace("Historical V10", WorkspaceKind.PROJECT, "owner", "ws_v10")
+        v10_db.grant_permission("owner", "ws_v10", "reader", Permission.READ)
+        v10_preview_sha = _digest(_canonical_json({
+            "schema": 1,
+            "workspace_id": "ws_v10",
+            "archived_only": True,
+            "items": [{"task_id": "hist-task-1", "goal_sha256": _digest("Historical secret goal")}],
+        }))
+        hist_idem = self._k("hist-v10-purge")
+        with v10_db._connection() as conn:
+            conn.execute(
+                "INSERT INTO orchestration_purge_operations("
+                "purge_id,workspace_id,actor_id,idempotency_key,preview_sha256,"
+                "task_count,plan_count,subtask_count,dependency_count,"
+                "approval_count,event_count,purged_at) "
+                "VALUES('hist-purge-1','ws_v10','owner',?,?,"
+                "2,3,6,2,2,11,'2026-02-10T00:00:00+00:00')",
+                (hist_idem, v10_preview_sha),
+            )
+            conn.execute(
+                "INSERT INTO orchestration_purge_tombstones("
+                "workspace_id,task_id,purge_id,task_state,archived_at,goal_sha256,"
+                "plan_count,subtask_count,dependency_count,approval_count,"
+                "event_count,purged_by,purged_at) "
+                "VALUES('ws_v10','hist-task-1','hist-purge-1','completed',"
+                "'2026-02-01T00:00:00+00:00',?,2,4,1,1,6,'owner','2026-02-10T00:00:00+00:00')",
+                (_digest("Historical secret goal"),),
+            )
+            conn.execute(
+                "INSERT INTO orchestration_purge_tombstones("
+                "workspace_id,task_id,purge_id,task_state,archived_at,goal_sha256,"
+                "plan_count,subtask_count,dependency_count,approval_count,"
+                "event_count,purged_by,purged_at) "
+                "VALUES('ws_v10','hist-task-2','hist-purge-1','cancelled',"
+                "'2026-02-02T00:00:00+00:00',?,1,2,1,1,5,'owner','2026-02-10T00:00:00+00:00')",
+                (_digest("Second historical goal"),),
+            )
+            conn.commit()
+
+        upgraded_db = Database(v10_path)
+        upgraded_db.initialize()
+        upgraded_service = TaskOrchestrationService(upgraded_db)
+
+        # Upgraded tombstones retain IDs and counts without goal_sha256; authorization remains enforced.
+        listed = upgraded_service.list_purge_tombstones("owner", "ws_v10")
+        self.assertEqual([t.task_id for t in listed], ["hist-task-1", "hist-task-2"])
+        self.assertEqual((listed[0].plan_count, listed[0].approval_count, listed[0].event_count), (2, 1, 6))
+        self.assertEqual((listed[1].plan_count, listed[1].approval_count, listed[1].event_count), (1, 1, 5))
+        self.assertFalse(hasattr(listed[0], "goal_sha256"))
+        with self.assertRaises(AccessDenied):
+            upgraded_service.list_purge_tombstones("reader", "ws_v10")
+
+        # Historical v10 receipt replays idempotently using its original schema-1 preview_sha256.
+        replay = upgraded_service.purge_tasks(
+            "owner", "ws_v10",
+            task_ids=("hist-task-1", "hist-task-2"),
+            expected_preview_sha256=v10_preview_sha,
+            confirmation=_purge_confirmation_phrase("ws_v10", v10_preview_sha),
+            idempotency_key=hist_idem,
+            archived_only=True,
+        )
+        self.assertTrue(replay.already_purged)
+        self.assertEqual(replay.purge_id, "hist-purge-1")
+        self.assertEqual(replay.preview_sha256, v10_preview_sha)
+        self.assertEqual(replay.task_ids, ("hist-task-1", "hist-task-2"))
+        self.assertEqual((replay.task_count, replay.approval_count, replay.event_count), (2, 2, 11))
+
+        # Reusing the historical idempotency key with a different preview digest still conflicts.
+        wrong_sha = "f" * 64
+        with self.assertRaisesRegex(OrchestrationError, "idempotency_key_conflict"):
+            upgraded_service.purge_tasks(
+                "owner", "ws_v10",
+                task_ids=("hist-task-1", "hist-task-2"),
+                expected_preview_sha256=wrong_sha,
+                confirmation=_purge_confirmation_phrase("ws_v10", wrong_sha),
+                idempotency_key=hist_idem,
+                archived_only=True,
+            )
+
+        # 3. Pending approvals and cancellation remain behaviorally unchanged on upgraded v11 DB.
+        pending = upgraded_service.create_task("owner", "ws_v10", "Pending approval task on v11", idempotency_key=self._k("p-create"))
+        upgraded_service.propose_plan("owner", pending.id, DeterministicFakePlanner(proposal()), idempotency_key=self._k("p-plan"))
+        with self.assertRaisesRegex(OrchestrationError, "task_has_pending_approval"):
+            upgraded_service.preview_purge("owner", "ws_v10", task_ids=(pending.id,))
+        cancelled = upgraded_service.cancel_task("owner", pending.id, idempotency_key=self._k("p-cancel"))
+        self.assertEqual(cancelled.state, TaskState.CANCELLED)
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ from typing import Iterator, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 REQUIRED_BACKUP_COLUMNS = {
     "workspaces": {"id", "name", "kind", "created_at"},
     "workspace_permissions": {
@@ -849,6 +849,60 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
                 BEGIN SELECT RAISE(ABORT, 'orchestration approvals are immutable'); END""",
         ),
     ),
+    Migration(
+        version=11,
+        statements=(
+            "DROP TRIGGER IF EXISTS orchestration_task_events_no_delete",
+            "DROP TRIGGER IF EXISTS orchestration_approvals_no_delete",
+            """CREATE TABLE orchestration_purge_tombstones_v11 (
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                task_id TEXT NOT NULL,
+                purge_id TEXT NOT NULL REFERENCES orchestration_purge_operations(purge_id),
+                task_state TEXT NOT NULL,
+                archived_at TEXT,
+                plan_count INTEGER NOT NULL CHECK(plan_count >= 0),
+                subtask_count INTEGER NOT NULL CHECK(subtask_count >= 0),
+                dependency_count INTEGER NOT NULL CHECK(dependency_count >= 0),
+                approval_count INTEGER NOT NULL CHECK(approval_count >= 0),
+                event_count INTEGER NOT NULL CHECK(event_count >= 0),
+                purged_by TEXT NOT NULL CHECK(length(trim(purged_by)) > 0),
+                purged_at TEXT NOT NULL,
+                PRIMARY KEY(workspace_id,task_id)
+            )""",
+            """INSERT INTO orchestration_purge_tombstones_v11 (
+                workspace_id,task_id,purge_id,task_state,archived_at,
+                plan_count,subtask_count,dependency_count,approval_count,
+                event_count,purged_by,purged_at
+            )
+            SELECT workspace_id,task_id,purge_id,task_state,archived_at,
+                plan_count,subtask_count,dependency_count,approval_count,
+                event_count,purged_by,purged_at
+            FROM orchestration_purge_tombstones""",
+            "DROP TABLE orchestration_purge_tombstones",
+            "ALTER TABLE orchestration_purge_tombstones_v11 RENAME TO orchestration_purge_tombstones",
+            "CREATE INDEX orchestration_purge_tombstones_workspace ON orchestration_purge_tombstones(workspace_id,purged_at,task_id)",
+            """CREATE TRIGGER orchestration_purge_tombstones_no_update
+                BEFORE UPDATE ON orchestration_purge_tombstones
+                BEGIN SELECT RAISE(ABORT, 'orchestration purge tombstones are immutable'); END""",
+            """CREATE TRIGGER orchestration_purge_tombstones_no_delete
+                BEFORE DELETE ON orchestration_purge_tombstones
+                BEGIN SELECT RAISE(ABORT, 'orchestration purge tombstones are immutable'); END""",
+            """CREATE TRIGGER orchestration_task_events_no_delete
+                BEFORE DELETE ON orchestration_task_events
+                WHEN NOT EXISTS (
+                    SELECT 1 FROM orchestration_purge_tombstones p
+                    WHERE p.task_id = OLD.task_id AND p.workspace_id = OLD.workspace_id
+                )
+                BEGIN SELECT RAISE(ABORT, 'orchestration events are append-only'); END""",
+            """CREATE TRIGGER orchestration_approvals_no_delete
+                BEFORE DELETE ON orchestration_approvals
+                WHEN NOT EXISTS (
+                    SELECT 1 FROM orchestration_purge_tombstones p
+                    WHERE p.task_id = OLD.task_id AND p.workspace_id = OLD.workspace_id
+                )
+                BEGIN SELECT RAISE(ABORT, 'orchestration approvals are immutable'); END""",
+        ),
+    ),
 )
 
 
@@ -1655,16 +1709,25 @@ class Database:
                         },
                         "orchestration_purge_tombstones": {
                             "workspace_id", "task_id", "purge_id", "task_state",
-                            "goal_sha256", "approval_count", "event_count",
+                            "archived_at", "plan_count", "subtask_count",
+                            "dependency_count", "approval_count", "event_count",
                             "purged_by", "purged_at",
                         },
                     }
+                    if source_version == 10:
+                        v10_tables["orchestration_purge_tombstones"].add("goal_sha256")
                     for table, required_columns in v10_tables.items():
                         columns = {row[1] for row in source.execute(
                             f"PRAGMA table_info({table})").fetchall()}
                         if not required_columns <= columns:
                             raise sqlite3.DatabaseError(
                                 f"backup is missing required schema for table {table}")
+                    if source_version >= 11:
+                        tombstone_columns = {row[1] for row in source.execute(
+                            "PRAGMA table_info(orchestration_purge_tombstones)").fetchall()}
+                        if "goal_sha256" in tombstone_columns:
+                            raise sqlite3.DatabaseError(
+                                "backup contains removed goal_sha256 column on orchestration_purge_tombstones")
                     v10_triggers = {row[0] for row in source.execute(
                         "SELECT name FROM sqlite_master WHERE type='trigger'").fetchall()}
                     if not {

@@ -181,7 +181,6 @@ class PurgeTombstone:
     purge_id: str
     task_state: TaskState
     archived_at: str | None
-    goal_sha256: str
     plan_count: int
     subtask_count: int
     dependency_count: int
@@ -1963,10 +1962,6 @@ class TaskOrchestrationService:
                 "updated_at": task.updated_at,
                 "current_plan_revision": task.current_plan_revision,
                 "approved_plan_revision": task.approved_plan_revision,
-                "goal_sha256": task.goal_sha256,
-                "result_summary_sha256": (
-                    _digest(task.result_summary) if task.result_summary is not None else None
-                ),
                 "plan_count": plan_count,
                 "subtask_count": subtask_count,
                 "dependency_count": dep_count,
@@ -1976,7 +1971,7 @@ class TaskOrchestrationService:
             })
 
         preview_sha256 = _digest(_canonical_json({
-            "schema": 1,
+            "schema": 2,
             "workspace_id": workspace_id,
             "archived_only": archived_only,
             "items": snapshot_entries,
@@ -2127,12 +2122,12 @@ class TaskOrchestrationService:
                 for item in live_preview.items:
                     connection.execute(
                         "INSERT INTO orchestration_purge_tombstones("
-                        "workspace_id,task_id,purge_id,task_state,archived_at,goal_sha256,"
+                        "workspace_id,task_id,purge_id,task_state,archived_at,"
                         "plan_count,subtask_count,dependency_count,approval_count,"
                         "event_count,purged_by,purged_at) "
-                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                         (workspace_id, item.task_id, purge_id, item.state.value, item.archived_at,
-                         item.goal_sha256, item.plan_count, item.subtask_count,
+                         item.plan_count, item.subtask_count,
                          item.dependency_count, item.approval_count, item.event_count,
                          actor_id, purged_at),
                     )
@@ -2193,8 +2188,6 @@ class TaskOrchestrationService:
     @staticmethod
     def _tombstone(row) -> PurgeTombstone:
         try:
-            if not _SHA256.fullmatch(row["goal_sha256"]):
-                raise ValueError
             if row["archived_at"] is not None:
                 _parse_utc(row["archived_at"], "archived_at")
             _parse_utc(row["purged_at"], "purged_at")
@@ -2204,7 +2197,6 @@ class TaskOrchestrationService:
                 purge_id=row["purge_id"],
                 task_state=TaskState(row["task_state"]),
                 archived_at=row["archived_at"],
-                goal_sha256=row["goal_sha256"],
                 plan_count=int(row["plan_count"]),
                 subtask_count=int(row["subtask_count"]),
                 dependency_count=int(row["dependency_count"]),
