@@ -151,6 +151,18 @@ python -m prototypes.m03_b1.service `
 
 ## Current Limitations & Verification Status
 
-- Automated verification in this milestone covers synthetic Python (`unittest`) and Node (`node --test`) suites for WAV validation, offline adapter enforcement, HTTP auth/CSRF/Host/Origin/rate-limit/error-redaction boundaries, zero disk/DB persistence, UI state transitions, interrupt handling, and session teardown.
-- **Live end-to-end Windows hardware verification** (physical microphone capture in Edge/Chrome, real `faster-whisper` weights on English & Arabic speech, real Chatterbox Multilingual / Piper synthesis, and browser audio playback) has **not** yet been run in this branch and must be completed before declaring production-ready voice conversation.
+- Automated verification covers synthetic Python (`unittest`) and Node (`node --test`) suites for WAV validation, offline adapter enforcement, HTTP auth/CSRF/Host/Origin/rate-limit/error-redaction boundaries, zero disk/DB persistence, UI state transitions, interruption, and session teardown. The closure run on 2026-11-22 passed 329 Python tests (9 platform/privilege skips), 24 Node tests, JavaScript syntax checks, Python compilation checks, and `git diff --check` against the base.
+- **User-reported live acceptance in Zen Browser:** five consecutive English conversations passed; Stop during playback, Stop during pending speech synthesis, and disconnect during recording passed. Microphone permission denial is a provisional pass. These are user-observed results, not hardware tests performed by the automated suite.
+- **Unavailable-provider acceptance:** a temporary loopback Jarvis service with the installed English faster-whisper and Piper assets transcribed synthetic audio. An authenticated chat request against an unavailable local endpoint returned bounded `504 generation_timeout` in about 2.03 seconds; the service remained responsive. A controlled local mock endpoint then returned a successful response in about 0.05 seconds. The active Jarvis and Bonsai services were left running.
+- **Recording privacy audit:** source inspection and synthetic tests found no Jarvis persistence of raw audio or voice transcripts. The application status reports both storage flags false. This does not establish browser/OS memory handling or retention by an external local provider's own logs.
+- **Not verified / deferred:** workspace-switch integration acceptance; reliable Arabic TTS; Chatterbox installation or live synthesis; wake-word or always-on listening. Arabic voice output is unavailable in the accepted English-only configuration. Permission-denial acceptance remains provisional. No OS-enforced network isolation is provided by the application's offline configuration.
+- The accepted English-first configuration uses faster-whisper CPU INT8 and the configured local English Piper voice. It preserves automatic language recognition and does not translate Arabic input; Arabic text replies remain possible, but Arabic speech output is not accepted for this milestone.
 - Wake-word detection, continuous duplex conversation, and voice-triggered tool/task execution remain intentionally out of scope for M03-C1.
+
+## M03-C1 Closure Record (2026-11-22)
+
+- **Base:** `9c0c6a97084e0b47f322e3f10b01e3885d989d26` (`origin/main` at review time).
+- **Reviewed implementation HEAD:** `ef4a49b16f2753654eeb02a5d6a0213f78cddc32` on `feature/m03-c1-local-voice`.
+- **M03-C1 implementation and repair commits:** `770ac7ab90456512644f653de64a991b433e69a7`, `c8551fd8546f499ceb9ac891803e98851d70f47b`, `bb978295e6d5fd1e3749f3fb6705b7fbab628782`, `cba19f24f053438965848a8f2a284a0a47750f28`, `1dba5542f23b1fc4739f83c8bfef5be197845001`, and `ef4a49b16f2753654eeb02a5d6a0213f78cddc32`.
+- The feature delta from the base is limited to 11 M03-C1 files. No changes are made to the trusted storage, memory, orchestration, or P4 authorization implementations.
+- This closure record documents accepted evidence and limits; it does not claim production-ready hands-free operation or acceptance of deferred features.
