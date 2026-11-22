@@ -6,7 +6,11 @@
 #
 # Install inside an isolated venv or conda env (never into system Python):
 #   1) Core offline speech-to-text (required for local STT):
-faster-whisper>=1.1.0,<2.0.0
+faster-whisper==1.2.1
+ctranslate2==4.9.1
+onnxruntime==1.32.0
+# PyAV 19.0.2 rejects metadata_errors used by faster-whisper 1.2.1.
+av==14.2.0
 
 #   2) Optional Option A — Chatterbox Multilingual neural bilingual TTS (English & Arabic):
 #      Requires PyTorch + torchaudio matching your CUDA runtime first.
@@ -19,6 +23,7 @@ faster-whisper>=1.1.0,<2.0.0
 #      Download a prebuilt Windows `piper.exe` release + local `.onnx` and `.onnx.json`
 #      voice files (e.g., en_GB-alan-medium and ar_JO-kareem-medium) and pass explicit
 #      local paths via --tts-binary-path, --tts-model-path, and --tts-model-ar-path.
+piper-tts==1.8.0
 #
 # All models MUST be downloaded manually ahead of time into explicit local directories.
 # Jarvis sets local_files_only=True / HF_HUB_OFFLINE=1 and never auto-downloads models at runtime.
