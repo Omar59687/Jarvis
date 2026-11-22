@@ -32,6 +32,10 @@ class LifecycleConflict(RuntimeError):
     """Requested lifecycle transition is stale or not allowed from this state."""
 
 
+class EvidenceSourceChanged(LifecycleConflict):
+    """Selected source content changed after the cited answer was generated."""
+
+
 class InvalidDecision(PermissionError):
     """Decision context is missing, invalid, expired, or already consumed."""
 
@@ -252,7 +256,8 @@ class MemoryService:
         return row
 
     def _capture_evidence(self, connection: sqlite3.Connection, workspace_id: str,
-                          document_ids: Iterable[str], user_authored: bool) -> tuple[str, tuple[Evidence, ...]]:
+                          document_ids: Iterable[str], user_authored: bool,
+                          expected_source_hashes: dict[str, str] | None = None) -> tuple[str, tuple[Evidence, ...]]:
         ids = tuple(dict.fromkeys(_nonempty(i, "document ID", 200) for i in document_ids))
         if len(ids) > MAX_EVIDENCE:
             raise ValueError(f"at most {MAX_EVIDENCE} evidence documents are allowed")
@@ -260,6 +265,8 @@ class MemoryService:
             raise ValueError("choose evidence provenance or user-authored provenance")
         if not ids and not user_authored:
             raise ValueError("memory requires evidence or explicit user-authored designation")
+        if expected_source_hashes is not None and set(expected_source_hashes) != set(ids):
+            raise ValueError("evidence snapshot does not match selected documents")
         kind = "user_authored" if user_authored else "evidence"
         evidence: list[Evidence] = []
         for doc_id in ids:
@@ -269,6 +276,9 @@ class MemoryService:
                 WHERE d.id=? AND d.workspace_id=? AND d.deleted_at IS NULL""", (doc_id,workspace_id)).fetchone()
             if row is None or row["revoked_at"] is not None:
                 raise AccessDenied("evidence is unavailable in this workspace")
+            if (expected_source_hashes is not None
+                    and expected_source_hashes.get(doc_id) != row["content_sha256"]):
+                raise EvidenceSourceChanged("evidence source changed after retrieval")
             evidence.append(Evidence(row["id"],row["root_id"],row["relative_path"],row["content_sha256"],row["last_seen_at"]))
         return kind, tuple(evidence)
 
@@ -286,6 +296,7 @@ class MemoryService:
 
     def propose(self, actor_id: str, workspace_id: str, content: str, *,
                 evidence_document_ids: Iterable[str] = (), user_authored: bool = False,
+                expected_source_hashes: dict[str, str] | None = None,
                 request_key: str | None = None) -> Candidate:
         actor_id=_nonempty(actor_id,"actor ID"); workspace_id=_nonempty(workspace_id,"workspace ID")
         if not isinstance(user_authored,bool): raise TypeError("user_authored must be a boolean designation")
@@ -296,7 +307,8 @@ class MemoryService:
             self.db._begin(c)
             try:
                 self.db._require_access(c,actor_id,workspace_id,Permission.WRITE)
-                kind,evidence=self._capture_evidence(c,workspace_id,evidence_document_ids,user_authored)
+                kind,evidence=self._capture_evidence(c,workspace_id,evidence_document_ids,user_authored,
+                                                     expected_source_hashes)
                 digest=_evidence_digest(kind,evidence)
                 if request_key is not None:
                     existing=c.execute("SELECT * FROM memory_candidates WHERE workspace_id=? AND proposed_by=? AND request_key=?",(workspace_id,actor_id,request_key)).fetchone()
@@ -331,7 +343,8 @@ class MemoryService:
             return [self._candidate(c,r) for r in rows]
 
     def edit_candidate(self, actor_id: str, workspace_id: str, candidate_id: str, *, expected_revision: int,
-                       content: str, evidence_document_ids: Iterable[str]=(), user_authored: bool=False) -> Candidate:
+                       content: str, evidence_document_ids: Iterable[str]=(), user_authored: bool=False,
+                       expected_source_hashes: dict[str, str] | None = None) -> Candidate:
         actor_id=_nonempty(actor_id,"actor ID"); content=_validate_content(content); ch=_hash(content)
         self.db.initialize()
         with self.db._connection() as c:
@@ -340,7 +353,8 @@ class MemoryService:
                 self.db._require_access(c,actor_id,workspace_id,Permission.WRITE)
                 old=self._load_candidate(c,workspace_id,candidate_id)
                 if old["state"]!="pending" or old["revision"]!=expected_revision: raise LifecycleConflict("candidate changed or is no longer pending")
-                kind,ev=self._capture_evidence(c,workspace_id,evidence_document_ids,user_authored); eh=_evidence_digest(kind,ev)
+                kind,ev=self._capture_evidence(c,workspace_id,evidence_document_ids,user_authored,
+                                               expected_source_hashes); eh=_evidence_digest(kind,ev)
                 c.execute("DELETE FROM memory_candidate_evidence WHERE candidate_id=?",(candidate_id,))
                 self._insert_evidence(c,"memory_candidate_evidence","candidate_id",candidate_id,workspace_id,ev)
                 c.execute("UPDATE memory_candidates SET content=?,content_sha256=?,evidence_sha256=?,provenance_kind=?,revision=revision+1,updated_at=? WHERE id=? AND workspace_id=? AND state='pending' AND revision=?",

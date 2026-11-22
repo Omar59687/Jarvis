@@ -2,9 +2,9 @@
 
 **A local-first personal AI second brain**
 
-Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing, and retrieving information across personal and project workspaces. M01-A through M01-E and M02-A through M02-D are in the stated `main` baseline; M02-D is the current evaluation foundation.
+Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing, and retrieving information across personal and project workspaces. M01-A through M01-E, M02-A through M02-D, Q01, and M03-A are in the stated `main` baseline.
 
-> **Project status:** The baseline includes M01, the local Ollama adapter, document and approved-memory RAG, M02-C grounding/context handling, and M02-D evaluation. Q01 proposes focused quality diagnostics and local model comparison preparation. No embeddings, cloud, GUI or voice capability is claimed.
+> **Project status:** This branch implements P2-A1's trusted principal/session binding and authenticated workspace listing/selection API on top of the M03-B2 local chat baseline. It remains a restricted local alpha: the Knowledge Galaxy workspace view is still synthetic, chat is still general single-turn conversation, and no retrieval, memory writes, tools, account provisioning, or cloud integration is connected.
 
 ## Product goals
 
@@ -15,7 +15,7 @@ Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing,
 - Explicit confirmation before a suggested fact becomes permanent memory.
 - Personal and project workspaces with explicit approval for cross-workspace retrieval.
 - Reversible memory deletion.
-- Local Ollama inference with optional, user-configured cloud routing.
+- Explicit local model-provider selection; this chat alpha does not enable cloud routing.
 - Later voice, MCP/API, GitHub, OpenCode, browser automation, authorized reverse engineering, and multi-agent development workflows.
 - Proactive suggestions that never execute without approval; any future Mission Mode must be bounded and separately approved.
 - No required paid API or subscription.
@@ -26,7 +26,7 @@ Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing,
 |---|---|
 | M01 — Second Brain Foundation | M01-A through M01-E merged; see acceptance report for open criterion and limitations |
 | M02 — AI Intelligence Engine | M02-A through M02-D and Q01 merged; later slices remain gated |
-| M03 — Desktop, Dashboard and Voice | M03-A synthetic knowledge-galaxy visual prototype under review; no production desktop or dashboard |
+| M03 — Desktop, Dashboard and Voice | M03-A visual prototype merged; M03-B1 local chat alpha baseline; M03-B2 local-provider baseline; P2-A memory/evidence chat design proposed on this branch; no production dashboard integration |
 | M04 — Integration Platform | Planned |
 | M05 — Reverse Engineering | Planned; authorized targets only |
 | M06 — AI Software Factory | Planned |
@@ -52,11 +52,16 @@ Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing,
 - [Q01 model quality checkpoint](docs/M02_Q01_MODEL_QUALITY.md) — historical-memory diagnostic, Ollama timing metadata, and opt-in sequential local comparison.
 - [M03-A desktop foundation](docs/M03A_DESKTOP_FOUNDATION.md) — stack comparison, local-service trust boundary, Windows checks, and prototype acceptance criteria.
 - [M03-A mock prototype](prototypes/m03_a/README.md) — browser-only synthetic galaxy preview and harmless loopback health check.
+- [M03-B1 local chat alpha](docs/M03B1_LOCAL_CHAT.md) — original single-provider baseline and its pairing/security boundary.
+- [M03-B2 local provider abstraction](docs/M03B2_LOCAL_PROVIDER.md) — provider configuration, Bionic/Ollama adapters, security boundary, Windows startup, tests, and limitations.
+- [P2-A authenticated memory chat design](docs/P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md) — proposed identity, workspace, evidence, citations, consent, privacy, API, and threat model.
+- [P2-A acceptance and test plan](docs/P2A_ACCEPTANCE_AND_TEST_PLAN.md) — implementation slices and observable regression/security gates.
+- [P2-A1 trusted workspace sessions](docs/P2A1_TRUSTED_WORKSPACE_SESSION.md) — implemented API behavior, Windows configuration and smoke steps, and current limits.
 - [Agent and contributor instructions](AGENTS.md).
 
 ## Repository status
 
-The stated `main` baseline contains M01-A through M01-E, M02-A through M02-D, and Q01. See [M01 Acceptance](docs/M01_ACCEPTANCE.md) for the acceptance matrix, unresolved cross-workspace consent criterion, and residual limitations. Q01 includes user-reported live Windows measurements; they are not reproduced by this repository status page. M03-A adds a synthetic-only browser/service visual prototype on a review branch; it does not implement a production desktop app, authenticated dashboard, AI chat, or workspace search.
+The stated `main` baseline contains M01-A through M01-E, M02-A through M02-D, Q01, and the synthetic M03-A browser/service prototype. This branch starts from the P2-A design commit and implements only P2-A1's trusted session identity and workspace selection API. No memory-powered chat integration is implemented here. See [P2-A design](docs/P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md), [P2-A1 implementation](docs/P2A1_TRUSTED_WORKSPACE_SESSION.md), and its [acceptance/test plan](docs/P2A_ACCEPTANCE_AND_TEST_PLAN.md).
 
 ## Development principles
 
@@ -68,4 +73,4 @@ The stated `main` baseline contains M01-A through M01-E, M02-A through M02-D, an
 
 ## Review status
 
-M01-E, M02-A through M02-D, and Q01 are in the stated baseline. Cross-workspace aggregation remains unsupported and denied by default; the acceptance report preserves this open requirement. M03-A is under review; later slices remain gated. See [M01 Acceptance](docs/M01_ACCEPTANCE.md), [M02-B2](docs/M02B2_MEMORY_RETRIEVAL.md), [M02-C](docs/M02C_GROUNDING_CONTEXT.md), [M02-D](docs/M02D_EVALUATION.md), [Q01](docs/M02_Q01_MODEL_QUALITY.md), and [M03-A](docs/M03A_DESKTOP_FOUNDATION.md).
+M01-E, M02-A through M02-D, Q01, and M03-A are in the stated baseline. Cross-workspace aggregation remains unsupported and denied by default; P2-A1 exposes no multi-workspace retrieval. This branch implements only trusted session binding and permission-filtered workspace listing/selection; P2-A2 and later remain unimplemented. See [M01 Acceptance](docs/M01_ACCEPTANCE.md), [Q01](docs/M02_Q01_MODEL_QUALITY.md), [M03-A](docs/M03A_DESKTOP_FOUNDATION.md), and [P2-A1](docs/P2A1_TRUSTED_WORKSPACE_SESSION.md).

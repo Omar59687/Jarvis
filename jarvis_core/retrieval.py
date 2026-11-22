@@ -31,6 +31,7 @@ class SearchResult:
     relative_path: str
     excerpt: str
     score: float
+    source_sha256: str = ""
 
 
 def fts5_available() -> bool:
@@ -140,6 +141,7 @@ class SearchIndex:
                     SELECT d.id AS document_id,
                            d.root_id AS root_id,
                            d.relative_path AS relative_path,
+                           d.content_sha256 AS source_sha256,
                            substr(
                                snippet(document_search, 4, '', '', '…', ?),
                                1, ?
@@ -182,6 +184,7 @@ class SearchIndex:
                     relative_path=str(row["relative_path"]),
                     excerpt=str(row["excerpt"]),
                     score=float(row["score"]),
+                    source_sha256=str(row["source_sha256"]),
                 )
                 for row in rows
             ]

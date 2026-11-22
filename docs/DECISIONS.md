@@ -58,6 +58,35 @@ The product targets Arabic and English, Windows desktop, and a browser dashboard
 **Reason:** a shared web UI can serve the two client surfaces, while Tauri offers a Windows shell and scoped native bridge. The extra Rust, C++ build, WebView2, Python-child lifecycle, and packaging surfaces are real costs. A browser-only app is simpler, but does not provide the intended native shell.
 **Validation:** M03-A records the comparison and a mock health-only spike. Owner verification of Windows prerequisites, packaged service lifecycle, startup/resource measurements, and security tests is still required before selecting the stack. See [M03-A](M03A_DESKTOP_FOUNDATION.md).
 
+### P-08 — Restricted local-chat development alpha
+**Proposal:** M03-B1 may use a short-lived terminal-paired, process-local browser session to expose one bounded chat endpoint backed only by the existing Ollama adapter explicitly configured for installed `gemma3:4b`. The conversation is single-turn and ephemeral; it has no workspace, memory, file, browser, tool, or cloud access. This alpha is not the production dashboard authentication decision.
+**Reason:** exercise the Knowledge Galaxy command dock with a real local model behind a small reviewable service boundary while preserving existing retrieval and authorization code.
+**Validation:** deterministic tests use a fake generator. The owner must verify Ollama cloud routing is disabled and perform the real Windows conversation after code review. See [M03-B1](M03B1_LOCAL_CHAT.md).
+
+### P-09 — Provider-neutral local chat with explicit Bionic option
+**Proposal:** M03-B2 places a small common generation contract in front of the existing Ollama adapter and an optional LM Studio Bionic native API adapter. The operator must explicitly supply provider, model, and numeric loopback URL at startup; no provider/model is selected by default and there is no fallback or model discovery. Bionic requests default to `reasoning: "off"` and `store: false`.
+**Reason:** keep the local chat UI and service independent of a specific runtime while allowing the owner to use the already available Bionic endpoint without installing Ollama.
+**Security boundary:** adapters reject non-loopback URLs, bypass system proxies, do not follow redirects, bound requests/responses, and expose no tool or integration fields. The local runtime must itself be configured for local-only inference.
+**Validation:** deterministic provider and service tests cover native request construction, response parsing, safe errors, and authenticated response delivery. Live Windows Bionic verification remains an owner task; see [M03-B2](M03B2_LOCAL_PROVIDER.md).
+
+### P-10 — Single-workspace authenticated memory chat (P2-A design)
+**Proposal:** bind each paired local browser session to a trusted, configured Jarvis principal; let the user select one workspace only after server-side READ authorization; route chat through existing document search, approved-memory search, and citation-validated RAG. Proposals remain pending until a separate authenticated WRITE-authorized human approval action bound to an exact candidate snapshot. Chat remains single-turn and non-persistent.
+**Reason:** add memory-grounded assistance without creating a second permissions/retrieval stack or weakening user consent.
+**Constraints:** no client-supplied actor authority, no cross-workspace default, no model-triggered writes, no tools/filesystem mutation/cloud, and no chat transcript table. P2-A1 through A4 reuse the existing lifecycle APIs and provider-neutral RAG contract.
+**Implementation status:** P2-A1 through A4 are implemented on this task branch. The P2 closure report records owner live-acceptance gates that remain open; implementation is not equivalent to product acceptance.
+**Validation:** temporary SQLite and deterministic fake-provider suites cover pairing, permissions, RAG citations, candidate lifecycle, and UI/API integration. See [P2 final acceptance](P2_FINAL_ENGINEERING_ACCEPTANCE.md), [design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md), and [P2-A4](P2A4_CONNECTED_UI.md).
+
+### P-11 — Read-only repository intelligence
+
+**Proposal implemented as a first slice:** register local Git repositories only beneath existing approved roots, using the workspace's `MANAGE_SOURCES` permission and an interactive trusted-terminal confirmation. Index commit-pinned Git blobs into workspace-scoped tables and FTS5; expose authenticated search, source lines, and provider-backed source-grounded answers.
+**Security constraints:** no execution of repository code or scripts, no browser registration, no arbitrary path scanning, no cross-workspace fallback, no tools/edits, bounded indexing, and citations bind to a commit/path/line. Python uses AST; other language extraction is explicitly partial lexical metadata. The derived graph and commit-diff evidence are bounded and permission-scoped.
+**Status:** partial P3 vertical slice implemented. It includes a derived snapshot graph, recent commit selectors, bounded commit diffs, and line-overlap hints for indexed Python AST symbols. It does not provide comprehensive parsers, semantic call graphs, historical indexed snapshots, or tested Windows path-race resistance. See [P3 docs](P3_DEVELOPER_INTELLIGENCE.md).
+
+### P-12 — P4 supervised coding agents (bounded foundation)
+**Decision:** add repository-scoped capability grants independent of workspace and memory permissions, a read-only task supervisor, provider-neutral adapter contract with a deterministic fake, exact-diff human review receipts, audit/recovery, and a dry-run verification planner. No agent runtime or external dependency is included.
+**Open gate:** target Windows 11 isolation has not been verified. Worktree creation, file mutation, command/network execution, commit, push, PR, merge, and deploy remain unavailable. Do not interpret proposal approval as permission for a subsequent operation.
+**Status:** partial foundation implemented and tested on disposable synthetic repositories. See [P4 implementation status](P4_IMPLEMENTATION_STATUS.md), [P4 architecture](P4_SUPERVISED_CODING_AGENTS_DESIGN.md), and [P4 security and acceptance plan](P4_SECURITY_AND_ACCEPTANCE_PLAN.md).
+
 ## Open decisions
 
 - Exact system RAM and supported Windows versions.

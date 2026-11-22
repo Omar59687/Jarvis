@@ -19,7 +19,7 @@ from typing import Iterator, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 11
 REQUIRED_BACKUP_COLUMNS = {
     "workspaces": {"id", "name", "kind", "created_at"},
     "workspace_permissions": {
@@ -496,6 +496,411 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
                 BEGIN
                     DELETE FROM memory_search WHERE memory_id = OLD.id;
                 END""",
+        ),
+    ),
+    Migration(
+        version=6,
+        statements=(
+            """CREATE TABLE developer_repositories (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                approved_root_id TEXT NOT NULL REFERENCES approved_roots(id) ON DELETE CASCADE,
+                relative_path TEXT NOT NULL,
+                name TEXT NOT NULL,
+                registered_by TEXT NOT NULL,
+                registered_at TEXT NOT NULL,
+                revoked_at TEXT,
+                head_commit TEXT,
+                branch_name TEXT,
+                indexed_at TEXT,
+                index_status TEXT NOT NULL DEFAULT 'not_indexed'
+                    CHECK(index_status IN ('not_indexed','ready','stale','failed')),
+                UNIQUE(id, workspace_id),
+                UNIQUE(approved_root_id, relative_path)
+            )""",
+            "CREATE INDEX developer_repositories_workspace ON developer_repositories(workspace_id,revoked_at,name,id)",
+            """CREATE TABLE developer_files (
+                id TEXT PRIMARY KEY,
+                repository_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                commit_sha TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                extension TEXT NOT NULL,
+                language TEXT NOT NULL,
+                git_blob_oid TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL CHECK(size_bytes BETWEEN 0 AND 1048576),
+                content TEXT NOT NULL,
+                symbols_json TEXT NOT NULL DEFAULT '[]',
+                imports_json TEXT NOT NULL DEFAULT '[]',
+                FOREIGN KEY(repository_id,workspace_id) REFERENCES developer_repositories(id,workspace_id) ON DELETE CASCADE,
+                UNIQUE(repository_id,relative_path)
+            )""",
+            "CREATE INDEX developer_files_repo_path ON developer_files(repository_id,commit_sha,relative_path)",
+            """CREATE VIRTUAL TABLE developer_file_search USING fts5(
+                workspace_id UNINDEXED, repository_id UNINDEXED, file_id UNINDEXED,
+                commit_sha UNINDEXED, relative_path, language UNINDEXED, content,
+                tokenize='unicode61'
+            )""",
+            """CREATE TRIGGER developer_files_search_insert AFTER INSERT ON developer_files BEGIN
+                INSERT INTO developer_file_search(workspace_id,repository_id,file_id,commit_sha,relative_path,language,content)
+                VALUES(NEW.workspace_id,NEW.repository_id,NEW.id,NEW.commit_sha,NEW.relative_path,NEW.language,NEW.content);
+            END""",
+            """CREATE TRIGGER developer_files_search_delete AFTER DELETE ON developer_files BEGIN
+                DELETE FROM developer_file_search WHERE file_id=OLD.id;
+            END""",
+            """CREATE TRIGGER developer_files_search_update AFTER UPDATE ON developer_files BEGIN
+                DELETE FROM developer_file_search WHERE file_id=OLD.id;
+                INSERT INTO developer_file_search(workspace_id,repository_id,file_id,commit_sha,relative_path,language,content)
+                VALUES(NEW.workspace_id,NEW.repository_id,NEW.id,NEW.commit_sha,NEW.relative_path,NEW.language,NEW.content);
+            END""",
+        ),
+    ),
+    Migration(
+        version=7,
+        statements=(
+            "ALTER TABLE developer_files ADD COLUMN analysis_status TEXT NOT NULL DEFAULT 'unknown' CHECK(analysis_status IN ('complete','partial','failed','unsupported','unknown'))",
+        ),
+    ),
+    Migration(
+        version=8,
+        statements=(
+            """CREATE TABLE coding_repository_grants (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                repository_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                capability TEXT NOT NULL CHECK(capability IN (
+                    'read_repository_metadata','read_indexed_source','propose_code_modifications',
+                    'create_isolated_worktree','modify_task_worktree','execute_verification',
+                    'request_network_access','create_commit','push_branch','open_pull_request',
+                    'merge_or_deploy'
+                )),
+                granted_by TEXT NOT NULL,
+                granted_at TEXT NOT NULL,
+                expires_at TEXT,
+                revoked_at TEXT,
+                FOREIGN KEY(repository_id,workspace_id)
+                    REFERENCES developer_repositories(id,workspace_id) ON DELETE CASCADE
+            )""",
+            "CREATE INDEX coding_repository_grants_lookup ON coding_repository_grants(workspace_id,repository_id,principal_id,capability,revoked_at)",
+            """CREATE TABLE coding_tasks (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                repository_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                base_commit TEXT NOT NULL CHECK(length(base_commit) IN (40,64)),
+                request_sha256 TEXT NOT NULL CHECK(length(request_sha256)=64),
+                manifest_json TEXT NOT NULL,
+                manifest_sha256 TEXT NOT NULL CHECK(length(manifest_sha256)=64),
+                status TEXT NOT NULL CHECK(status IN (
+                    'requested','proposed','approved','rejected','cancelled','interrupted','stale'
+                )),
+                proposal_json TEXT,
+                diff_sha256 TEXT,
+                approved_diff_sha256 TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                UNIQUE(id,workspace_id,principal_id),
+                FOREIGN KEY(repository_id,workspace_id)
+                    REFERENCES developer_repositories(id,workspace_id) ON DELETE CASCADE
+            )""",
+            "CREATE INDEX coding_tasks_workspace_status ON coding_tasks(workspace_id,status,updated_at)",
+            """CREATE TABLE coding_task_events (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                principal_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                snapshot_sha256 TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(task_id,workspace_id,principal_id)
+                    REFERENCES coding_tasks(id,workspace_id,principal_id) ON DELETE CASCADE
+            )""",
+            "CREATE INDEX coding_task_events_task ON coding_task_events(task_id,created_at,id)",
+            """CREATE TABLE coding_task_decision_receipts (
+                decision_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('approve_proposal','reject_proposal')),
+                snapshot_sha256 TEXT NOT NULL CHECK(length(snapshot_sha256)=64),
+                consumed_at TEXT NOT NULL,
+                FOREIGN KEY(task_id,workspace_id,principal_id)
+                    REFERENCES coding_tasks(id,workspace_id,principal_id) ON DELETE CASCADE
+            )""",
+        ),
+    ),
+    Migration(
+        version=9,
+        statements=(
+            """CREATE TABLE orchestration_tasks (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                principal_id TEXT NOT NULL,
+                repository_id TEXT,
+                repository_commit TEXT,
+                goal TEXT NOT NULL CHECK(length(trim(goal)) BETWEEN 1 AND 4000),
+                goal_sha256 TEXT NOT NULL CHECK(length(goal_sha256)=64),
+                state TEXT NOT NULL CHECK(state IN (
+                    'draft','awaiting_approval','queued','simulating',
+                    'simulation_completed','blocked','completed','failed',
+                    'cancelled','interrupted','stale'
+                )),
+                execution_mode TEXT NOT NULL CHECK(execution_mode IN ('planned','simulated')),
+                requested_capabilities_json TEXT NOT NULL,
+                capability_manifest_json TEXT NOT NULL,
+                capability_manifest_sha256 TEXT NOT NULL CHECK(length(capability_manifest_sha256)=64),
+                current_plan_revision INTEGER NOT NULL DEFAULT 0 CHECK(current_plan_revision>=0),
+                approved_plan_revision INTEGER,
+                result_summary TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                UNIQUE(id,workspace_id,principal_id),
+                CHECK((repository_id IS NULL AND repository_commit IS NULL) OR
+                      (repository_id IS NOT NULL AND repository_commit IS NOT NULL AND
+                       length(repository_commit) IN (40,64))),
+                FOREIGN KEY(repository_id,workspace_id)
+                    REFERENCES developer_repositories(id,workspace_id) ON DELETE CASCADE
+            )""",
+            "CREATE INDEX orchestration_tasks_workspace_state ON orchestration_tasks(workspace_id,state,updated_at,id)",
+            """CREATE TABLE orchestration_plans (
+                task_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                revision INTEGER NOT NULL CHECK(revision>0),
+                plan_sha256 TEXT NOT NULL CHECK(length(plan_sha256)=64),
+                state TEXT NOT NULL CHECK(state IN ('awaiting_approval','approved','rejected','superseded')),
+                created_at TEXT NOT NULL,
+                reviewed_by TEXT,
+                reviewed_at TEXT,
+                PRIMARY KEY(task_id,revision),
+                UNIQUE(task_id,workspace_id,principal_id,revision),
+                FOREIGN KEY(task_id,workspace_id,principal_id)
+                    REFERENCES orchestration_tasks(id,workspace_id,principal_id) ON DELETE CASCADE
+            )""",
+            """CREATE TABLE orchestration_subtasks (
+                task_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                subtask_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 0 AND 24),
+                title TEXT NOT NULL CHECK(length(trim(title)) BETWEEN 1 AND 120),
+                goal TEXT NOT NULL CHECK(length(trim(goal)) BETWEEN 1 AND 1000),
+                acceptance_condition TEXT NOT NULL CHECK(length(trim(acceptance_condition)) BETWEEN 1 AND 300),
+                required_capabilities_json TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN (
+                    'pending','blocked','simulating','simulated_completed','simulated_failed','cancelled'
+                )),
+                progress_percent INTEGER NOT NULL DEFAULT 0 CHECK(progress_percent BETWEEN 0 AND 100),
+                result_summary TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(task_id,revision,subtask_id),
+                UNIQUE(task_id,revision,ordinal),
+                UNIQUE(task_id,workspace_id,principal_id,revision,subtask_id),
+                FOREIGN KEY(task_id,workspace_id,principal_id,revision)
+                    REFERENCES orchestration_plans(task_id,workspace_id,principal_id,revision) ON DELETE CASCADE
+            )""",
+            """CREATE TABLE orchestration_dependencies (
+                task_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                subtask_id TEXT NOT NULL,
+                depends_on_subtask_id TEXT NOT NULL,
+                PRIMARY KEY(task_id,revision,subtask_id,depends_on_subtask_id),
+                CHECK(subtask_id<>depends_on_subtask_id),
+                FOREIGN KEY(task_id,workspace_id,principal_id,revision,subtask_id)
+                    REFERENCES orchestration_subtasks(task_id,workspace_id,principal_id,revision,subtask_id) ON DELETE CASCADE,
+                FOREIGN KEY(task_id,workspace_id,principal_id,revision,depends_on_subtask_id)
+                    REFERENCES orchestration_subtasks(task_id,workspace_id,principal_id,revision,subtask_id) ON DELETE CASCADE
+            )""",
+            """CREATE TABLE orchestration_approvals (
+                decision_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('approve_plan','reject_plan')),
+                plan_sha256 TEXT NOT NULL CHECK(length(plan_sha256)=64),
+                idempotency_key TEXT NOT NULL,
+                decided_by TEXT NOT NULL,
+                decided_at TEXT NOT NULL,
+                UNIQUE(workspace_id,decided_by,idempotency_key),
+                FOREIGN KEY(task_id,workspace_id,principal_id,revision)
+                    REFERENCES orchestration_plans(task_id,workspace_id,principal_id,revision) ON DELETE CASCADE
+            )""",
+            """CREATE TABLE orchestration_task_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                plan_revision INTEGER,
+                snapshot_sha256 TEXT,
+                idempotency_key TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                UNIQUE(workspace_id,actor_id,idempotency_key),
+                FOREIGN KEY(task_id,workspace_id,principal_id)
+                    REFERENCES orchestration_tasks(id,workspace_id,principal_id) ON DELETE CASCADE
+            )""",
+            "CREATE INDEX orchestration_task_events_task ON orchestration_task_events(task_id,created_at,id)",
+            """CREATE TRIGGER orchestration_task_events_no_update
+                BEFORE UPDATE ON orchestration_task_events
+                BEGIN SELECT RAISE(ABORT, 'orchestration events are append-only'); END""",
+            """CREATE TRIGGER orchestration_task_events_no_delete
+                BEFORE DELETE ON orchestration_task_events
+                BEGIN SELECT RAISE(ABORT, 'orchestration events are append-only'); END""",
+            """CREATE TRIGGER orchestration_approvals_no_update
+                BEFORE UPDATE ON orchestration_approvals
+                BEGIN SELECT RAISE(ABORT, 'orchestration approvals are immutable'); END""",
+            """CREATE TRIGGER orchestration_approvals_no_delete
+                BEFORE DELETE ON orchestration_approvals
+                BEGIN SELECT RAISE(ABORT, 'orchestration approvals are immutable'); END""",
+            """CREATE TRIGGER orchestration_subtasks_plan_fields_immutable
+                BEFORE UPDATE OF task_id,workspace_id,principal_id,revision,subtask_id,ordinal,title,goal,
+                    acceptance_condition,required_capabilities_json ON orchestration_subtasks
+                BEGIN SELECT RAISE(ABORT, 'orchestration plan revisions are immutable'); END""",
+        ),
+    ),
+    Migration(
+        version=10,
+        statements=(
+            "ALTER TABLE orchestration_tasks ADD COLUMN archived_at TEXT",
+            "ALTER TABLE orchestration_tasks ADD COLUMN archived_by TEXT",
+            "CREATE INDEX orchestration_tasks_workspace_archive ON orchestration_tasks(workspace_id,archived_at,state,updated_at,id)",
+            """CREATE TABLE orchestration_retention_policies (
+                workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+                completed_retention_days INTEGER CHECK(completed_retention_days IS NULL OR completed_retention_days BETWEEN 1 AND 3650),
+                cancelled_retention_days INTEGER CHECK(cancelled_retention_days IS NULL OR cancelled_retention_days BETWEEN 1 AND 3650),
+                failed_retention_days INTEGER CHECK(failed_retention_days IS NULL OR failed_retention_days BETWEEN 1 AND 3650),
+                interrupted_retention_days INTEGER CHECK(interrupted_retention_days IS NULL OR interrupted_retention_days BETWEEN 1 AND 3650),
+                auto_delete_enabled INTEGER NOT NULL DEFAULT 0 CHECK(auto_delete_enabled = 0),
+                updated_by TEXT NOT NULL CHECK(length(trim(updated_by)) > 0),
+                updated_at TEXT NOT NULL,
+                expires_at TEXT
+            )""",
+            """CREATE TABLE orchestration_purge_operations (
+                purge_id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                actor_id TEXT NOT NULL CHECK(length(trim(actor_id)) > 0),
+                idempotency_key TEXT NOT NULL,
+                preview_sha256 TEXT NOT NULL CHECK(length(preview_sha256)=64),
+                task_count INTEGER NOT NULL CHECK(task_count > 0),
+                plan_count INTEGER NOT NULL CHECK(plan_count >= 0),
+                subtask_count INTEGER NOT NULL CHECK(subtask_count >= 0),
+                dependency_count INTEGER NOT NULL CHECK(dependency_count >= 0),
+                approval_count INTEGER NOT NULL CHECK(approval_count >= 0),
+                event_count INTEGER NOT NULL CHECK(event_count >= 0),
+                purged_at TEXT NOT NULL,
+                UNIQUE(workspace_id,actor_id,idempotency_key)
+            )""",
+            "CREATE INDEX orchestration_purge_operations_workspace ON orchestration_purge_operations(workspace_id,purged_at,purge_id)",
+            """CREATE TABLE orchestration_purge_tombstones (
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                task_id TEXT NOT NULL,
+                purge_id TEXT NOT NULL REFERENCES orchestration_purge_operations(purge_id),
+                task_state TEXT NOT NULL,
+                archived_at TEXT,
+                goal_sha256 TEXT NOT NULL CHECK(length(goal_sha256)=64),
+                plan_count INTEGER NOT NULL CHECK(plan_count >= 0),
+                subtask_count INTEGER NOT NULL CHECK(subtask_count >= 0),
+                dependency_count INTEGER NOT NULL CHECK(dependency_count >= 0),
+                approval_count INTEGER NOT NULL CHECK(approval_count >= 0),
+                event_count INTEGER NOT NULL CHECK(event_count >= 0),
+                purged_by TEXT NOT NULL CHECK(length(trim(purged_by)) > 0),
+                purged_at TEXT NOT NULL,
+                PRIMARY KEY(workspace_id,task_id)
+            )""",
+            "CREATE INDEX orchestration_purge_tombstones_workspace ON orchestration_purge_tombstones(workspace_id,purged_at,task_id)",
+            """CREATE TRIGGER orchestration_purge_operations_no_update
+                BEFORE UPDATE ON orchestration_purge_operations
+                BEGIN SELECT RAISE(ABORT, 'orchestration purge operations are immutable'); END""",
+            """CREATE TRIGGER orchestration_purge_operations_no_delete
+                BEFORE DELETE ON orchestration_purge_operations
+                BEGIN SELECT RAISE(ABORT, 'orchestration purge operations are immutable'); END""",
+            """CREATE TRIGGER orchestration_purge_tombstones_no_update
+                BEFORE UPDATE ON orchestration_purge_tombstones
+                BEGIN SELECT RAISE(ABORT, 'orchestration purge tombstones are immutable'); END""",
+            """CREATE TRIGGER orchestration_purge_tombstones_no_delete
+                BEFORE DELETE ON orchestration_purge_tombstones
+                BEGIN SELECT RAISE(ABORT, 'orchestration purge tombstones are immutable'); END""",
+            "DROP TRIGGER IF EXISTS orchestration_task_events_no_delete",
+            """CREATE TRIGGER orchestration_task_events_no_delete
+                BEFORE DELETE ON orchestration_task_events
+                WHEN NOT EXISTS (
+                    SELECT 1 FROM orchestration_purge_tombstones p
+                    WHERE p.task_id = OLD.task_id AND p.workspace_id = OLD.workspace_id
+                )
+                BEGIN SELECT RAISE(ABORT, 'orchestration events are append-only'); END""",
+            "DROP TRIGGER IF EXISTS orchestration_approvals_no_delete",
+            """CREATE TRIGGER orchestration_approvals_no_delete
+                BEFORE DELETE ON orchestration_approvals
+                WHEN NOT EXISTS (
+                    SELECT 1 FROM orchestration_purge_tombstones p
+                    WHERE p.task_id = OLD.task_id AND p.workspace_id = OLD.workspace_id
+                )
+                BEGIN SELECT RAISE(ABORT, 'orchestration approvals are immutable'); END""",
+        ),
+    ),
+    Migration(
+        version=11,
+        statements=(
+            "DROP TRIGGER IF EXISTS orchestration_task_events_no_delete",
+            "DROP TRIGGER IF EXISTS orchestration_approvals_no_delete",
+            """CREATE TABLE orchestration_purge_tombstones_v11 (
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                task_id TEXT NOT NULL,
+                purge_id TEXT NOT NULL REFERENCES orchestration_purge_operations(purge_id),
+                task_state TEXT NOT NULL,
+                archived_at TEXT,
+                plan_count INTEGER NOT NULL CHECK(plan_count >= 0),
+                subtask_count INTEGER NOT NULL CHECK(subtask_count >= 0),
+                dependency_count INTEGER NOT NULL CHECK(dependency_count >= 0),
+                approval_count INTEGER NOT NULL CHECK(approval_count >= 0),
+                event_count INTEGER NOT NULL CHECK(event_count >= 0),
+                purged_by TEXT NOT NULL CHECK(length(trim(purged_by)) > 0),
+                purged_at TEXT NOT NULL,
+                PRIMARY KEY(workspace_id,task_id)
+            )""",
+            """INSERT INTO orchestration_purge_tombstones_v11 (
+                workspace_id,task_id,purge_id,task_state,archived_at,
+                plan_count,subtask_count,dependency_count,approval_count,
+                event_count,purged_by,purged_at
+            )
+            SELECT workspace_id,task_id,purge_id,task_state,archived_at,
+                plan_count,subtask_count,dependency_count,approval_count,
+                event_count,purged_by,purged_at
+            FROM orchestration_purge_tombstones""",
+            "DROP TABLE orchestration_purge_tombstones",
+            "ALTER TABLE orchestration_purge_tombstones_v11 RENAME TO orchestration_purge_tombstones",
+            "CREATE INDEX orchestration_purge_tombstones_workspace ON orchestration_purge_tombstones(workspace_id,purged_at,task_id)",
+            """CREATE TRIGGER orchestration_purge_tombstones_no_update
+                BEFORE UPDATE ON orchestration_purge_tombstones
+                BEGIN SELECT RAISE(ABORT, 'orchestration purge tombstones are immutable'); END""",
+            """CREATE TRIGGER orchestration_purge_tombstones_no_delete
+                BEFORE DELETE ON orchestration_purge_tombstones
+                BEGIN SELECT RAISE(ABORT, 'orchestration purge tombstones are immutable'); END""",
+            """CREATE TRIGGER orchestration_task_events_no_delete
+                BEFORE DELETE ON orchestration_task_events
+                WHEN NOT EXISTS (
+                    SELECT 1 FROM orchestration_purge_tombstones p
+                    WHERE p.task_id = OLD.task_id AND p.workspace_id = OLD.workspace_id
+                )
+                BEGIN SELECT RAISE(ABORT, 'orchestration events are append-only'); END""",
+            """CREATE TRIGGER orchestration_approvals_no_delete
+                BEFORE DELETE ON orchestration_approvals
+                WHEN NOT EXISTS (
+                    SELECT 1 FROM orchestration_purge_tombstones p
+                    WHERE p.task_id = OLD.task_id AND p.workspace_id = OLD.workspace_id
+                )
+                BEGIN SELECT RAISE(ABORT, 'orchestration approvals are immutable'); END""",
         ),
     ),
 )
@@ -1238,6 +1643,101 @@ class Database:
                         raise sqlite3.DatabaseError(
                             "backup is missing memory search synchronization triggers"
                         )
+                if source_version >= 6:
+                    developer_tables = {
+                        "developer_repositories": {"id", "workspace_id", "approved_root_id", "relative_path", "head_commit", "index_status"},
+                        "developer_files": {"id", "repository_id", "workspace_id", "commit_sha", "relative_path", "git_blob_oid", "content_sha256", "symbols_json", "imports_json"},
+                    }
+                    for table, required_columns in developer_tables.items():
+                        columns = {row[1] for row in source.execute(f"PRAGMA table_info({table})").fetchall()}
+                        if not required_columns <= columns:
+                            raise sqlite3.DatabaseError(f"backup is missing required schema for table {table}")
+                    developer_search = source.execute(
+                        "SELECT sql FROM sqlite_master WHERE type=? AND name=?",
+                        ("table", "developer_file_search"),
+                    ).fetchone()
+                    if developer_search is None or "using fts5" not in str(developer_search[0]).lower():
+                        raise sqlite3.DatabaseError("backup is missing the developer FTS5 index")
+                    triggers = {row[0] for row in source.execute(
+                        "SELECT name FROM sqlite_master WHERE type=?", ("trigger",)
+                    ).fetchall()}
+                    if not {"developer_files_search_insert", "developer_files_search_delete", "developer_files_search_update"} <= triggers:
+                        raise sqlite3.DatabaseError("backup is missing developer search synchronization triggers")
+                if source_version >= 7:
+                    columns = {row[1] for row in source.execute("PRAGMA table_info(developer_files)").fetchall()}
+                    if "analysis_status" not in columns:
+                        raise sqlite3.DatabaseError("backup is missing developer analysis status")
+                if source_version >= 9:
+                    orchestration_tables = {
+                        "orchestration_tasks": {"id", "workspace_id", "principal_id", "repository_id", "goal", "state", "execution_mode", "current_plan_revision", "approved_plan_revision"},
+                        "orchestration_plans": {"task_id", "workspace_id", "principal_id", "revision", "plan_sha256", "state"},
+                        "orchestration_subtasks": {"task_id", "revision", "subtask_id", "state", "progress_percent"},
+                        "orchestration_dependencies": {"task_id", "revision", "subtask_id", "depends_on_subtask_id"},
+                        "orchestration_approvals": {"decision_id", "task_id", "revision", "action", "plan_sha256"},
+                        "orchestration_task_events": {"id", "task_id", "workspace_id", "principal_id", "actor_id", "event_type", "idempotency_key", "metadata_json"},
+                    }
+                    for table, required_columns in orchestration_tables.items():
+                        columns = {row[1] for row in source.execute(
+                            f"PRAGMA table_info({table})").fetchall()}
+                        if not required_columns <= columns:
+                            raise sqlite3.DatabaseError(
+                                f"backup is missing required schema for table {table}")
+                    orchestration_triggers = {row[0] for row in source.execute(
+                        "SELECT name FROM sqlite_master WHERE type='trigger'").fetchall()}
+                    if not {
+                        "orchestration_task_events_no_update",
+                        "orchestration_task_events_no_delete",
+                        "orchestration_approvals_no_update",
+                        "orchestration_approvals_no_delete",
+                        "orchestration_subtasks_plan_fields_immutable",
+                    } <= orchestration_triggers:
+                        raise sqlite3.DatabaseError(
+                            "backup is missing orchestration append-only protections")
+                if source_version >= 10:
+                    v10_tables = {
+                        "orchestration_tasks": {"archived_at", "archived_by"},
+                        "orchestration_retention_policies": {
+                            "workspace_id", "completed_retention_days",
+                            "cancelled_retention_days", "failed_retention_days",
+                            "interrupted_retention_days", "auto_delete_enabled",
+                            "updated_by", "updated_at", "expires_at",
+                        },
+                        "orchestration_purge_operations": {
+                            "purge_id", "workspace_id", "actor_id",
+                            "idempotency_key", "preview_sha256", "task_count",
+                            "purged_at",
+                        },
+                        "orchestration_purge_tombstones": {
+                            "workspace_id", "task_id", "purge_id", "task_state",
+                            "archived_at", "plan_count", "subtask_count",
+                            "dependency_count", "approval_count", "event_count",
+                            "purged_by", "purged_at",
+                        },
+                    }
+                    if source_version == 10:
+                        v10_tables["orchestration_purge_tombstones"].add("goal_sha256")
+                    for table, required_columns in v10_tables.items():
+                        columns = {row[1] for row in source.execute(
+                            f"PRAGMA table_info({table})").fetchall()}
+                        if not required_columns <= columns:
+                            raise sqlite3.DatabaseError(
+                                f"backup is missing required schema for table {table}")
+                    if source_version >= 11:
+                        tombstone_columns = {row[1] for row in source.execute(
+                            "PRAGMA table_info(orchestration_purge_tombstones)").fetchall()}
+                        if "goal_sha256" in tombstone_columns:
+                            raise sqlite3.DatabaseError(
+                                "backup contains removed goal_sha256 column on orchestration_purge_tombstones")
+                    v10_triggers = {row[0] for row in source.execute(
+                        "SELECT name FROM sqlite_master WHERE type='trigger'").fetchall()}
+                    if not {
+                        "orchestration_purge_operations_no_update",
+                        "orchestration_purge_operations_no_delete",
+                        "orchestration_purge_tombstones_no_update",
+                        "orchestration_purge_tombstones_no_delete",
+                    } <= v10_triggers:
+                        raise sqlite3.DatabaseError(
+                            "backup is missing orchestration purge tombstone protections")
                 if source.execute("PRAGMA foreign_key_check").fetchone() is not None:
                     raise sqlite3.DatabaseError("backup contains foreign key violations")
                 source.backup(target)

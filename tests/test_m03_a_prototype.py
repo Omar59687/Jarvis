@@ -76,15 +76,17 @@ class M03APrototypeTests(unittest.TestCase):
                 self.assertEqual(response.status, 200)
                 self.assertIn(marker.encode(), body)
                 self.assertIsNone(response.headers.get("Access-Control-Allow-Origin"))
-        license_text = (Path(__file__).parents[1] / "prototypes/m03_a/vendor/THREE-LICENSE.txt").read_text()
+        license_text = (Path(__file__).parents[1] / "prototypes/m03_a/vendor/THREE-LICENSE.txt").read_text(encoding="utf-8")
         self.assertIn("MIT License", license_text)
 
     def test_host_header_rejects_unexpected_origin_host(self) -> None:
         request = Request(self.base_url + "/health", headers={"Host": "attacker.example"})
         with self.assertRaises(HTTPError) as caught:
             urlopen(request, timeout=2)
+        with caught.exception as response:
+            body = response.read()
         self.assertEqual(caught.exception.code, 421)
-        self.assertEqual(json.loads(caught.exception.read().decode("utf-8")),
+        self.assertEqual(json.loads(body.decode("utf-8")),
                          {"error": "host_not_allowed"})
 
     def test_no_private_or_mutating_api_and_no_cors_preflight(self) -> None:
@@ -93,22 +95,25 @@ class M03APrototypeTests(unittest.TestCase):
                               headers={"Origin": "https://attacker.example"})
             with self.subTest(path=path), self.assertRaises(HTTPError) as caught:
                 urlopen(request, timeout=2)
-            self.assertEqual(caught.exception.code, 405)
-            self.assertIsNone(caught.exception.headers.get("Access-Control-Allow-Origin"))
+            with caught.exception as response:
+                self.assertEqual(response.code, 405)
+                self.assertIsNone(response.headers.get("Access-Control-Allow-Origin"))
 
         request = Request(self.base_url + "/api/search", method="OPTIONS",
                           headers={"Origin": "https://attacker.example",
                                    "Access-Control-Request-Method": "POST"})
         with self.assertRaises(HTTPError) as caught:
             urlopen(request, timeout=2)
-        self.assertEqual(caught.exception.code, 405)
-        self.assertIsNone(caught.exception.headers.get("Access-Control-Allow-Origin"))
+        with caught.exception as response:
+            self.assertEqual(response.code, 405)
+            self.assertIsNone(response.headers.get("Access-Control-Allow-Origin"))
 
     def test_unknown_path_cannot_read_outside_the_static_allowlist(self) -> None:
         request = Request(self.base_url + "/../AGENTS.md")
         with self.assertRaises(HTTPError) as caught:
             urlopen(request, timeout=2)
-        self.assertEqual(caught.exception.code, 404)
+        with caught.exception as response:
+            self.assertEqual(response.code, 404)
 
 
 if __name__ == "__main__":

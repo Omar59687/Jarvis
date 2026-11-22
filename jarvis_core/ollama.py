@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from typing import Protocol, Sequence
 from urllib.parse import urlsplit
 
+from jarvis_core.model_provider import GenerationResult as ProviderGenerationResult
+
 
 class OllamaError(RuntimeError):
     """Base class for adapter errors safe to show without response bodies."""
@@ -116,10 +118,7 @@ class GenerationSettings:
 
 
 @dataclass(frozen=True)
-class GenerationResult:
-    model: str
-    text: str
-    done: bool
+class GenerationResult(ProviderGenerationResult):
     # Optional fields from Ollama's non-streaming /api/chat response. Missing
     # or malformed values remain None; the adapter never estimates them.
     returned_model: str | None = None

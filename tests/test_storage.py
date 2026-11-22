@@ -48,7 +48,7 @@ class StorageTests(unittest.TestCase):
             self.assertTrue(path.exists())
             with db._connection() as connection:
                 self.assertEqual(
-                    connection.execute("PRAGMA user_version").fetchone()[0], 5
+                    connection.execute("PRAGMA user_version").fetchone()[0], 11
                 )
                 tables = {
                     row[0]
@@ -60,6 +60,46 @@ class StorageTests(unittest.TestCase):
                 {"workspaces", "workspace_permissions", "approved_roots", "audit_events"}
                 <= tables
             )
+            with db._connection() as connection:
+                file_columns = {row[1] for row in connection.execute("PRAGMA table_info(developer_files)")}
+                task_columns = {row[1] for row in connection.execute("PRAGMA table_info(orchestration_tasks)")}
+                tombstone_columns = {
+                    row[1] for row in connection.execute("PRAGMA table_info(orchestration_purge_tombstones)")
+                }
+                indexes = {
+                    row[0] for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'index'"
+                    )
+                }
+                triggers = {
+                    row[0] for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+                    )
+                }
+                self.assertIsNone(connection.execute("PRAGMA foreign_key_check").fetchone())
+            self.assertIn("analysis_status", file_columns)
+            self.assertTrue({"archived_at", "archived_by"} <= task_columns)
+            self.assertNotIn("goal_sha256", tombstone_columns)
+            self.assertEqual(
+                tombstone_columns,
+                {
+                    "workspace_id", "task_id", "purge_id", "task_state", "archived_at",
+                    "plan_count", "subtask_count", "dependency_count", "approval_count",
+                    "event_count", "purged_by", "purged_at",
+                },
+            )
+            self.assertIn("orchestration_purge_tombstones_workspace", indexes)
+            self.assertTrue(
+                {
+                    "orchestration_purge_operations_no_update",
+                    "orchestration_purge_operations_no_delete",
+                    "orchestration_purge_tombstones_no_update",
+                    "orchestration_purge_tombstones_no_delete",
+                    "orchestration_task_events_no_delete",
+                    "orchestration_approvals_no_delete",
+                }
+                <= triggers
+            )
             self.assertTrue(
                 {
                     "ingested_documents",
@@ -69,6 +109,18 @@ class StorageTests(unittest.TestCase):
                     "sync_root_state",
                     "document_search",
                     "memory_search",
+                    "developer_repositories",
+                    "developer_files",
+                    "developer_file_search",
+                    "orchestration_tasks",
+                    "orchestration_plans",
+                    "orchestration_subtasks",
+                    "orchestration_dependencies",
+                    "orchestration_approvals",
+                    "orchestration_task_events",
+                    "orchestration_retention_policies",
+                    "orchestration_purge_operations",
+                    "orchestration_purge_tombstones",
                 }
                 <= tables
             )
@@ -77,7 +129,7 @@ class StorageTests(unittest.TestCase):
         for _ in range(3):
             self.db.initialize()
         with self.db._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 11)
             count = connection.execute(
                 "SELECT COUNT(*) FROM workspaces WHERE id = ?", ("project-1",)
             ).fetchone()[0]
@@ -90,17 +142,17 @@ class StorageTests(unittest.TestCase):
         version_one.create_workspace(
             "Preserved", WorkspaceKind.PERSONAL, "upgrade-owner", "upgrade-1"
         )
-        version_three = Database(path)
-        version_three.initialize()
-        version_six_migrations = (
+        version_current = Database(path)
+        version_current.initialize()
+        version_next_migrations = (
             *DEFAULT_MIGRATIONS,
-            Migration(6, ("CREATE TABLE migration_marker (value TEXT NOT NULL)",)),
+            Migration(12, ("CREATE TABLE migration_marker (value TEXT NOT NULL)",)),
         )
-        version_six = Database(path, migrations=version_six_migrations)
-        version_six.initialize()
-        version_six.initialize()
-        with version_six._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+        version_next = Database(path, migrations=version_next_migrations)
+        version_next.initialize()
+        version_next.initialize()
+        with version_next._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 12)
             self.assertEqual(
                 connection.execute(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type = ? AND name = ?",
@@ -108,9 +160,111 @@ class StorageTests(unittest.TestCase):
                 ).fetchone()[0],
                 1,
             )
-        self.assertEqual(
-            version_six.get_workspace("upgrade-owner", "upgrade-1").name, "Preserved"
+        self.assertEqual(version_next.get_workspace("upgrade-owner", "upgrade-1").name, "Preserved")
+
+    def test_v8_upgrade_adds_orchestration_schema_and_v9_failure_rolls_back(self) -> None:
+        path = self.directory / "v8-orchestration.sqlite3"
+        version_eight = Database(path, migrations=DEFAULT_MIGRATIONS[:8])
+        version_eight.initialize()
+        version_eight.create_workspace(
+            "Preserved P4", WorkspaceKind.PROJECT, "upgrade-owner", "upgrade-p4"
         )
+        with version_eight._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 8)
+
+        broken_v9 = Database(path, migrations=(
+            *DEFAULT_MIGRATIONS[:8],
+            Migration(9, (
+                "CREATE TABLE orchestration_upgrade_probe (id INTEGER PRIMARY KEY)",
+                "INVALID V9 SQL",
+            )),
+        ))
+        with self.assertRaises(sqlite3.OperationalError):
+            broken_v9.initialize()
+        with broken_v9._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 8)
+            self.assertIsNone(connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                ("orchestration_upgrade_probe",),
+            ).fetchone())
+
+        upgraded = Database(path)
+        upgraded.initialize()
+        with upgraded._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 11)
+            tables = {row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertTrue({"orchestration_tasks", "orchestration_plans",
+                         "orchestration_task_events",
+                         "orchestration_retention_policies",
+                         "orchestration_purge_operations",
+                         "orchestration_purge_tombstones"} <= tables)
+        self.assertEqual(upgraded.get_workspace("upgrade-owner", "upgrade-p4").name,
+                         "Preserved P4")
+
+    def test_v9_upgrade_adds_retention_schema_and_v10_failure_rolls_back(self) -> None:
+        path = self.directory / "v9-retention.sqlite3"
+        version_nine = Database(path, migrations=DEFAULT_MIGRATIONS[:9])
+        version_nine.initialize()
+        version_nine.create_workspace(
+            "Preserved V9", WorkspaceKind.PROJECT, "upgrade-owner", "upgrade-v9"
+        )
+        with version_nine._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 9)
+            connection.execute(
+                "INSERT INTO orchestration_tasks(id,workspace_id,principal_id,goal,goal_sha256,"
+                "state,execution_mode,requested_capabilities_json,capability_manifest_json,"
+                "capability_manifest_sha256,created_at,updated_at,expires_at) "
+                "VALUES('v9task','upgrade-v9','upgrade-owner','Legacy task',"
+                "'0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',"
+                "'cancelled','planned','[]','{}',"
+                "'0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',"
+                "'2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00','2026-02-01T00:00:00+00:00')"
+            )
+            connection.commit()
+
+        broken_v10 = Database(path, migrations=(
+            *DEFAULT_MIGRATIONS[:9],
+            Migration(10, (
+                "ALTER TABLE orchestration_tasks ADD COLUMN archived_at TEXT",
+                "CREATE TABLE retention_upgrade_probe (id INTEGER PRIMARY KEY)",
+                "INVALID V10 SQL",
+            )),
+        ))
+        with self.assertRaises(sqlite3.OperationalError):
+            broken_v10.initialize()
+        with broken_v10._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 9)
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(orchestration_tasks)")}
+            self.assertNotIn("archived_at", columns)
+            self.assertIsNone(connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                ("retention_upgrade_probe",),
+            ).fetchone())
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM orchestration_tasks WHERE id='v9task'"
+            ).fetchone()[0], 1)
+
+        upgraded = Database(path)
+        upgraded.initialize()
+        with upgraded._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 11)
+            row = connection.execute(
+                "SELECT state,archived_at,archived_by FROM orchestration_tasks WHERE id='v9task'"
+            ).fetchone()
+            triggers = {item[0] for item in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger'")}
+        self.assertEqual(row["state"], "cancelled")
+        self.assertIsNone(row["archived_at"])
+        self.assertIsNone(row["archived_by"])
+        self.assertTrue({
+            "orchestration_purge_operations_no_update",
+            "orchestration_purge_operations_no_delete",
+            "orchestration_purge_tombstones_no_update",
+            "orchestration_purge_tombstones_no_delete",
+            "orchestration_task_events_no_delete",
+            "orchestration_approvals_no_delete",
+        } <= triggers)
 
     def test_migration_failure_rolls_back_schema_and_version(self) -> None:
         migrations = (
@@ -353,13 +507,48 @@ print(workspace.name)
         )
         corrupt_backup = self.directory / "corrupt-backup.sqlite3"
         corrupt_backup.write_bytes(valid_backup.read_bytes()[:100])
-        with self.assertRaises(sqlite3.DatabaseError):
-            Database.restore_from_backup(corrupt_backup, destination)
+        real_connect = sqlite3.connect
+        opened_connections = []
+
+        def track_connection(*args, **kwargs):
+            connection = real_connect(*args, **kwargs)
+            opened_connections.append(connection)
+            return connection
+
+        with patch("jarvis_core.storage.sqlite3.connect", side_effect=track_connection):
+            with self.assertRaises(sqlite3.DatabaseError):
+                Database.restore_from_backup(corrupt_backup, destination)
+        self.assertEqual(len(opened_connections), 2)
+        for connection in opened_connections:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
         self.assertEqual(destination.read_bytes(), original_bytes)
         self.assertEqual(
             existing.get_workspace("existing-owner", "existing-1").name, "Must remain"
         )
         self.assertFalse(Path(str(destination) + ".restore-tmp").exists())
+
+    def test_backup_closes_source_and_target_when_backup_fails(self) -> None:
+        real_connect = sqlite3.connect
+        opened_connections = []
+
+        class FailingBackupConnection(sqlite3.Connection):
+            def backup(self, target, *args, **kwargs):
+                raise sqlite3.OperationalError("synthetic backup failure")
+
+        def track_connection(*args, **kwargs):
+            connection = real_connect(*args, factory=FailingBackupConnection, **kwargs)
+            opened_connections.append(connection)
+            return connection
+
+        destination = self.directory / "backup-failure.sqlite3"
+        with patch("jarvis_core.storage.sqlite3.connect", side_effect=track_connection):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "backup failure"):
+                self.db.backup_to(destination, actor_id="alice")
+        self.assertGreaterEqual(len(opened_connections), 3)
+        for connection in opened_connections:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
 
     def test_restore_closes_source_when_target_connection_open_fails(self) -> None:
         backup = self.db.backup_to(self.directory / "source.sqlite3", actor_id="alice")
@@ -430,6 +619,265 @@ print(workspace.name)
                 self.assertEqual(
                     db.get_workspace("offline-user", workspace.id).name, "Offline"
                 )
+
+    def test_v10_upgrade_drops_tombstone_goal_sha256_and_v11_failure_rolls_back(self) -> None:
+        path = self.directory / "v10-tombstone-privacy.sqlite3"
+        version_ten = Database(path, migrations=DEFAULT_MIGRATIONS[:10])
+        version_ten.initialize()
+        version_ten.create_workspace(
+            "Preserved V10", WorkspaceKind.PROJECT, "upgrade-owner", "upgrade-v10"
+        )
+        preview_sha = "a" * 64
+        goal_sha = "b" * 64
+        with version_ten._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 10)
+            connection.execute(
+                "INSERT INTO orchestration_purge_operations("
+                "purge_id,workspace_id,actor_id,idempotency_key,preview_sha256,"
+                "task_count,plan_count,subtask_count,dependency_count,"
+                "approval_count,event_count,purged_at) "
+                "VALUES('purge-v10-1','upgrade-v10','upgrade-owner','idem-v10-1',?,"
+                "2,3,5,1,2,9,'2026-02-01T00:00:00+00:00')",
+                (preview_sha,),
+            )
+            connection.execute(
+                "INSERT INTO orchestration_purge_tombstones("
+                "workspace_id,task_id,purge_id,task_state,archived_at,goal_sha256,"
+                "plan_count,subtask_count,dependency_count,approval_count,"
+                "event_count,purged_by,purged_at) "
+                "VALUES('upgrade-v10','task-v10-1','purge-v10-1','completed',"
+                "'2026-01-20T00:00:00+00:00',?,2,3,1,1,5,'upgrade-owner','2026-02-01T00:00:00+00:00')",
+                (goal_sha,),
+            )
+            connection.execute(
+                "INSERT INTO orchestration_purge_tombstones("
+                "workspace_id,task_id,purge_id,task_state,archived_at,goal_sha256,"
+                "plan_count,subtask_count,dependency_count,approval_count,"
+                "event_count,purged_by,purged_at) "
+                "VALUES('upgrade-v10','task-v10-2','purge-v10-1','cancelled',"
+                "NULL,?,1,2,0,1,4,'upgrade-owner','2026-02-01T00:00:00+00:00')",
+                (goal_sha,),
+            )
+            connection.commit()
+
+        broken_v11 = Database(path, migrations=(
+            *DEFAULT_MIGRATIONS[:10],
+            Migration(11, (
+                "CREATE TABLE tombstone_upgrade_probe (id INTEGER PRIMARY KEY)",
+                "DROP TABLE orchestration_purge_tombstones",
+                "INVALID V11 SQL",
+            )),
+        ))
+        with self.assertRaises(sqlite3.OperationalError):
+            broken_v11.initialize()
+        with broken_v11._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 10)
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(orchestration_purge_tombstones)")}
+            self.assertIn("goal_sha256", columns)
+            self.assertIsNone(connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                ("tombstone_upgrade_probe",),
+            ).fetchone())
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM orchestration_purge_tombstones").fetchone()[0],
+                2,
+            )
+
+        upgraded = Database(path)
+        upgraded.initialize()
+        upgraded.initialize()
+        with upgraded._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 11)
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(orchestration_purge_tombstones)")}
+            self.assertNotIn("goal_sha256", columns)
+            self.assertEqual(
+                columns,
+                {
+                    "workspace_id", "task_id", "purge_id", "task_state", "archived_at",
+                    "plan_count", "subtask_count", "dependency_count", "approval_count",
+                    "event_count", "purged_by", "purged_at",
+                },
+            )
+            rows = connection.execute(
+                "SELECT * FROM orchestration_purge_tombstones ORDER BY task_id"
+            ).fetchall()
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(
+                dict(rows[0]),
+                {
+                    "workspace_id": "upgrade-v10",
+                    "task_id": "task-v10-1",
+                    "purge_id": "purge-v10-1",
+                    "task_state": "completed",
+                    "archived_at": "2026-01-20T00:00:00+00:00",
+                    "plan_count": 2,
+                    "subtask_count": 3,
+                    "dependency_count": 1,
+                    "approval_count": 1,
+                    "event_count": 5,
+                    "purged_by": "upgrade-owner",
+                    "purged_at": "2026-02-01T00:00:00+00:00",
+                },
+            )
+            self.assertEqual(rows[1]["task_id"], "task-v10-2")
+            self.assertIsNone(rows[1]["archived_at"])
+            self.assertEqual(rows[1]["event_count"], 4)
+            indexes = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+            self.assertIn("orchestration_purge_tombstones_workspace", indexes)
+            self.assertIsNone(connection.execute("PRAGMA foreign_key_check").fetchone())
+
+            # Immutability triggers, CHECK constraints, and FK constraints remain enforced after rebuild.
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "UPDATE orchestration_purge_tombstones SET task_state='draft' WHERE task_id='task-v10-1'"
+                )
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "DELETE FROM orchestration_purge_tombstones WHERE task_id='task-v10-1'"
+                )
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO orchestration_purge_tombstones("
+                    "workspace_id,task_id,purge_id,task_state,archived_at,"
+                    "plan_count,subtask_count,dependency_count,approval_count,"
+                    "event_count,purged_by,purged_at) "
+                    "VALUES('upgrade-v10','bad-count','purge-v10-1','completed',NULL,"
+                    "-1,0,0,0,0,'upgrade-owner','2026-02-01T00:00:00+00:00')"
+                )
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO orchestration_purge_tombstones("
+                    "workspace_id,task_id,purge_id,task_state,archived_at,"
+                    "plan_count,subtask_count,dependency_count,approval_count,"
+                    "event_count,purged_by,purged_at) "
+                    "VALUES('upgrade-v10','bad-fk','missing-purge-id','completed',NULL,"
+                    "0,0,0,0,0,'upgrade-owner','2026-02-01T00:00:00+00:00')"
+                )
+
+    def test_v10_and_v11_backup_restore_compatibility_and_tampered_v11_rejection(self) -> None:
+        v10_path = self.directory / "source-v10.sqlite3"
+        v10_db = Database(v10_path, migrations=DEFAULT_MIGRATIONS[:10])
+        v10_db.initialize()
+        v10_db.create_workspace("Backup V10", WorkspaceKind.PROJECT, "alice", "ws-b10")
+        with v10_db._connection() as connection:
+            connection.execute(
+                "INSERT INTO orchestration_purge_operations("
+                "purge_id,workspace_id,actor_id,idempotency_key,preview_sha256,"
+                "task_count,plan_count,subtask_count,dependency_count,"
+                "approval_count,event_count,purged_at) "
+                "VALUES('purge-b10','ws-b10','alice','idem-b10',?,"
+                "1,1,2,0,1,4,'2026-02-02T00:00:00+00:00')",
+                ("c" * 64,),
+            )
+            connection.execute(
+                "INSERT INTO orchestration_purge_tombstones("
+                "workspace_id,task_id,purge_id,task_state,archived_at,goal_sha256,"
+                "plan_count,subtask_count,dependency_count,approval_count,"
+                "event_count,purged_by,purged_at) "
+                "VALUES('ws-b10','task-b10','purge-b10','completed',NULL,?,"
+                "1,2,0,1,4,'alice','2026-02-02T00:00:00+00:00')",
+                ("d" * 64,),
+            )
+            connection.commit()
+
+        v10_backup = v10_db.backup_to(self.directory / "v10.backup.sqlite3", actor_id="alice")
+
+        # Valid v10 backup restores cleanly and upgrades safely to v11.
+        restored_v10_path = self.directory / "restored-v10.sqlite3"
+        Database.restore_from_backup(v10_backup, restored_v10_path)
+        conn = sqlite3.connect(restored_v10_path)
+        try:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 10)
+        finally:
+            conn.close()
+
+        upgraded_v11 = Database(restored_v10_path)
+        upgraded_v11.initialize()
+        with upgraded_v11._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 11)
+            tombstone_cols = {row[1] for row in connection.execute("PRAGMA table_info(orchestration_purge_tombstones)")}
+            self.assertNotIn("goal_sha256", tombstone_cols)
+            row = connection.execute(
+                "SELECT task_id,purge_id,event_count FROM orchestration_purge_tombstones WHERE workspace_id='ws-b10'"
+            ).fetchone()
+            self.assertEqual((row["task_id"], row["purge_id"], row["event_count"]), ("task-b10", "purge-b10", 4))
+
+        # Valid v11 backup restores cleanly without goal_sha256.
+        v11_backup = upgraded_v11.backup_to(self.directory / "v11.backup.sqlite3", actor_id="alice")
+        restored_v11_path = self.directory / "restored-v11.sqlite3"
+        Database.restore_from_backup(v11_backup, restored_v11_path)
+        with Database(restored_v11_path)._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 11)
+            tombstone_cols = {row[1] for row in connection.execute("PRAGMA table_info(orchestration_purge_tombstones)")}
+            self.assertNotIn("goal_sha256", tombstone_cols)
+
+        destination, existing = self._create_existing_destination()
+        original_bytes = destination.read_bytes()
+
+        # Tampered v11 backup 1: claims user_version=11 while retaining goal_sha256 column.
+        tampered_has_hash = self.directory / "tampered-v11-goal-hash.sqlite3"
+        tampered_has_hash.write_bytes(v10_backup.read_bytes())
+        conn = sqlite3.connect(tampered_has_hash)
+        try:
+            conn.execute("PRAGMA user_version = 11")
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaisesRegex(sqlite3.DatabaseError, "goal_sha256"):
+            Database.restore_from_backup(tampered_has_hash, destination)
+
+        # Tampered v11 backup 2: missing immutability trigger.
+        tampered_no_trigger = self.directory / "tampered-v11-no-trigger.sqlite3"
+        tampered_no_trigger.write_bytes(v11_backup.read_bytes())
+        conn = sqlite3.connect(tampered_no_trigger)
+        try:
+            conn.execute("DROP TRIGGER orchestration_purge_tombstones_no_delete")
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaisesRegex(sqlite3.DatabaseError, "tombstone protections"):
+            Database.restore_from_backup(tampered_no_trigger, destination)
+
+        # Tampered v11 backup 3: missing required tombstone column.
+        tampered_missing_col = self.directory / "tampered-v11-missing-col.sqlite3"
+        tampered_missing_col.write_bytes(v11_backup.read_bytes())
+        conn = sqlite3.connect(tampered_missing_col)
+        try:
+            conn.execute("DROP TABLE orchestration_purge_tombstones")
+            conn.execute(
+                "CREATE TABLE orchestration_purge_tombstones ("
+                "workspace_id TEXT NOT NULL, task_id TEXT NOT NULL, purge_id TEXT NOT NULL, "
+                "PRIMARY KEY(workspace_id,task_id))"
+            )
+            conn.execute(
+                "CREATE TRIGGER orchestration_purge_tombstones_no_update "
+                "BEFORE UPDATE ON orchestration_purge_tombstones BEGIN SELECT RAISE(ABORT, 'x'); END"
+            )
+            conn.execute(
+                "CREATE TRIGGER orchestration_purge_tombstones_no_delete "
+                "BEFORE DELETE ON orchestration_purge_tombstones BEGIN SELECT RAISE(ABORT, 'x'); END"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaisesRegex(sqlite3.DatabaseError, "missing required schema"):
+            Database.restore_from_backup(tampered_missing_col, destination)
+
+        # Tampered v10 backup: claims user_version=10 but lacks v10 goal_sha256 column.
+        tampered_v10 = self.directory / "tampered-v10-no-hash.sqlite3"
+        tampered_v10.write_bytes(v11_backup.read_bytes())
+        conn = sqlite3.connect(tampered_v10)
+        try:
+            conn.execute("PRAGMA user_version = 10")
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaisesRegex(sqlite3.DatabaseError, "missing required schema"):
+            Database.restore_from_backup(tampered_v10, destination)
+
+        # Destination remained untouched across all rejected restores.
+        self.assertEqual(destination.read_bytes(), original_bytes)
+        self.assertEqual(existing.get_workspace("existing-owner", "existing-1").name, "Must remain")
 
 
 if __name__ == "__main__":

@@ -15,8 +15,9 @@ import re
 from typing import Protocol
 
 from .memory import Evidence, MemorySearchResult, MemoryService
-from .ollama import GenerationResult, GenerationSettings, OllamaConfigurationError
+from .model_provider import GenerationResult, ModelProvider, ProviderConfigurationError
 from .retrieval import SearchIndex
+from .storage import Permission
 
 
 MAX_QUESTION_CHARS = 1024
@@ -50,6 +51,10 @@ class InvalidCitationError(ValueError):
 
     outcome = RAGOutcome.INVALID_CITATIONS
 
+    def __init__(self, message: str, evidence: tuple["RAGEvidence", ...] = ()):
+        super().__init__(message)
+        self.evidence = evidence
+
 
 class IncompleteGenerationError(ValueError):
     """The local model did not report a complete generation."""
@@ -57,17 +62,8 @@ class IncompleteGenerationError(ValueError):
     outcome = RAGOutcome.INCOMPLETE_GENERATION
 
 
-class Generator(Protocol):
-    allowed_models: frozenset[str]
-
-    def generate(
-        self,
-        prompt: str,
-        model: str,
-        *,
-        system_prompt: str | None = None,
-        settings: GenerationSettings = GenerationSettings(),
-    ) -> GenerationResult: ...
+class Generator(ModelProvider, Protocol):
+    """Structural alias retained for existing DocumentRAG call sites."""
 
 
 @dataclass(frozen=True)
@@ -82,6 +78,7 @@ class RAGEvidence:
     provenance_kind: str | None = None
     source_status: str | None = None
     memory_evidence: tuple[Evidence, ...] = ()
+    source_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -182,7 +179,7 @@ class EvidenceSelector:
         remaining = budget
         seen: set[tuple[str, ...]] = set()
         for result in results:
-            if remaining <= 0:
+            if remaining <= 0 or len(selected) >= MAX_EVIDENCE_ITEMS:
                 break
             excerpt = result.excerpt[:remaining]
             provenance_partition = ()
@@ -202,6 +199,7 @@ class EvidenceSelector:
                     excerpt=excerpt,
                     source_type="document",
                     source_status="active_document",
+                    source_sha256=getattr(result, "source_sha256", None),
                 )
             else:
                 item = RAGEvidence(
@@ -268,11 +266,13 @@ class DocumentRAG:
         if type(limit) is not int or not 1 <= limit <= MAX_EVIDENCE_ITEMS:
             raise ValueError(f"limit must be an integer from 1 to {MAX_EVIDENCE_ITEMS}")
 
-        # SearchIndex performs the authoritative actor/workspace permission
-        # check on every call and filters deleted/revoked sources.
+        self.search_index.database.require_access(actor_id, workspace_id, Permission.READ)
+        # SearchIndex performs another authoritative check and filters revoked sources.
         results = self.search_index.search(actor_id, workspace_id, question, limit=limit)
         evidence = EvidenceSelector().select(results, [])
-        return self._answer_evidence(question, model, evidence, include_memory_metadata=False)
+        self.search_index.database.require_access(actor_id, workspace_id, Permission.READ)
+        return self._answer_evidence(question, model, evidence, include_memory_metadata=False,
+                                     actor_id=actor_id, workspace_id=workspace_id)
 
     def answer_with_memories(
         self,
@@ -295,13 +295,16 @@ class DocumentRAG:
             document_limit=document_limit,
             memory_limit=memory_limit,
         )
-        return self._answer_evidence(question, model, evidence, include_memory_metadata=True)
+        # Retrieval may take long enough for access to change; recheck directly
+        # before crossing the model-provider boundary.
+        self.search_index.database.require_access(actor_id, workspace_id, Permission.READ)
+        return self._answer_evidence(question, model, evidence, include_memory_metadata=True,
+                                     actor_id=actor_id, workspace_id=workspace_id)
 
     def _validate_request(self, question: str, model: str) -> None:
-        # Validate the selected model before retrieval. OllamaClient enforces
-        # this allowlist again at the actual generation boundary.
-        if not isinstance(model, str) or model not in self.generator.allowed_models:
-            raise OllamaConfigurationError("Requested model is not in the explicit allowlist")
+        if (not isinstance(model, str) or not model.strip() or len(model) > 128
+                or any(ord(char) < 32 or ord(char) == 127 for char in model)):
+            raise ProviderConfigurationError("An explicit bounded model identifier is required")
         if not isinstance(question, str) or not question.strip():
             raise ValueError("question must be non-empty text")
         if len(question) > MAX_QUESTION_CHARS or "\x00" in question:
@@ -318,6 +321,8 @@ class DocumentRAG:
         evidence: tuple[RAGEvidence, ...],
         *,
         include_memory_metadata: bool,
+        actor_id: str,
+        workspace_id: str,
     ) -> RAGResult:
         if not evidence:
             return RAGResult(
@@ -381,14 +386,12 @@ class DocumentRAG:
             prompt,
             model,
             system_prompt=system_prompt,
-            settings=GenerationSettings(
-                temperature=0.0,
-                seed=0,
-                num_ctx=2048,
-                num_predict=192,
-                think=False,
-            ),
+            temperature=0.0,
+            max_output_tokens=192,
         )
+        # Do not disclose a response if workspace READ was revoked while the
+        # provider was generating it.
+        self.search_index.database.require_access(actor_id, workspace_id, Permission.READ)
         if type(generated.done) is not bool or not generated.done:
             raise IncompleteGenerationError("model generation did not complete")
         answer = generated.text.strip()
@@ -410,7 +413,8 @@ class DocumentRAG:
             citation_id = match.group(1)
             if citation_id not in by_id:
                 raise InvalidCitationError(
-                    f"model returned a citation not issued for this request: [{citation_id}]"
+                    f"model returned a citation not issued for this request: [{citation_id}]",
+                    tuple(evidence),
                 )
             valid_spans.append(match.span())
             if citation_id not in cited_ids:
@@ -424,12 +428,12 @@ class DocumentRAG:
             without_valid[start:end] = " " * (end - start)
         residual = "".join(without_valid)
         if "[" in residual or "]" in residual:
-            raise InvalidCitationError("model returned a malformed or unsupported bracketed reference")
+            raise InvalidCitationError("model returned a malformed or unsupported bracketed reference", tuple(evidence))
 
         # Other citation-shaped forms (for example bare D2/M2 or “source 2”) are
         # rejected even when the model also included one valid [D#] citation.
         if _UNBRACKETED_CITATION_PATTERN.search(residual):
-            raise InvalidCitationError("model returned a source reference outside the supported citation form")
+            raise InvalidCitationError("model returned a source reference outside the supported citation form", tuple(evidence))
 
         if not cited_ids:
             return RAGResult(

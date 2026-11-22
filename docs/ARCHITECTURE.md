@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Proposed Architecture
 
-**Status:** the logical product architecture below remains proposed. The stated baseline implements M01-A through M01-E and M02-A through M02-D. No desktop, dashboard, voice or external integration is implemented.
+**Status:** the logical product architecture below remains proposed. The stated base implements M01-A through M01-E, M02-A through M02-D, Q01, M03-A, and P2-A1. This branch implements P2-A2/A3/A4 and a partial P3 Developer Intelligence slice. It remains a loopback development alpha, not a production desktop, multi-user dashboard, or autonomous coding agent. P2 live owner acceptance remains open. See [P2 acceptance](P2_FINAL_ENGINEERING_ACCEPTANCE.md), [P3 implementation and limits](P3_DEVELOPER_INTELLIGENCE.md), [M03-B2](M03B2_LOCAL_PROVIDER.md), and [P2-A4](P2A4_CONNECTED_UI.md).
 
 ## 1. Architecture goals
 
@@ -19,7 +19,7 @@
 | Local application service | API, authentication/session handling, orchestration, permission checks, audit events | Trusted policy enforcement point |
 | Memory and evidence store | SQLite database, migrations, separate document and approved-memory FTS5 indexes, evidence/source metadata, tombstones | Local user data boundary |
 | Approved-folder sync | Watch or scan configured roots, normalize paths, record provenance, report sync state | File access limited to revocable approved roots |
-| Model adapters | M02-A local Ollama adapter; M02-B1 document RAG and M02-B2 document/memory composition; optional cloud adapters are future, separately approved work | RAG passes bounded evidence from one authorized workspace and uses the explicit local model allowlist; future providers receive only data approved for a request |
+| Model adapters | Shared M03-B2 `ModelProvider` interface; local Ollama and LM Studio Bionic adapters; M02-B1 document RAG and M02-B2 document/memory composition; cloud adapters are future, separately approved work | Provider receives only the bounded request; M03-B2 accepts explicit numeric-loopback URLs and never falls back or discovers models |
 | Tool adapters | MCP/API, GitHub/OpenCode, browser automation, REA, and future agents | Each adapter has a narrow capability and approval policy |
 | Background workers | Sync, indexing, speech, and later bounded tasks | No implicit permission expansion or unlogged side effects |
 
@@ -34,7 +34,7 @@ The browser dashboard can use the same UI and API. If it runs in an ordinary bro
 1. The user chooses a workspace and asks a question or initiates a sync.
 2. The application service authenticates the local client and resolves its workspace/action scope.
 3. Retrieval queries only authorized workspace data and returns evidence IDs, source metadata, and permission-safe content.
-4. If a model is used, the routing policy selects local Ollama by default. Cloud routing requires a separate user setting and request-level data-sharing permission.
+4. If a model is used, the service selects only the provider and model explicitly configured for that deployment. This M03-B2 chat alpha has no cloud route or automatic fallback.
 5. The answer retains citations to evidence and indicates uncertainty or missing evidence.
 6. A proposed memory is staged for review. Permanent insertion occurs only after explicit approval.
 7. External tool calls and changes use the relevant connector policy and require approval unless a future reviewed policy explicitly grants a narrow, bounded action.
@@ -84,6 +84,8 @@ The signing context verifies that a trusted host issued a decision for the exact
 
 ## 8. Security and privacy requirements for implementation
 
+M03-B2 extends the M03-B1 single-turn alpha with a provider-neutral generation contract and explicit Ollama/Bionic adapters. Loopback binding, exact Host and Origin checks, terminal one-time pairing, process-local cookie sessions, CSRF, bounded requests, and generic error handling remain in the service. Provider HTTP accepts numeric loopback destinations only, disables proxies, and rejects redirects. P2-A binds the configured server principal to the paired session, applies permission-filtered document and approved-memory RAG, and exposes pending-memory operations that recheck READ/WRITE in core services. The prototype uses plain HTTP on numeric loopback and is not a production multi-user authentication design. See [P2-A1](P2A1_TRUSTED_WORKSPACE_SESSION.md), [P2-A2](P2A2_EVIDENCE_CHAT.md), [P2-A3](P2A3_HUMAN_APPROVED_MEMORY.md), and [P2-A4](P2A4_CONNECTED_UI.md).
+
 - Bind the local service to loopback by default. Do not assume a local port is secret or trusted.
 - Use per-install random session tokens or equivalent protection for browser clients; protect against cross-site requests and hostile origins.
 - Store secrets using Windows credential storage or an equivalent protected mechanism; never commit credentials or place them in logs.
@@ -94,14 +96,24 @@ The signing context verifies that a trusted host issued a decision for the exact
 - Back up before migrations and test restore, deletion, and permission isolation.
 - No security property is considered verified until exercised by implementation-specific tests/review.
 
-## 9. Proposed component diagram
+### P2-A proposal: one-workspace memory chat
+
+P2-A implements the selected one-workspace path: the service reads actor/workspace only from its paired session, calls the existing READ-checked document and approved-memory services, validates issued citations, and drops factual model text when validation fails. Candidate proposals remain pending until an authenticated user edits/reviews a snapshot and separately approves or rejects it. The chat UI is single-turn and page-memory-only; no model action can write memory. See [P2-A design](P2A_AUTHENTICATED_MEMORY_CHAT_DESIGN.md), [acceptance/test plan](P2A_ACCEPTANCE_AND_TEST_PLAN.md), and implementation notes [A1](P2A1_TRUSTED_WORKSPACE_SESSION.md), [A2](P2A2_EVIDENCE_CHAT.md), [A3](P2A3_HUMAN_APPROVED_MEMORY.md), and [A4](P2A4_CONNECTED_UI.md).
+
+## 9. P3 Developer Intelligence slice
+
+P3 reuses `Database` workspace permissions and approved roots, adds schema-v6 repository/file records and schema-v7 parser-status metadata, plus a separate FTS5 index, and exposes authenticated repository APIs through the existing loopback service. Repository registration and indexing require an interactive trusted-terminal action and `MANAGE_SOURCES`; browser operations require the paired principal's current workspace READ permission. Indexing is commit-pinned and bounded. Python uses AST; Dart, C#, JavaScript/TypeScript, SQL, and Markdown use explicitly partial lexical extraction. The derived graph is bounded and snapshot-scoped; change views use fixed read-only Git commands and diff evidence. Model evidence stays untrusted, provider-selected, and citation-validated. No repository code, hooks, tests, package scripts, or builds execute. See [P3 documentation](P3_DEVELOPER_INTELLIGENCE.md) for exact boundaries and the known Windows path-race limitation.
+
+P4 has a deny-by-default supervised-task foundation: repository-scoped metadata/source/proposal grants are separate from workspace and memory permissions; coding proposals use commit-pinned indexed evidence and exact-diff review; and the deterministic fake adapter has no tool access. The schema-v9 follow-on adds persistent, workspace-scoped task plans, exact-plan approvals, bounded dependencies, append-only history, and simulation-only restart handling without changing v8 coding-task approval semantics. **No task worktree, source write, process execution, network access, real agent, push, PR, merge, or deployment is enabled.** Target Windows isolation has not been demonstrated, so those capabilities remain unavailable. See [P4 implementation status](P4_IMPLEMENTATION_STATUS.md), [persistent orchestration](P4_PERSISTENT_TASK_ORCHESTRATION.md), [P4 architecture](P4_SUPERVISED_CODING_AGENTS_DESIGN.md), and [P4 acceptance plan](P4_SECURITY_AND_ACCEPTANCE_PLAN.md).
+
+## 10. Proposed component diagram
 
 ```mermaid
 flowchart TD
   UI["Tauri desktop and browser UI"] --> API["Local application service"]
   API --> Auth["Workspace and action authorization"]
   Auth --> DB["SQLite memory, evidence, audit"]
-  Auth --> Local["Ollama adapter"]
+  Auth --> Local["Configured local model provider"]
   Auth --> Cloud["Optional cloud adapter"]
   Auth --> Tools["Approved tool adapters"]
   Sync["Approved-folder sync"] --> API

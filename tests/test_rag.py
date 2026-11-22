@@ -19,7 +19,6 @@ from jarvis_core import (
 )
 from jarvis_core.ingestion import FolderSynchronizer
 from jarvis_core.ollama import (
-    GenerationSettings,
     HTTPResponse,
     OllamaClient,
     OllamaConfigurationError,
@@ -33,6 +32,7 @@ from jarvis_core.rag import (
     NO_EVIDENCE_ANSWER,
     MODEL_ABSTENTION_ANSWER,
 )
+from jarvis_core.model_provider import ProviderConfigurationError
 from jarvis_core.retrieval import SearchIndex, SearchResult
 
 
@@ -54,19 +54,18 @@ def json_response(value):
 
 
 class FakeGenerator:
-    allowed_models = frozenset({"synthetic-local:latest"})
-
     def __init__(self, text: str = "The answer is in the source [D1].", done: bool = True) -> None:
         self.text = text
         self.done = done
         self.calls: list[dict] = []
 
-    def generate(self, prompt, model, *, system_prompt=None, settings=GenerationSettings()):
+    def generate(self, prompt, model, *, system_prompt=None, temperature=0.3, max_output_tokens=192):
         self.calls.append({
             "prompt": prompt,
             "model": model,
             "system_prompt": system_prompt,
-            "settings": settings,
+            "temperature": temperature,
+            "max_output_tokens": max_output_tokens,
         })
         return GenerationResult(model=model, text=self.text, done=self.done)
 
@@ -123,7 +122,8 @@ class DocumentRAGTests(unittest.TestCase):
         client = OllamaClient(
             "http://127.0.0.1:11434", ["synthetic-local:latest"], transport=transport
         )
-        result = DocumentRAG(self.search, client).answer(
+        from prototypes.m03_b1.service import OllamaProvider
+        result = DocumentRAG(self.search, OllamaProvider(client)).answer(
             "alice", self.workspace.id, "What uses a local index?", "synthetic-local:latest"
         )
         self.assertEqual(result.answer, "The answer is in the source [D1].")
@@ -408,7 +408,7 @@ class DocumentRAGTests(unittest.TestCase):
         self.assertEqual([item.citation_id for item in result.citations], ["D1"])
         self.assertEqual([item.citation_id for item in result.evidence], ["D1", "D2"])
 
-    def test_context_bounds_and_model_allowlist(self) -> None:
+    def test_context_bounds_and_model_identifier_validation(self) -> None:
         self.add_document("long.txt", "boundedmarker " + ("evidence " * 300))
         self.generator.text = "[D1]"
         result = self.rag.answer(
@@ -418,8 +418,8 @@ class DocumentRAGTests(unittest.TestCase):
         self.assertLessEqual(sum(len(item.excerpt) for item in result.evidence), MAX_EVIDENCE_CHARS)
         self.assertLessEqual(len(result.evidence), 5)
         self.assertLess(len(prompt), 5000)
-        with self.assertRaises(OllamaConfigurationError):
-            self.rag.answer("alice", self.workspace.id, "question", "unlisted:latest")
+        with self.assertRaises(ProviderConfigurationError):
+            self.rag.answer("alice", self.workspace.id, "question", "")
 
     def test_service_clamps_unexpectedly_large_search_excerpts(self) -> None:
         self.search.search = lambda *args, **kwargs: [

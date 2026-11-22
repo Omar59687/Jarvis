@@ -49,8 +49,9 @@ class FakeGenerator:
         self.text, self.done = text, done
         self.calls: list[dict[str, Any]] = []
 
-    def generate(self, prompt, model, *, system_prompt=None, settings=GenerationSettings()):
-        self.calls.append({"prompt": prompt, "system_prompt": system_prompt, "settings": settings})
+    def generate(self, prompt, model, *, system_prompt=None, temperature=0.3, max_output_tokens=192):
+        self.calls.append({"prompt": prompt, "system_prompt": system_prompt,
+                           "temperature": temperature, "max_output_tokens": max_output_tokens})
         return GenerationResult(model=model, text=self.text, done=self.done)
 
 
@@ -58,16 +59,20 @@ class RecordingLiveGenerator:
     """Records only synthetic live-evaluation prompts and responses for review."""
     def __init__(self, client: OllamaClient) -> None:
         self.client = client
-        self.allowed_models = client.allowed_models
         self.calls: list[dict[str, Any]] = []
 
-    def generate(self, prompt, model, *, system_prompt=None, settings=GenerationSettings()):
+    def generate(self, prompt, model, *, system_prompt=None, temperature=0.3, max_output_tokens=192):
         call: dict[str, Any] = {"prompt": prompt, "system_prompt": system_prompt,
                                 "response": None, "done": None, "client_call_elapsed_ms": None,
                                 "telemetry": None, "returned_model": None}
         self.calls.append(call)
         started = time.perf_counter()
-        response = self.client.generate(prompt, model, system_prompt=system_prompt, settings=settings)
+        if isinstance(self.client, OllamaClient):
+            settings = GenerationSettings(temperature=temperature, num_predict=max_output_tokens, think=False)
+            response = self.client.generate(prompt, model, system_prompt=system_prompt, settings=settings)
+        else:
+            response = self.client.generate(prompt, model, system_prompt=system_prompt,
+                                            temperature=temperature, max_output_tokens=max_output_tokens)
         call["client_call_elapsed_ms"] = (time.perf_counter() - started) * 1000
         call["response"] = response.text
         call["done"] = response.done
