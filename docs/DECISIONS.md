@@ -87,6 +87,14 @@ The product targets Arabic and English, Windows desktop, and a browser dashboard
 **Open gate:** target Windows 11 isolation has not been verified. Worktree creation, file mutation, command/network execution, commit, push, PR, merge, and deploy remain unavailable. Do not interpret proposal approval as permission for a subsequent operation.
 **Status:** partial foundation implemented and tested on disposable synthetic repositories. See [P4 implementation status](P4_IMPLEMENTATION_STATUS.md), [P4 architecture](P4_SUPERVISED_CODING_AGENTS_DESIGN.md), and [P4 security and acceptance plan](P4_SECURITY_AND_ACCEPTANCE_PLAN.md).
 
+### Conversational context update — 2026-11-22
+
+**Decision:** Keep a small recent conversation window in each authenticated, process-local chat session so follow-up questions can use prior turns. Use it only within the same session and selected workspace; clear it on workspace change, logout/revocation, or session expiry. Do not write conversational turns to SQLite, browser storage, or permanent memory. Any durable conversation retention remains an open consent and retention decision.
+
+**Implemented:** The chat service holds at most six recent turns and 8 KiB per session, passes a bounded 3 KiB serialized context to general chat or workspace RAG, and retains a successful turn only after its response is delivered. Workspace factual claims remain subject to the existing evidence and citation rules; conversation context is explicitly untrusted and is not workspace evidence. Text and voice clients using the same authenticated chat endpoint share the same context.
+
+**Evidence:** Session-store and HTTP regression coverage in `tests/test_m03_b1_local_chat.py` and `tests/test_m03_p2a_chat.py`.
+
 ## Open decisions
 
 - Exact system RAM and supported Windows versions.
