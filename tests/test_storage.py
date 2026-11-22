@@ -48,7 +48,7 @@ class StorageTests(unittest.TestCase):
             self.assertTrue(path.exists())
             with db._connection() as connection:
                 self.assertEqual(
-                    connection.execute("PRAGMA user_version").fetchone()[0], 11
+                    connection.execute("PRAGMA user_version").fetchone()[0], Database(path).current_version
                 )
                 tables = {
                     row[0]
@@ -129,7 +129,7 @@ class StorageTests(unittest.TestCase):
         for _ in range(3):
             self.db.initialize()
         with self.db._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 11)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], self.db.current_version)
             count = connection.execute(
                 "SELECT COUNT(*) FROM workspaces WHERE id = ?", ("project-1",)
             ).fetchone()[0]
@@ -146,13 +146,13 @@ class StorageTests(unittest.TestCase):
         version_current.initialize()
         version_next_migrations = (
             *DEFAULT_MIGRATIONS,
-            Migration(12, ("CREATE TABLE migration_marker (value TEXT NOT NULL)",)),
+            Migration(13, ("CREATE TABLE migration_marker (value TEXT NOT NULL)",)),
         )
         version_next = Database(path, migrations=version_next_migrations)
         version_next.initialize()
         version_next.initialize()
         with version_next._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 12)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 13)
             self.assertEqual(
                 connection.execute(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type = ? AND name = ?",
@@ -191,7 +191,7 @@ class StorageTests(unittest.TestCase):
         upgraded = Database(path)
         upgraded.initialize()
         with upgraded._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 11)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], upgraded.current_version)
             tables = {row[0] for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({"orchestration_tasks", "orchestration_plans",
@@ -248,7 +248,7 @@ class StorageTests(unittest.TestCase):
         upgraded = Database(path)
         upgraded.initialize()
         with upgraded._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 11)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], upgraded.current_version)
             row = connection.execute(
                 "SELECT state,archived_at,archived_by FROM orchestration_tasks WHERE id='v9task'"
             ).fetchone()
@@ -683,7 +683,7 @@ print(workspace.name)
                 2,
             )
 
-        upgraded = Database(path)
+        upgraded = Database(path, migrations=DEFAULT_MIGRATIONS[:11])
         upgraded.initialize()
         upgraded.initialize()
         with upgraded._connection() as connection:
@@ -791,7 +791,7 @@ print(workspace.name)
         finally:
             conn.close()
 
-        upgraded_v11 = Database(restored_v10_path)
+        upgraded_v11 = Database(restored_v10_path, migrations=DEFAULT_MIGRATIONS[:11])
         upgraded_v11.initialize()
         with upgraded_v11._connection() as connection:
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 11)

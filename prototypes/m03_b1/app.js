@@ -86,6 +86,18 @@ const candidateSources = $("#candidate-sources");
 const candidateSourceOptions = $("#candidate-source-options");
 const pendingCandidates = $("#pending-candidates");
 const memoryStatus = $("#memory-status");
+const conversationMemoryPanel = $("#conversation-memory-panel");
+const conversationMemoryForm = $("#conversation-memory-form");
+const conversationMemoryEnabled = $("#conversation-memory-enabled");
+const conversationMemoryRetention = $("#conversation-memory-retention-days");
+const conversationMemorySave = $("#conversation-memory-save");
+const conversationMemoryRefresh = $("#conversation-memory-refresh");
+const conversationMemoryStatus = $("#conversation-memory-status");
+const conversationMemoryList = $("#conversation-memory-list");
+const conversationMemoryDetail = $("#conversation-memory-detail");
+const conversationMemoryDetailTitle = $("#conversation-memory-detail-title");
+const conversationMemoryTurns = $("#conversation-memory-turns");
+const conversationMemoryDetailClose = $("#conversation-memory-detail-close");
 const developerRepoSelect = $("#developer-repo");
 const developerState = $("#developer-state");
 const developerSearchForm = $("#developer-search-form");
@@ -147,6 +159,8 @@ let sending = false;
 let voiceChatInFlight = false;
 let chatStateKey = "checking";
 let activeWorkspaceId = null;
+let conversationMemoryCanWrite = false;
+let conversationMemoryLoadGeneration = 0;
 let voiceState = createVoiceState();
 let voiceMediaStream = null;
 let voiceAudioContext = null;
@@ -186,7 +200,7 @@ let taskStatusCopy = [
 const CHAT_STATUS = {
   checking: ["Checking local session…", "جارٍ التحقق من الجلسة المحلية…"],
   pairing: ["Pair this browser to start", "اربط هذا المتصفح للبدء"],
-  ready: ["Configured local model · session context · not saved", "نموذج محلي مضبوط · سياق الجلسة · لا يُحفظ"],
+  ready: ["Configured local model · persistent history is opt-in", "نموذج محلي مضبوط · سجل المحادثات اختياري"],
   sending: ["Waiting for the configured local model…", "بانتظار النموذج المحلي المضبوط…"],
   unavailable: ["Local chat service is unavailable", "خدمة الدردشة المحلية غير متاحة"],
   expired: ["Local session expired · pair again", "انتهت الجلسة المحلية · أعد الربط"],
@@ -209,6 +223,8 @@ const CHAT_ERRORS = {
   candidate_rejected: ["The memory proposal was rejected. Check its source and workspace permissions.", "رُفض مقترح الذاكرة. تحقق من مصدره وصلاحيات مساحة العمل."],
   candidate_unavailable: ["This memory candidate is unavailable.", "مقترح الذاكرة هذا غير متاح."],
   memory_service_unavailable: ["The memory review service is unavailable.", "خدمة مراجعة الذاكرة غير متاحة."],
+  conversation_memory_unavailable: ["Persistent conversation memory is temporarily unavailable. No reply was saved.", "الذاكرة الدائمة للمحادثات غير متاحة مؤقتًا. لم يُحفظ أي رد."],
+  conversation_memory_changed: ["Conversation memory changed during this request. Please send it again.", "تغيّرت ذاكرة المحادثة أثناء هذا الطلب. أعد إرساله."],
   csrf_rejected: ["The local session check failed. Reload and reconnect.", "فشل التحقق من الجلسة المحلية. أعد التحميل والاتصال."],
   candidate_changed: ["This candidate changed or is no longer pending. Reload the review list.", "تغيّر هذا المقترح أو لم يعد معلّقًا. أعد تحميل قائمة المراجعة."],
   explicit_review_required: ["Review the displayed candidate before confirming.", "راجع المقترح المعروض قبل التأكيد."],
@@ -1496,6 +1512,7 @@ function clearEphemeralWorkspaceView() {
   developerLoadGeneration += 1;
   clearDeveloperGraph();
   clearTaskControlCenter();
+  clearConversationMemoryPanel();
   interruptVoice({ clearReply: true });
 }
 
@@ -1530,6 +1547,12 @@ function setAuthenticated(value, token = null, model = null, provider = null, sh
   }
   if (authenticated) {
     setChatState("ready", "ready");
+    if (value.persistence_paused === true) {
+      setStatusLine([
+        "Saved history is read-only because workspace write access is unavailable. This turn remains session-only.",
+        "السجل المحفوظ للقراءة فقط لعدم توفر صلاحية الكتابة في مساحة العمل. تبقى هذه الرسالة ضمن الجلسة فقط."
+      ], true);
+    }
     if (pairingDialog.open) pairingDialog.close();
   } else {
     chatTranscript.replaceChildren();
@@ -2449,7 +2472,230 @@ async function responseJson(response) {
   }
 }
 
+function conversationMemoryText(en, ar) {
+  return language === "ar" ? ar : en;
+}
+
+function setConversationMemoryStatus(en, ar, isError = false) {
+  conversationMemoryStatus.textContent = conversationMemoryText(en, ar);
+  conversationMemoryStatus.classList.toggle("error", isError);
+}
+
+function clearConversationMemoryPanel() {
+  conversationMemoryLoadGeneration += 1;
+  conversationMemoryPanel.hidden = true;
+  delete conversationMemoryPanel.dataset.enabled;
+  conversationMemoryCanWrite = false;
+  conversationMemoryEnabled.checked = false;
+  conversationMemoryEnabled.disabled = true;
+  conversationMemoryRetention.disabled = true;
+  conversationMemorySave.disabled = true;
+  conversationMemoryRefresh.disabled = true;
+  conversationMemoryStatus.textContent = "";
+  conversationMemoryList.replaceChildren();
+  conversationMemoryTurns.replaceChildren();
+  conversationMemoryDetail.hidden = true;
+}
+
+function updateConversationMemoryControls() {
+  const wasEnabled = Boolean(conversationMemoryPanel.dataset.enabled === "true");
+  conversationMemoryEnabled.disabled = !conversationMemoryCanWrite && !wasEnabled;
+  conversationMemoryRetention.disabled = !conversationMemoryCanWrite;
+  conversationMemorySave.disabled = !conversationMemoryCanWrite
+    && !(wasEnabled && !conversationMemoryEnabled.checked);
+}
+
+function renderConversationMemoryList(conversations) {
+  conversationMemoryList.replaceChildren();
+  conversationMemoryDetail.hidden = true;
+  conversationMemoryTurns.replaceChildren();
+  if (!conversations.length) {
+    const empty = document.createElement("li");
+    empty.className = "hint";
+    empty.textContent = conversationMemoryText("No saved conversations in this workspace.", "لا توجد محادثات محفوظة في مساحة العمل هذه.");
+    conversationMemoryList.append(empty);
+    return;
+  }
+  for (const conversation of conversations) {
+    if (!conversation || typeof conversation.id !== "string") continue;
+    const item = document.createElement("li");
+    item.className = "conversation-memory-item";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "conversation-memory-open";
+    open.textContent = conversation.preview || conversationMemoryText("Saved conversation", "محادثة محفوظة");
+    const meta = document.createElement("span");
+    const updated = new Date(conversation.updated_at);
+    const date = Number.isNaN(updated.valueOf()) ? "" : updated.toLocaleString(language === "ar" ? "ar" : "en-GB");
+    meta.textContent = `${Number(conversation.turn_count) || 0} · ${date}`;
+    open.append(meta);
+    open.addEventListener("click", () => loadConversationMemoryDetail(conversation.id));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "small-action reject-action";
+    remove.textContent = conversationMemoryText("Delete", "حذف");
+    remove.addEventListener("click", () => deleteSavedConversation(conversation.id));
+    item.append(open, remove);
+    conversationMemoryList.append(item);
+  }
+}
+
+function clearConversationTranscriptAfterDeletion() {
+  chatTranscript.replaceChildren();
+  chatTranscript.hidden = true;
+  latestEvidenceRequestId = null;
+  latestCitations = [];
+  latestEvidenceResponse = null;
+  renderEvidence(null);
+  interruptVoice({ clearReply: true });
+}
+
+async function loadConversationMemory() {
+  if (!authenticated || !csrfToken || !activeWorkspaceId || workspaceServiceUnavailable) {
+    clearConversationMemoryPanel();
+    return;
+  }
+  const generation = ++conversationMemoryLoadGeneration;
+  const workspaceId = activeWorkspaceId;
+  conversationMemoryPanel.hidden = false;
+  conversationMemoryRefresh.disabled = true;
+  setConversationMemoryStatus("Loading saved-conversation settings…", "جارٍ تحميل إعدادات المحادثات المحفوظة…");
+  try {
+    const response = await fetch("/api/v1/conversation-memory", {
+      credentials: "same-origin", cache: "no-store",
+    });
+    const value = await responseJson(response);
+    if (generation !== conversationMemoryLoadGeneration || workspaceId !== activeWorkspaceId) return;
+    if (response.status === 401) { markSessionExpired(); return; }
+    if (!response.ok || !value.settings || !Array.isArray(value.conversations)) {
+      throw new Error(value.error || "conversation_memory_unavailable");
+    }
+    const settings = value.settings;
+    conversationMemoryPanel.dataset.enabled = String(settings.enabled === true);
+    conversationMemoryCanWrite = settings.can_write === true;
+    conversationMemoryEnabled.checked = settings.enabled === true;
+    conversationMemoryRetention.value = String([7, 30, 90, 180, 365].includes(settings.retention_days)
+      ? settings.retention_days : 30);
+    updateConversationMemoryControls();
+    conversationMemoryRefresh.disabled = false;
+    renderConversationMemoryList(settings.enabled === true ? value.conversations : []);
+    if (settings.enabled === true && !conversationMemoryCanWrite) {
+      setConversationMemoryStatus("Enabled, but workspace write access is unavailable. New turns remain session-only; you can still revoke consent.", "مفعّل، لكن صلاحية الكتابة في مساحة العمل غير متاحة. تبقى الرسائل الجديدة ضمن الجلسة، ويمكنك إلغاء الموافقة.");
+    } else if (settings.enabled === true) {
+      setConversationMemoryStatus("Enabled for this workspace. Future text and recognized voice turns are saved.", "مفعّل لمساحة العمل هذه. تُحفظ الرسائل النصية والصوتية المتعرّف عليها مستقبلًا.");
+    } else if (!conversationMemoryCanWrite) {
+      setConversationMemoryStatus("Off. Workspace write access is required to opt in.", "متوقف. يلزم إذن الكتابة في مساحة العمل لتفعيله.");
+    } else {
+      setConversationMemoryStatus("Off. Nothing is saved until you explicitly opt in.", "متوقف. لا يُحفظ شيء حتى تفعيله صراحةً.");
+    }
+  } catch (error) {
+    if (generation !== conversationMemoryLoadGeneration || workspaceId !== activeWorkspaceId) return;
+    conversationMemoryRefresh.disabled = false;
+    updateConversationMemoryControls();
+    setConversationMemoryStatus(errorMessage(error.message), "تعذّر تحميل إعدادات الذاكرة الدائمة.", true);
+  }
+}
+
+async function loadConversationMemoryDetail(conversationId) {
+  const generation = conversationMemoryLoadGeneration;
+  const workspaceId = activeWorkspaceId;
+  try {
+    const response = await fetch(`/api/v1/conversation-memory/${encodeURIComponent(conversationId)}`, {
+      credentials: "same-origin", cache: "no-store",
+    });
+    const value = await responseJson(response);
+    if (generation !== conversationMemoryLoadGeneration || workspaceId !== activeWorkspaceId) return;
+    if (response.status === 401) { markSessionExpired(); return; }
+    if (!response.ok || !value.conversation || !Array.isArray(value.conversation.turns)) {
+      throw new Error(value.error || "conversation_memory_unavailable");
+    }
+    conversationMemoryTurns.replaceChildren();
+    for (const turn of value.conversation.turns) {
+      const item = document.createElement("li");
+      item.className = "conversation-memory-turn";
+      for (const [role, text] of [[conversationMemoryText("You", "أنت"), turn.user], ["Jarvis", turn.assistant]]) {
+        const block = document.createElement("div");
+        const label = document.createElement("strong");
+        label.textContent = `${role}: `;
+        const content = document.createElement("p");
+        content.textContent = typeof text === "string" ? text : "";
+        block.append(label, content);
+        item.append(block);
+      }
+      conversationMemoryTurns.append(item);
+    }
+    const expires = new Date(value.conversation.expires_at);
+    conversationMemoryDetailTitle.textContent = conversationMemoryText("Expires", "ينتهي") + ": "
+      + (Number.isNaN(expires.valueOf()) ? "" : expires.toLocaleString(language === "ar" ? "ar" : "en-GB"));
+    conversationMemoryDetail.hidden = false;
+  } catch (error) {
+    if (generation !== conversationMemoryLoadGeneration || workspaceId !== activeWorkspaceId) return;
+    setConversationMemoryStatus(errorMessage(error.message), "تعذّر تحميل المحادثة.", true);
+  }
+}
+
+async function deleteSavedConversation(conversationId) {
+  const confirmed = window.confirm(conversationMemoryText(
+    "Delete this saved conversation? It will also clear this workspace's current session context.",
+    "هل تريد حذف هذه المحادثة؟ سيؤدي ذلك أيضًا إلى مسح سياق الجلسة الحالية لمساحة العمل هذه."
+  ));
+  if (!confirmed || !csrfToken || !activeWorkspaceId) return;
+  try {
+    const response = await fetch(`/api/v1/conversation-memory/conversations/${encodeURIComponent(conversationId)}`, {
+      method: "DELETE", credentials: "same-origin", cache: "no-store",
+      headers: { "X-Jarvis-CSRF": csrfToken },
+    });
+    const value = await responseJson(response);
+    if (response.status === 401) { markSessionExpired(); return; }
+    if (!response.ok) throw new Error(value.error || "conversation_memory_unavailable");
+    clearConversationTranscriptAfterDeletion();
+    setConversationMemoryStatus("Saved conversation deleted.", "حُذفت المحادثة المحفوظة.");
+    await loadConversationMemory();
+  } catch (error) {
+    setConversationMemoryStatus(errorMessage(error.message), "تعذّر حذف المحادثة.", true);
+  }
+}
+
+async function saveConversationMemoryPreference(event) {
+  event.preventDefault();
+  if (!csrfToken || !activeWorkspaceId) return;
+  const wasEnabled = conversationMemoryPanel.dataset.enabled === "true";
+  const enabled = conversationMemoryEnabled.checked;
+  if (enabled && !conversationMemoryCanWrite) return;
+  if (wasEnabled && !enabled && !window.confirm(conversationMemoryText(
+    "Turn off saved conversations and delete all saved conversations in this workspace? This also revokes consent.",
+    "هل تريد إيقاف حفظ المحادثات وحذف جميع المحادثات المحفوظة في مساحة العمل هذه؟ سيؤدي ذلك إلى إلغاء الموافقة."
+  ))) {
+    conversationMemoryEnabled.checked = true;
+    return;
+  }
+  conversationMemorySave.disabled = true;
+  try {
+    const response = await fetch("/api/v1/conversation-memory/settings", {
+      method: "PUT", credentials: "same-origin", cache: "no-store",
+      headers: { "Content-Type": "application/json", "X-Jarvis-CSRF": csrfToken },
+      body: JSON.stringify({ enabled, retention_days: Number(conversationMemoryRetention.value) }),
+    });
+    const value = await responseJson(response);
+    if (response.status === 401) { markSessionExpired(); return; }
+    if (!response.ok || !value.settings) throw new Error(value.error || "conversation_memory_unavailable");
+    if (wasEnabled && !enabled) clearConversationTranscriptAfterDeletion();
+    await loadConversationMemory();
+    if (enabled && !wasEnabled) {
+      setConversationMemoryStatus("Enabled. Only future completed turns are saved; earlier session history was not copied.", "تم التفعيل. تُحفظ الرسائل المكتملة مستقبلًا فقط؛ لم يُنسخ سجل الجلسة السابق.");
+    } else if (!enabled) {
+      setConversationMemoryStatus("Consent revoked and saved conversations deleted.", "أُلغيت الموافقة وحُذفت المحادثات المحفوظة.");
+    } else {
+      setConversationMemoryStatus("Preference saved.", "حُفظ التفضيل.");
+    }
+  } catch (error) {
+    setConversationMemoryStatus(errorMessage(error.message), "تعذّر حفظ التفضيل.", true);
+    updateConversationMemoryControls();
+  }
+}
+
 async function loadWorkspaces(preferredWorkspaceId = null) {
+  clearConversationMemoryPanel();
   workspaceSelect.disabled = true;
   const response = await fetch("/api/v1/workspaces", { credentials: "same-origin", cache: "no-store" });
   const value = await responseJson(response);
@@ -2530,6 +2776,7 @@ async function loadWorkspaces(preferredWorkspaceId = null) {
   } else {
     clearTaskControlCenter();
   }
+  if (activeWorkspaceId) await loadConversationMemory();
 }
 
 async function selectWorkspace() {
@@ -2570,6 +2817,8 @@ async function selectWorkspace() {
     } else {
       clearTaskControlCenter();
     }
+    if (activeWorkspaceId) await loadConversationMemory();
+    else clearConversationMemoryPanel();
   } catch (error) {
     if (error.message === "workspace_selection_changed") {
       await restoreSession();
@@ -3063,6 +3312,10 @@ function useFallback() {
 
 languageSelect.addEventListener("change", () => applyLanguage(languageSelect.value));
 workspaceSelect.addEventListener("change", selectWorkspace);
+conversationMemoryForm.addEventListener("submit", saveConversationMemoryPreference);
+conversationMemoryRefresh.addEventListener("click", loadConversationMemory);
+conversationMemoryEnabled.addEventListener("change", updateConversationMemoryControls);
+conversationMemoryDetailClose.addEventListener("click", () => { conversationMemoryDetail.hidden = true; });
 developerRepoSelect.addEventListener("change", selectDeveloperRepository);
 developerCompareButton.addEventListener("click", compareDeveloperCommits);
 developerSearchForm.addEventListener("submit", searchDeveloperFiles);

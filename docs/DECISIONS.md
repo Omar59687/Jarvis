@@ -95,6 +95,16 @@ The product targets Arabic and English, Windows desktop, and a browser dashboard
 
 **Evidence:** Session-store and HTTP regression coverage in `tests/test_m03_b1_local_chat.py` and `tests/test_m03_p2a_chat.py`.
 
+### Persistent conversational memory — 2026-11-22
+
+**Confirmed for this approved feature:** Add opt-in durable conversation turns to the existing SQLite database, scoped to one authenticated principal and authorized workspace. The opt-in is off by default; enabling it never migrates earlier process-local history. Text and recognized voice transcripts share the authenticated chat storage path; raw audio is not stored. A successful opt-out revokes consent, deletes saved turns in that scope, and clears active process-local context. Individual saved conversations are user-inspectable and deletable.
+
+**Implemented:** New turns use a 30-day default retention, configurable from 1 through 365 days in service policy (the dashboard offers 7, 30, 90, 180, and 365 days). Retrieval is lexical, chronological on output, and bounded to six turns/3 KiB. Retrieved content is explicitly untrusted and is not evidence or instructions. Service-side authorization, consent revisions, expiry purge, and stale-response checks protect the storage boundary.
+
+**Consequences and limits:** Existing SQLite is reused without a new dependency. Deletion is applied to the active database; prior SQLite backups or filesystem snapshots can retain older copies. Database encryption at rest is not added. This feature implementation does not rename or redefine the roadmap's M04 “Integration Platform” milestone; see [M04 persistent conversational memory](M04_PERSISTENT_CONVERSATIONAL_MEMORY.md) for behavior and limits.
+
+**Evidence:** `tests/test_m04_persistent_conversation.py` plus the full regression results recorded with the feature commit.
+
 ## Open decisions
 
 - Exact system RAM and supported Windows versions.
