@@ -33,6 +33,7 @@ import {
   toggleVoiceTranscript,
   transitionVoiceState,
   voiceErrorMessage,
+  voiceLanguageUnavailableError,
   voiceStateLabel,
 } from "/voice-ui-state.mjs";
 
@@ -1995,6 +1996,14 @@ async function playSpokenReply({ text = voiceState.lastReplyText, replyLanguage 
   const cacheKey = `${targetLang}:${text}`;
 
   stopVoicePlayback({ revokeAudio: false });
+
+  const languageError = voiceLanguageUnavailableError(voiceState, targetLang);
+  if (languageError) {
+    abortVoiceRequests();
+    voiceState = transitionVoiceState(voiceState, "error", { errorCode: languageError });
+    renderVoiceUI();
+    return;
+  }
 
   if (voiceAudioObjectUrl && voiceCachedReplyKey === cacheKey) {
     await startAudioElementPlayback(voiceAudioObjectUrl, voiceGeneration);

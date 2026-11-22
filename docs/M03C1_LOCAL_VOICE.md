@@ -103,6 +103,28 @@ python -m prototypes.m03_b1.service `
   --tts-model-ar-path "C:\AI Models\piper\ar_JO-kareem-medium.onnx"
 ```
 
+### English-first live acceptance
+
+For English-only spoken replies, use the same command with the verified English voice and omit `--tts-model-ar-path`:
+
+```powershell
+python -m prototypes.m03_b1.service `
+  --port 8765 `
+  --provider lmstudio `
+  --model "prism-ml/bonsai-27b" `
+  --base-url "http://127.0.0.1:1235" `
+  --persona jarvis `
+  --stt-backend faster-whisper `
+  --stt-model-path "C:\AI Models\whisper\faster-whisper-small" `
+  --stt-device cpu `
+  --stt-compute-type int8 `
+  --tts-backend piper `
+  --tts-binary-path "C:\AI Models\piper\piper.exe" `
+  --tts-model-path "C:\AI Models\piper\en_GB-alan-medium.onnx"
+```
+
+This mode advertises only English TTS. Faster-whisper remains in its normal automatic language-detection mode, so recognized Arabic stays Arabic and is not silently translated. Arabic text replies remain available, but the dashboard skips Arabic synthesis and explains that Arabic voice output is temporarily unavailable. Restore Arabic voice output later by adding the optional `--tts-model-ar-path` flag with its local voice model.
+
 Example with Chatterbox Multilingual on CUDA:
 
 ```powershell

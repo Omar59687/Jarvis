@@ -78,6 +78,10 @@ const VOICE_ERRORS = Object.freeze({
     "Configured local voice model is unavailable. Text reply remains available.",
     "نموذج الصوت المحلي المهيأ غير متاح. يبقى الرد النصي متاحًا.",
   ],
+  arabic_tts_unavailable: [
+    "Arabic voice output is temporarily unavailable. Text reply remains available.",
+    "الإخراج الصوتي بالعربية غير متاح مؤقتًا. يظل الرد النصي متاحًا.",
+  ],
   synthesis_failed: [
     "Local speech synthesis failed. Text reply remains available.",
     "فشل توليد الصوت المحلي. يبقى الرد النصي متاحًا.",
@@ -248,6 +252,13 @@ export function voiceErrorMessage(code, language = "en") {
 export function detectReplyLanguage(text, fallbackLanguage = "en") {
   if (typeof text === "string" && ARABIC_CHAR_RE.test(text)) return "ar";
   return fallbackLanguage === "ar" ? "ar" : "en";
+}
+
+export function voiceLanguageUnavailableError(state, language) {
+  if (language === "ar" && !state?.ttsLanguages?.includes("ar")) {
+    return "arabic_tts_unavailable";
+  }
+  return null;
 }
 
 export function encodePcm16Wav(

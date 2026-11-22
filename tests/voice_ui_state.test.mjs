@@ -13,6 +13,7 @@ import {
   toggleVoiceTranscript,
   transitionVoiceState,
   voiceErrorMessage,
+  voiceLanguageUnavailableError,
   voiceStateLabel,
 } from "../prototypes/m03_b1/voice-ui-state.mjs";
 
@@ -109,8 +110,25 @@ test("localized EN/AR voice states, errors, and language detection", () => {
   assert.match(voiceErrorMessage("mic_permission_denied", "ar"), /الميكروفون/);
   assert.match(voiceErrorMessage("stt_model_unavailable", "en"), /faster-whisper/);
   assert.match(voiceErrorMessage("tts_model_unavailable", "ar"), /الرد النصي/);
+  assert.match(voiceErrorMessage("arabic_tts_unavailable", "en"), /Arabic voice output is temporarily unavailable/);
+  assert.match(voiceErrorMessage("arabic_tts_unavailable", "ar"), /غير متاح مؤقتًا/);
   assert.equal(detectReplyLanguage("Good morning, sir.", "en"), "en");
   assert.equal(detectReplyLanguage("صباح الخير يا سيدي", "en"), "ar");
+});
+
+test("English-only TTS status prevents Arabic synthesis requests without changing reply language", () => {
+  const state = applyVoiceStatus(createVoiceState(), {
+    tts_configured: true,
+    tts_ready: true,
+    tts_backend: "piper",
+    tts_languages: ["en"],
+  });
+  assert.equal(detectReplyLanguage("أهلاً بك.", "en"), "ar");
+  assert.equal(voiceLanguageUnavailableError(state, "ar"), "arabic_tts_unavailable");
+  assert.equal(voiceLanguageUnavailableError(state, "en"), null);
+
+  const bilingualState = applyVoiceStatus(state, { tts_languages: ["ar", "en"] });
+  assert.equal(voiceLanguageUnavailableError(bilingualState, "ar"), null);
 });
 
 test("encodePcm16Wav downsamples cleanly and enforces duration and size limits", () => {
