@@ -6,7 +6,8 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import tempfile
-from threading import Barrier, Thread
+from threading import Barrier, Event, Thread, get_ident
+import time
 import unittest
 from unittest.mock import patch
 
@@ -1203,6 +1204,147 @@ class OrchestrationRetentionTests(unittest.TestCase):
                 return proposal()
         with self.assertRaisesRegex(OrchestrationError, "model_planning_disabled"):
             self.service.propose_plan("owner", draft.id, RealPlanner(), idempotency_key=self._k("p4-real"))
+
+    def test_concurrent_manager_revocation_during_history_and_task_listing(self):
+        owner_task = self._make_completed_task(
+            actor="owner",
+            workspace_id="ws",
+            goal="OWNER_CONFIDENTIAL_GOAL_88412",
+        )
+        self.assertIsNotNone(owner_task.result_summary)
+
+        for perm in (Permission.READ, Permission.WRITE, Permission.MANAGE_WORKSPACE):
+            self.db.grant_permission("owner", "ws", "temp_mgr", perm)
+
+        own_task = self._make_cancelled_task(
+            actor="temp_mgr",
+            workspace_id="ws",
+            goal="Temp manager own active cancelled task",
+        )
+        own_archived = self._make_cancelled_task(
+            actor="temp_mgr",
+            workspace_id="ws",
+            goal="Temp manager own archived task",
+        )
+        self.service.archive_task("temp_mgr", own_archived.id, idempotency_key=self._k("tm-arch"))
+
+        # Baseline while MANAGE_WORKSPACE is held: sees all workspace tasks.
+        baseline = self.service.list_task_history("temp_mgr", "ws", include_archived=True)
+        self.assertEqual(baseline.total_count, 3)
+        self.assertEqual({t.id for t in baseline.items}, {owner_task.id, own_task.id, own_archived.id})
+        self.assertEqual(
+            {t.id for t in self.service.list_tasks("temp_mgr", "ws")},
+            {owner_task.id, own_task.id},
+        )
+
+        def run_with_inflight_revocation(permission: Permission, reader_call):
+            revocation_holding_tx = Event()
+            release_revocation = Event()
+            reader_entered_begin = Event()
+            revoker_tid = [None]
+            reader_tid = [None]
+            reader_result = []
+            reader_error = []
+            revoker_error = []
+
+            orig_commit = Database._commit
+            orig_begin = Database._begin
+
+            def hooked_commit(conn):
+                if get_ident() == revoker_tid[0] and not revocation_holding_tx.is_set():
+                    revocation_holding_tx.set()
+                    if not release_revocation.wait(timeout=5.0):
+                        raise TimeoutError("timed out waiting to release revocation commit")
+                orig_commit(conn)
+
+            def hooked_begin(conn):
+                if get_ident() == reader_tid[0] and not reader_entered_begin.is_set():
+                    reader_entered_begin.set()
+                orig_begin(conn)
+
+            def do_revoke():
+                revoker_tid[0] = get_ident()
+                try:
+                    self.db.revoke_permission("owner", "ws", "temp_mgr", permission)
+                except Exception as exc:
+                    revoker_error.append(exc)
+
+            def do_read():
+                reader_tid[0] = get_ident()
+                try:
+                    reader_result.append(reader_call())
+                except Exception as exc:
+                    reader_error.append(exc)
+
+            with patch.object(Database, "_commit", staticmethod(hooked_commit)), \
+                 patch.object(Database, "_begin", staticmethod(hooked_begin)):
+                revoker = Thread(target=do_revoke)
+                reader = Thread(target=do_read)
+                try:
+                    revoker.start()
+                    self.assertTrue(revocation_holding_tx.wait(timeout=5.0))
+                    # Revoker now holds BEGIN IMMEDIATE with DELETE uncommitted.
+                    reader.start()
+                    self.assertTrue(reader_entered_begin.wait(timeout=5.0))
+                    time.sleep(0.05)
+                    # Protected transaction must serialize reader behind the in-flight revocation.
+                    self.assertTrue(reader.is_alive())
+                finally:
+                    release_revocation.set()
+                    revoker.join(timeout=5.0)
+                    reader.join(timeout=5.0)
+            self.assertFalse(revoker.is_alive())
+            self.assertFalse(reader.is_alive())
+            self.assertEqual(revoker_error, [])
+            return reader_result, reader_error
+
+        # 1. Revoking MANAGE_WORKSPACE during list_task_history restricts results to temp_mgr's own tasks.
+        results, errors = run_with_inflight_revocation(
+            Permission.MANAGE_WORKSPACE,
+            lambda: self.service.list_task_history("temp_mgr", "ws", include_archived=True),
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 1)
+        page = results[0]
+        self.assertEqual(page.total_count, 2)
+        self.assertFalse(page.has_more)
+        self.assertEqual({t.id for t in page.items}, {own_task.id, own_archived.id})
+        self.assertTrue(all(t.principal_id == "temp_mgr" for t in page.items))
+        self.assertNotIn(owner_task.goal, [t.goal for t in page.items])
+        self.assertNotIn(owner_task.result_summary, [t.result_summary for t in page.items])
+
+        # Verify pagination and archive filtering remain accurate for non-manager READ user.
+        archived_only_page = self.service.list_task_history("temp_mgr", "ws", archived_only=True)
+        self.assertEqual([t.id for t in archived_only_page.items], [own_archived.id])
+        self.assertEqual(archived_only_page.total_count, 1)
+        p1 = self.service.list_task_history("temp_mgr", "ws", include_archived=True, limit=1, offset=0)
+        p2 = self.service.list_task_history("temp_mgr", "ws", include_archived=True, limit=1, offset=1)
+        self.assertEqual(p1.total_count, 2)
+        self.assertTrue(p1.has_more)
+        self.assertFalse(p2.has_more)
+        self.assertEqual({p1.items[0].id, p2.items[0].id}, {own_task.id, own_archived.id})
+
+        # 2. Re-grant MANAGE_WORKSPACE and verify the exact same protection for list_tasks.
+        self.db.grant_permission("owner", "ws", "temp_mgr", Permission.MANAGE_WORKSPACE)
+        results, errors = run_with_inflight_revocation(
+            Permission.MANAGE_WORKSPACE,
+            lambda: self.service.list_tasks("temp_mgr", "ws"),
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 1)
+        listed = results[0]
+        self.assertEqual([t.id for t in listed], [own_task.id])
+        self.assertNotIn(owner_task.goal, [t.goal for t in listed])
+        self.assertNotIn(owner_task.result_summary, [t.result_summary for t in listed])
+
+        # 3. Revoking READ during list_task_history denies all access cleanly.
+        results, errors = run_with_inflight_revocation(
+            Permission.READ,
+            lambda: self.service.list_task_history("temp_mgr", "ws", include_archived=True),
+        )
+        self.assertEqual(results, [])
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], AccessDenied)
 
 
 if __name__ == "__main__":

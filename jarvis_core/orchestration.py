@@ -689,22 +689,28 @@ class TaskOrchestrationService:
             raise ValueError("task list limit must be between 1 and 100")
         if type(include_history) is not bool or type(include_archived) is not bool:
             raise ValueError("task list filter flags must be booleans")
-        self.db.require_access(actor_id, workspace_id, Permission.READ)
-        manager = self.db.check_access(actor_id, workspace_id, Permission.MANAGE_WORKSPACE)
-        sql = "SELECT id FROM orchestration_tasks WHERE workspace_id=?"
-        params: list[object] = [workspace_id]
-        if not manager:
-            sql += " AND principal_id=?"
-            params.append(actor_id)
-        if not include_archived:
-            sql += " AND archived_at IS NULL"
-        if not include_history:
-            sql += " AND state NOT IN ('simulation_completed','completed','failed','cancelled','stale')"
-        sql += " ORDER BY updated_at DESC,id LIMIT ?"
-        params.append(limit)
+        self.db.initialize()
         with self.db._connection() as connection:
-            rows = connection.execute(sql, params).fetchall()
-        return tuple(self.get_task(actor_id, row["id"]) for row in rows)
+            self.db._begin(connection)
+            try:
+                Database._require_access(connection, actor_id, workspace_id, Permission.READ)
+                manager = self._has_permission(connection, actor_id, workspace_id,
+                                               Permission.MANAGE_WORKSPACE)
+                sql = "SELECT * FROM orchestration_tasks WHERE workspace_id=?"
+                params: list[object] = [workspace_id]
+                if not manager:
+                    sql += " AND principal_id=?"
+                    params.append(actor_id)
+                if not include_archived:
+                    sql += " AND archived_at IS NULL"
+                if not include_history:
+                    sql += " AND state NOT IN ('simulation_completed','completed','failed','cancelled','stale')"
+                sql += " ORDER BY updated_at DESC,id LIMIT ?"
+                params.append(limit)
+                rows = connection.execute(sql, params).fetchall()
+            finally:
+                self.db._rollback(connection)
+        return tuple(self._task(row) for row in rows)
 
     def _plan_rows(self, connection: sqlite3.Connection, task: OrchestrationTask,
                    revision: int) -> tuple[PlannedSubtask, ...]:
@@ -1433,6 +1439,15 @@ class TaskOrchestrationService:
         return tuple(result)
 
     @staticmethod
+    def _has_permission(connection: sqlite3.Connection, actor_id: str,
+                        workspace_id: str, permission: Permission) -> bool:
+        try:
+            Database._require_access(connection, actor_id, workspace_id, permission)
+            return True
+        except AccessDenied:
+            return False
+
+    @staticmethod
     def _require_workspace_manager(connection: sqlite3.Connection, actor_id: str,
                                    workspace_id: str, *, write: bool = False) -> None:
         Database._require_access(connection, actor_id, workspace_id, Permission.READ)
@@ -1594,35 +1609,40 @@ class TaskOrchestrationService:
                 raise ValueError("states filter must be a non-empty tuple of task states")
             normalized_states = tuple(sorted({TaskState(item).value for item in states}))
         older_cutoff = _parse_utc(older_than, "older_than") if older_than is not None else None
-        self.db.require_access(actor_id, workspace_id, Permission.READ)
-        manager = self.db.check_access(actor_id, workspace_id, Permission.MANAGE_WORKSPACE)
-        where = ["workspace_id=?"]
-        params: list[object] = [workspace_id]
-        if not manager:
-            where.append("principal_id=?")
-            params.append(actor_id)
-        if archived_only:
-            where.append("archived_at IS NOT NULL")
-        elif not include_archived:
-            where.append("archived_at IS NULL")
-        if normalized_states:
-            placeholders = ",".join("?" for _ in normalized_states)
-            where.append(f"state IN ({placeholders})")
-            params.extend(normalized_states)
-        if older_cutoff is not None:
-            where.append("updated_at<=?")
-            params.append(older_cutoff.isoformat(timespec="microseconds"))
-        clause = " AND ".join(where)
+        self.db.initialize()
         with self.db._connection() as connection:
-            Database._require_access(connection, actor_id, workspace_id, Permission.READ)
-            total_count = int(connection.execute(
-                f"SELECT COUNT(*) FROM orchestration_tasks WHERE {clause}", params
-            ).fetchone()[0])
-            rows = connection.execute(
-                f"SELECT * FROM orchestration_tasks WHERE {clause} "
-                "ORDER BY updated_at DESC, id ASC LIMIT ? OFFSET ?",
-                [*params, limit, offset],
-            ).fetchall()
+            self.db._begin(connection)
+            try:
+                Database._require_access(connection, actor_id, workspace_id, Permission.READ)
+                manager = self._has_permission(connection, actor_id, workspace_id,
+                                               Permission.MANAGE_WORKSPACE)
+                where = ["workspace_id=?"]
+                params: list[object] = [workspace_id]
+                if not manager:
+                    where.append("principal_id=?")
+                    params.append(actor_id)
+                if archived_only:
+                    where.append("archived_at IS NOT NULL")
+                elif not include_archived:
+                    where.append("archived_at IS NULL")
+                if normalized_states:
+                    placeholders = ",".join("?" for _ in normalized_states)
+                    where.append(f"state IN ({placeholders})")
+                    params.extend(normalized_states)
+                if older_cutoff is not None:
+                    where.append("updated_at<=?")
+                    params.append(older_cutoff.isoformat(timespec="microseconds"))
+                clause = " AND ".join(where)
+                total_count = int(connection.execute(
+                    f"SELECT COUNT(*) FROM orchestration_tasks WHERE {clause}", params
+                ).fetchone()[0])
+                rows = connection.execute(
+                    f"SELECT * FROM orchestration_tasks WHERE {clause} "
+                    "ORDER BY updated_at DESC, id ASC LIMIT ? OFFSET ?",
+                    [*params, limit, offset],
+                ).fetchall()
+            finally:
+                self.db._rollback(connection)
         items = tuple(self._task(row) for row in rows)
         return TaskHistoryPage(
             items=items,
