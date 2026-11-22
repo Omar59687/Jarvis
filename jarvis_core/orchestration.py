@@ -1833,33 +1833,82 @@ class TaskOrchestrationService:
                 selected_tasks.append(task)
         else:
             assert policy is not None
-            sql = "SELECT * FROM orchestration_tasks WHERE workspace_id=?"
-            if archived_only:
-                sql += " AND archived_at IS NOT NULL"
-            sql += " ORDER BY updated_at ASC, id ASC"
-            rows = connection.execute(sql, (workspace_id,)).fetchall()
+            eligible_states = tuple(sorted(state.value for state in _RETENTION_ELIGIBLE_STATES))
+            eligible_placeholders = ",".join("?" for _ in eligible_states)
+            protected_sql = (
+                "SELECT COUNT(*) FROM orchestration_tasks t "
+                "WHERE t.workspace_id=? "
+                + ("AND t.archived_at IS NOT NULL " if archived_only else "")
+                + f"AND (t.state NOT IN ({eligible_placeholders}) "
+                "OR (t.state != 'cancelled' AND EXISTS ("
+                "SELECT 1 FROM orchestration_plans p "
+                "WHERE p.task_id=t.id AND p.state='awaiting_approval')))"
+            )
+            protected_skipped = int(
+                connection.execute(protected_sql, (workspace_id, *eligible_states)).fetchone()[0]
+            )
+
+            state_cutoffs: list[tuple[str, datetime, str]] = []
+            for state in sorted(_RETENTION_ELIGIBLE_STATES, key=lambda item: item.value):
+                retention_days = _retention_days_for_state(policy, state)
+                if retention_days is not None:
+                    cutoff_dt = effective_now - timedelta(days=retention_days)
+                    # Add a 1-day SQL prefilter margin so any valid ISO-8601 timezone
+                    # offset or 'Z' suffix is preserved for exact _parse_utc comparison.
+                    sql_upper_bound = (cutoff_dt + timedelta(days=1)).isoformat(timespec="microseconds")
+                    state_cutoffs.append((state.value, cutoff_dt, sql_upper_bound))
+
             eligible: list[OrchestrationTask] = []
-            for row in rows:
-                task = self._task(row)
-                if (task.state in _PROTECTED_TASK_STATES
-                        or self._has_pending_approval(connection, task.id, task.state.value)):
-                    protected_skipped += 1
-                    continue
-                if task.state not in _RETENTION_ELIGIBLE_STATES:
-                    protected_skipped += 1
-                    continue
-                retention_days = _retention_days_for_state(policy, task.state)
-                if retention_days is None:
-                    continue
+            if state_cutoffs:
+                cutoff_by_state = {
+                    state_val: cutoff_dt for state_val, cutoff_dt, _ in state_cutoffs
+                }
+                state_predicates = " OR ".join(
+                    "(t.state=? AND t.updated_at<=?)" for _ in state_cutoffs
+                )
+                candidate_params: list[object] = [workspace_id]
+                for state_val, _, sql_upper_bound in state_cutoffs:
+                    candidate_params.extend((state_val, sql_upper_bound))
+                candidate_sql = (
+                    "SELECT t.* FROM orchestration_tasks t "
+                    "WHERE t.workspace_id=? "
+                    + ("AND t.archived_at IS NOT NULL " if archived_only else "")
+                    + f"AND ({state_predicates}) "
+                    "AND (t.state='cancelled' OR NOT EXISTS ("
+                    "SELECT 1 FROM orchestration_plans p "
+                    "WHERE p.task_id=t.id AND p.state='awaiting_approval')) "
+                    "ORDER BY t.updated_at ASC, t.id ASC"
+                )
+                batch_size = limit + 1
+                cursor = connection.execute(candidate_sql, candidate_params)
                 try:
-                    updated_dt = _parse_utc(task.updated_at, "updated_at")
-                except ValueError:
-                    raise OrchestrationError("task_evidence_corrupt") from None
-                if updated_dt <= effective_now - timedelta(days=retention_days):
-                    if len(eligible) < limit:
-                        eligible.append(task)
-                    else:
-                        truncated = True
+                    while True:
+                        batch = cursor.fetchmany(batch_size)
+                        if not batch:
+                            break
+                        for row in batch:
+                            task = self._task(row)
+                            if (task.state in _PROTECTED_TASK_STATES
+                                    or task.state not in _RETENTION_ELIGIBLE_STATES
+                                    or self._has_pending_approval(connection, task.id, task.state.value)):
+                                continue
+                            cutoff_dt = cutoff_by_state.get(task.state.value)
+                            if cutoff_dt is None:
+                                continue
+                            try:
+                                updated_dt = _parse_utc(task.updated_at, "updated_at")
+                            except ValueError:
+                                raise OrchestrationError("task_evidence_corrupt") from None
+                            if updated_dt <= cutoff_dt:
+                                if len(eligible) < limit:
+                                    eligible.append(task)
+                                else:
+                                    truncated = True
+                                    break
+                        if truncated:
+                            break
+                finally:
+                    cursor.close()
             selected_tasks = sorted(eligible, key=lambda item: item.id)
 
         preview_items: list[PurgePreviewItem] = []
