@@ -1,6 +1,6 @@
 # M03-B2 local provider chat alpha
 
-This separate service reuses the synthetic M03-A Knowledge Galaxy and connects its bottom dock to a bounded single-turn endpoint. Select either LM Studio Bionic or Ollama explicitly at startup; both adapters use the provider-neutral generation contract. The page is available only from the service started on `127.0.0.1`.
+This separate service reuses the synthetic M03-A Knowledge Galaxy and connects its bottom dock to a bounded local chat endpoint. Recent turns are held only in the paired process-local session, bounded to six turns and 8 KiB; they are cleared on session expiry/revocation or workspace change and are never written to SQLite or browser storage. Select either LM Studio Bionic or Ollama explicitly at startup; both adapters use the provider-neutral generation contract. The page is available only from the service started on `127.0.0.1`.
 
 For LM Studio Bionic, ensure its native API is available on loopback and the selected model is ready. From the repository root on Windows, run:
 

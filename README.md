@@ -4,7 +4,7 @@
 
 Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing, and retrieving information across personal and project workspaces. M01-A through M01-E, M02-A through M02-D, Q01, and M03-A are in the stated `main` baseline.
 
-> **Project status:** This branch implements P2-A1's trusted principal/session binding and authenticated workspace listing/selection API on top of the M03-B2 local chat baseline. It remains a restricted local alpha: the Knowledge Galaxy workspace view is still synthetic, chat is still general single-turn conversation, and no retrieval, memory writes, tools, account provisioning, or cloud integration is connected.
+> **Project status:** The baseline implements P2-A1 trusted principal/session binding and authenticated workspace listing/selection on the M03-B2 local chat service. This integration candidate adds bounded process-local multi-turn chat context alongside English voice; it remains a restricted local alpha. The Knowledge Galaxy view is synthetic, workspace chat uses existing permission-checked retrieval, durable conversational history is not stored, and tools/account provisioning/cloud integration are not connected.
 
 ## Product goals
 
