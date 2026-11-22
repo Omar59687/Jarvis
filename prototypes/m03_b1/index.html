@@ -176,6 +176,10 @@
             <input id="task-include-history" type="checkbox" checked disabled>
             <span data-en="Include completed and cancelled history" data-ar="إدراج السجل المكتمل والملغى">Include completed and cancelled history</span>
           </label>
+          <label class="check-row task-archive-toggle">
+            <input id="task-include-archived" type="checkbox" disabled>
+            <span data-en="Show archived tasks" data-ar="إظهار المهام المؤرشفة">Show archived tasks</span>
+          </label>
           <button id="task-refresh" type="button" class="small-action" disabled data-en="Refresh tasks" data-ar="تحديث المهام">Refresh tasks</button>
         </div>
         <p id="task-status-message" class="task-status-message" role="status" aria-live="polite" data-en="Pair this browser and select an authorized workspace to inspect tasks." data-ar="اربط هذا المتصفح واختر مساحة عمل مصرحًا بها لفحص المهام.">Pair this browser and select an authorized workspace to inspect tasks.</p>
@@ -193,6 +197,7 @@
             <div id="task-detail-content" class="task-detail-content" hidden>
               <div class="task-detail-top">
                 <span id="task-detail-status" class="task-status-pill"></span>
+                <span id="task-detail-archived-badge" class="task-archived-badge" hidden></span>
                 <span id="task-detail-mode-banner" class="task-sim-banner"></span>
               </div>
               <h3 id="task-detail-goal" class="task-detail-goal" dir="auto"></h3>
