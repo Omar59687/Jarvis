@@ -720,7 +720,14 @@ class PiperTTSAdapter:
                                 timeout=self.timeout, check=False, shell=False)
         process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.DEVNULL, shell=False)
-        timer = threading.Timer(self.timeout, process.kill)
+        timed_out = threading.Event()
+
+        def kill_on_timeout() -> None:
+            if process.poll() is None:
+                timed_out.set()
+                process.kill()
+
+        timer = threading.Timer(self.timeout, kill_on_timeout)
         timer.daemon = True
         timer.start()
         output = bytearray()
@@ -737,6 +744,8 @@ class PiperTTSAdapter:
                     raise VoiceSynthesisError("Synthesized audio exceeds maximum size limit")
                 output.extend(chunk)
             returncode = process.wait(timeout=max(0.1, self.timeout))
+            if timed_out.is_set():
+                raise VoiceTimeoutError("Local Piper TTS synthesis timed out")
         except subprocess.TimeoutExpired as exc:
             process.kill()
             process.wait()

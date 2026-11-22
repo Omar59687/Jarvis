@@ -406,6 +406,17 @@ class LocalVoiceServiceTests(unittest.TestCase):
         self.assertEqual(json.loads(body), {"error": "synthesis_failed"})
         self.assertNotIn(b"secret", body)
 
+        self.tts.error = VoiceTimeoutError("private timeout detail")
+        status, _, body = self.raw_request(
+            "POST",
+            f"{API_PREFIX}/voice/synthesize",
+            body=json.dumps({"text": "مرحبا.", "language": "ar"}).encode("utf-8"),
+            headers={"Cookie": cookie, "X-Jarvis-CSRF": csrf, "Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 504)
+        self.assertEqual(json.loads(body), {"error": "synthesis_timeout"})
+        self.assertNotIn(b"private", body)
+
     def test_voice_concurrency_and_rate_limit(self) -> None:
         cookie, csrf = self.pair()
         wav = make_wav_bytes(0.3)

@@ -335,6 +335,49 @@ class LocalTTSAdaptersTests(unittest.TestCase):
             with self.assertRaises(VoiceSynthesisError):
                 adapter_fail.synthesize("Hello", language="en")
 
+    def test_piper_timer_kill_is_reported_as_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            exe = root / "piper.exe"
+            model = root / "ar_JO-kareem.onnx"
+            exe.write_bytes(b"fake-bin")
+            model.write_bytes(b"fake-model")
+            Path(f"{model}.json").write_text(
+                json.dumps({"audio": {"sample_rate": 22050}}), encoding="utf-8"
+            )
+
+            class KilledProcess:
+                def __init__(self):
+                    self.stdin = io.BytesIO()
+                    self.stdout = io.BytesIO()
+                    self.returncode = None
+
+                def poll(self):
+                    return self.returncode
+
+                def kill(self):
+                    self.returncode = -9
+
+                def wait(self, timeout=None):
+                    return self.returncode
+
+            class ImmediateTimer:
+                def __init__(self, interval, callback):
+                    self.callback = callback
+
+                def start(self):
+                    self.callback()
+
+                def cancel(self):
+                    pass
+
+            process = KilledProcess()
+            adapter = PiperTTSAdapter(exe, {"ar": model}, timeout=1)
+            with patch("jarvis_core.voice.subprocess.Popen", return_value=process), \
+                    patch("jarvis_core.voice.threading.Timer", ImmediateTimer):
+                with self.assertRaises(VoiceTimeoutError):
+                    adapter.synthesize("مرحبا، كيف حالك؟", language="ar")
+
     def test_build_voice_service_options_fail_closed(self) -> None:
         with self.assertRaises(VoiceConfigurationError):
             build_voice_service_from_options(stt_backend="faster-whisper", stt_model_path=None)
