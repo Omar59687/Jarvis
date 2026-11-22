@@ -289,7 +289,7 @@ class OrchestrationOperatorWorkflow:
         for item in tombstones:
             self._write(
                 f"{item.purged_at} | task={item.task_id} | state={item.task_state.value} | "
-                f"purge_id={item.purge_id} | goal_sha256={item.goal_sha256[:12]}... | "
+                f"purge_id={item.purge_id} | "
                 f"approvals={item.approval_count} events={item.event_count} by={item.purged_by}"
             )
         return tombstones
