@@ -826,6 +826,174 @@ class TaskControlCenterAPITests(unittest.TestCase):
         self.assertEqual(goal, "Line one\nLine two\nLine three")
         self.assertNotIn("\r", goal)
 
+    def test_archived_task_visibility_default_hiding_detail_fields_and_isolation(self):
+        planner = _two_step_planner()
+        worker = _two_step_worker()
+
+        active_task = self.orch.create_task(
+            "alice", "ws-a", "Active task visible by default",
+            idempotency_key="arch_vis_active_0001",
+        )
+        cancelled_task = self.orch.create_task(
+            "alice", "ws-a", "Archived cancelled task",
+            idempotency_key="arch_vis_cancel_0001",
+        )
+        self.orch.cancel_task("alice", cancelled_task.id, idempotency_key="arch_vis_cancel_act_0001")
+        archived_cancelled = self.orch.archive_task(
+            "alice", cancelled_task.id, idempotency_key="arch_vis_archive_cancel_0001",
+        )
+
+        sim_task = self.orch.create_task(
+            "alice", "ws-a", "Archived simulated task",
+            idempotency_key="arch_vis_sim_0001",
+        )
+        sim_plan = self.orch.propose_plan("alice", sim_task.id, planner, idempotency_key="arch_vis_sim_plan_0001")
+        self.orch.approve_plan(
+            "alice", sim_task.id, sim_plan.revision, sim_plan.plan_sha256,
+            idempotency_key="arch_vis_sim_app_0001",
+        )
+        for step in range(4):
+            self.orch.simulate_next_step(
+                "alice", sim_task.id, worker, idempotency_key=f"arch_vis_sim_step_{step:04d}",
+            )
+        archived_sim = self.orch.archive_task(
+            "alice", sim_task.id, idempotency_key="arch_vis_archive_sim_0001",
+        )
+
+        # Foreign archived tasks in ws-b (managed by alice) and ws-bob (owned by bob)
+        wsb_task = self.orch.create_task(
+            "alice", "ws-b", "Workspace B archived secret",
+            idempotency_key="arch_vis_wsb_0001",
+        )
+        self.orch.cancel_task("alice", wsb_task.id, idempotency_key="arch_vis_wsb_cancel_0001")
+        archived_wsb = self.orch.archive_task("alice", wsb_task.id, idempotency_key="arch_vis_wsb_arch_0001")
+
+        bob_task = self.orch.create_task(
+            "bob", "ws-bob", "Bob archived secret",
+            idempotency_key="arch_vis_bob_0001",
+        )
+        self.orch.cancel_task("bob", bob_task.id, idempotency_key="arch_vis_bob_cancel_0001")
+        archived_bob = self.orch.archive_task("bob", bob_task.id, idempotency_key="arch_vis_bob_arch_0001")
+
+        # Default GET /api/v1/tasks hides archived tasks
+        for path in (f"{API_PREFIX}/tasks", f"{API_PREFIX}/tasks?include_archived=false"):
+            status, _, body = self.request("GET", path)
+            self.assertEqual(status, 200, (path, body))
+            data = json.loads(body)
+            self.assertFalse(data["pagination"]["include_archived"])
+            self.assertEqual([t["id"] for t in data["tasks"]], [active_task.id])
+            self.assertFalse(data["tasks"][0]["is_archived"])
+            self.assertIsNone(data["tasks"][0]["archived_at"])
+            self.assertNotIn("archived_by", data["tasks"][0])
+
+        # include_archived=true with all 5 query parameters reveals ws-a archived tasks only
+        status, _, body = self.request(
+            "GET",
+            f"{API_PREFIX}/tasks?limit=20&offset=0&include_history=true&include_archived=true&status=all",
+        )
+        self.assertEqual(status, 200, body)
+        raw_text = body.decode("utf-8")
+        self.assertNotIn("Workspace B archived secret", raw_text)
+        self.assertNotIn("Bob archived secret", raw_text)
+        self.assertNotIn("archived_by", raw_text)
+        data = json.loads(body)
+        self.assertTrue(data["pagination"]["include_archived"])
+        self.assertEqual(data["summary"]["total_visible"], 3)
+        by_id = {t["id"]: t for t in data["tasks"]}
+        self.assertEqual(set(by_id), {active_task.id, archived_cancelled.id, archived_sim.id})
+        self.assertFalse(by_id[active_task.id]["is_archived"])
+        self.assertIsNone(by_id[active_task.id]["archived_at"])
+        self.assertTrue(by_id[archived_cancelled.id]["is_archived"])
+        self.assertEqual(by_id[archived_cancelled.id]["archived_at"], archived_cancelled.archived_at)
+        self.assertTrue(by_id[archived_sim.id]["is_archived"])
+        self.assertEqual(by_id[archived_sim.id]["archived_at"], archived_sim.archived_at)
+
+        # Status filter combines cleanly with include_archived=true
+        status, _, body = self.request("GET", f"{API_PREFIX}/tasks?include_archived=true&status=cancelled")
+        self.assertEqual(status, 200, body)
+        cancelled_only = json.loads(body)
+        self.assertEqual([t["id"] for t in cancelled_only["tasks"]], [archived_cancelled.id])
+        self.assertTrue(cancelled_only["tasks"][0]["is_archived"])
+
+        # Task detail and events for an archived ws-a task include safe archive fields without actor leak
+        status, _, body = self.request("GET", f"{API_PREFIX}/tasks/{archived_cancelled.id}")
+        self.assertEqual(status, 200, body)
+        detail = json.loads(body)
+        self.assertTrue(detail["read_only"])
+        self.assertTrue(detail["task"]["is_archived"])
+        self.assertEqual(detail["task"]["archived_at"], archived_cancelled.archived_at)
+        self.assertNotIn("archived_by", detail["task"])
+        self.assertNotIn("principal_id", detail["task"])
+
+        status, _, body = self.request("GET", f"{API_PREFIX}/tasks/{archived_cancelled.id}/events")
+        self.assertEqual(status, 200, body)
+        events_text = body.decode("utf-8")
+        self.assertNotIn("actor_id", events_text)
+        events = json.loads(body)["events"]
+        archived_events = [ev for ev in events if ev["event_type"] == "task_archived"]
+        self.assertEqual(len(archived_events), 1)
+        self.assertEqual(archived_events[0]["details"].get("archived_at"), archived_cancelled.archived_at)
+
+        # Cross-workspace archived tasks are denied with 404 task_unavailable
+        for foreign_id in (archived_wsb.id, archived_bob.id):
+            status, _, body = self.request("GET", f"{API_PREFIX}/tasks/{foreign_id}")
+            self.assertEqual(status, 404, foreign_id)
+            self.assertEqual(json.loads(body), {"error": "task_unavailable"})
+
+        # Invalid include_archived values are rejected with 400 invalid_query
+        for bad_path in (
+            f"{API_PREFIX}/tasks?include_archived=yes",
+            f"{API_PREFIX}/tasks?include_archived=1",
+            f"{API_PREFIX}/tasks?include_archived=true&include_archived=false",
+        ):
+            status, _, body = self.request("GET", bad_path)
+            self.assertEqual(status, 400, bad_path)
+            self.assertEqual(json.loads(body), {"error": "invalid_query"})
+
+        # Archive/restore/purge mutation routes remain rejected with 405 Allow: GET
+        for method, path in (
+            ("POST", f"{API_PREFIX}/tasks/{active_task.id}/archive"),
+            ("POST", f"{API_PREFIX}/tasks/{archived_cancelled.id}/restore"),
+            ("POST", f"{API_PREFIX}/tasks/purge"),
+        ):
+            status, headers, body = self.request(method, path, {})
+            self.assertEqual(status, 405, (method, path))
+            self.assertEqual(headers.get("Allow"), "GET")
+            self.assertEqual(json.loads(body), {"error": "method_not_allowed"})
+        self.assertIsNone(self.orch.get_task("alice", active_task.id).archived_at)
+        self.assertIsNotNone(self.orch.get_task("alice", archived_cancelled.id).archived_at)
+
+    def test_archived_visibility_preserves_100_task_window_truncation_reporting(self):
+        # Create 60 active + 45 archived tasks (> 100 window when include_archived=true, < 100 when false)
+        for i in range(60):
+            self.orch.create_task(
+                "alice", "ws-a", f"Active window task {i}",
+                idempotency_key=f"win_active_task_key_{i:04d}",
+            )
+        for i in range(45):
+            t = self.orch.create_task(
+                "alice", "ws-a", f"Archived window task {i}",
+                idempotency_key=f"win_archived_task_key_{i:04d}",
+            )
+            self.orch.cancel_task("alice", t.id, idempotency_key=f"win_archived_cancel_key_{i:04d}")
+            self.orch.archive_task("alice", t.id, idempotency_key=f"win_archived_do_key_{i:04d}")
+
+        status, _, body = self.request("GET", f"{API_PREFIX}/tasks")
+        self.assertEqual(status, 200, body)
+        default_data = json.loads(body)
+        self.assertEqual(default_data["summary"]["total_visible"], 60)
+        self.assertEqual(default_data["summary"]["window_limit"], 100)
+        self.assertFalse(default_data["summary"]["window_truncated"])
+
+        status, _, body = self.request("GET", f"{API_PREFIX}/tasks?include_archived=true")
+        self.assertEqual(status, 200, body)
+        with_archived = json.loads(body)
+        self.assertEqual(with_archived["summary"]["total_visible"], 100)
+        self.assertEqual(with_archived["summary"]["window_limit"], 100)
+        self.assertTrue(with_archived["summary"]["window_truncated"])
+        self.assertEqual(with_archived["pagination"]["total"], 100)
+        self.assertTrue(with_archived["pagination"]["has_more"])
+
 
 if __name__ == "__main__":
     unittest.main()

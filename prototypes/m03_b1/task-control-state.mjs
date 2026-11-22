@@ -33,6 +33,7 @@ export function createTaskControlState() {
     detailGeneration: 0,
     statusFilter: "all",
     includeHistory: true,
+    includeArchived: false,
     listOffset: 0,
     summary: null,
     pagination: null,
@@ -71,6 +72,7 @@ export function clearTaskControlState(state, { preserveFilter = false } = {}) {
   if (!preserveFilter) {
     state.statusFilter = "all";
     state.includeHistory = true;
+    state.includeArchived = false;
   }
   state.listOffset = 0;
   state.summary = null;
@@ -164,6 +166,7 @@ export function applyTaskListResponse(
     statusFilter: ALLOWED_STATUS_FILTERS.includes(payload.pagination.status_filter)
       ? payload.pagination.status_filter : "all",
     includeHistory: payload.pagination.include_history !== false,
+    includeArchived: Boolean(payload.pagination.include_archived),
   } : null;
 
   const validTasks = payload.tasks.filter((task) => (
@@ -320,6 +323,8 @@ export function formatEventType(eventType, language = "en") {
     task_interrupted: ["Task interrupted (no auto-resume)", "توقفت المهمة (بلا استئناف تلقائي)"],
     simulation_resumed: ["Simulation resumed explicitly", "استُؤنفت المحاكاة صراحةً"],
     task_cancelled: ["Task cancelled", "أُلغيت المهمة"],
+    task_archived: ["Task archived", "أُرشفت المهمة"],
+    task_restored: ["Task restored from archive", "استُعيدت المهمة من الأرشيف"],
   };
   const pair = labels[eventType];
   return pair ? pair[ar ? 1 : 0] : sanitizeTaskText(eventType, 60, { singleLine: true });

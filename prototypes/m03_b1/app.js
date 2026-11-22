@@ -83,6 +83,7 @@ const taskSummaryApproval = $("#task-summary-approval");
 const taskSummaryAttention = $("#task-summary-attention");
 const taskStatusFilter = $("#task-status-filter");
 const taskIncludeHistory = $("#task-include-history");
+const taskIncludeArchived = $("#task-include-archived");
 const taskRefreshButton = $("#task-refresh");
 const taskStatusMessage = $("#task-status-message");
 const taskList = $("#task-list");
@@ -93,6 +94,7 @@ const taskListPageInfo = $("#task-list-page-info");
 const taskDetailEmpty = $("#task-detail-empty");
 const taskDetailContent = $("#task-detail-content");
 const taskDetailStatus = $("#task-detail-status");
+const taskDetailArchivedBadge = $("#task-detail-archived-badge");
 const taskDetailModeBanner = $("#task-detail-mode-banner");
 const taskDetailGoal = $("#task-detail-goal");
 const taskDetailMeta = $("#task-detail-meta");
@@ -789,6 +791,7 @@ function updateTaskControls() {
   const busy = taskState.loadingList;
   taskStatusFilter.disabled = !ready || busy;
   taskIncludeHistory.disabled = !ready || busy;
+  taskIncludeArchived.disabled = !ready || busy;
   taskRefreshButton.disabled = !ready || busy;
   const page = taskState.pagination;
   const showListPages = Boolean(ready && page && (page.offset > 0 || page.hasMore));
@@ -830,8 +833,9 @@ function renderTaskList() {
       const item = document.createElement("li");
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "task-item-button";
+      button.className = task.is_archived ? "task-item-button is-archived" : "task-item-button";
       button.dataset.taskId = task.id;
+      button.dataset.archived = task.is_archived ? "true" : "false";
       button.setAttribute("aria-pressed", String(taskState.selectedTaskId === task.id));
 
       const top = document.createElement("div");
@@ -841,6 +845,12 @@ function renderTaskList() {
       statusPill.dataset.status = task.display_status;
       statusPill.textContent = formatTaskStatus(task.display_status, task.state, language);
       top.append(statusPill);
+      if (task.is_archived) {
+        const archivedTag = document.createElement("span");
+        archivedTag.className = "task-archived-badge";
+        archivedTag.textContent = ar ? "مؤرشفة" : "ARCHIVED";
+        top.append(archivedTag);
+      }
       if (task.is_simulated) {
         const simTag = document.createElement("span");
         simTag.className = "task-sim-banner";
@@ -862,8 +872,9 @@ function renderTaskList() {
       const approvedText = task.approved_plan_revision
         ? (ar ? ` · المعتمدة ${task.approved_plan_revision}` : ` · approved rev ${task.approved_plan_revision}`)
         : "";
+      const archivedText = task.is_archived ? (ar ? " · مؤرشفة" : " · archived") : "";
       const expiredText = task.is_expired ? (ar ? " · منتهية" : " · expired") : "";
-      meta.textContent = `${task.id.slice(0, 10)} · ${revText}${approvedText}${expiredText}`;
+      meta.textContent = `${task.id.slice(0, 10)} · ${revText}${approvedText}${archivedText}${expiredText}`;
 
       button.append(top, goal, meta);
       button.addEventListener("click", () => selectTask(task.id));
@@ -950,6 +961,9 @@ function renderTaskDetail() {
   const detail = taskState.detail;
   if (!detail) {
     taskDetailContent.hidden = true;
+    taskDetailContent.classList.remove("is-archived");
+    taskDetailArchivedBadge.hidden = true;
+    taskDetailArchivedBadge.textContent = "";
     taskDetailEmpty.hidden = false;
     taskDetailEmpty.textContent = taskState.detailErrorCode
       ? taskControlError(taskState.detailErrorCode, language)
@@ -965,8 +979,16 @@ function renderTaskDetail() {
 
   taskDetailEmpty.hidden = true;
   taskDetailContent.hidden = false;
+  taskDetailContent.classList.toggle("is-archived", Boolean(detail.is_archived));
   taskDetailStatus.dataset.status = detail.display_status;
   taskDetailStatus.textContent = formatTaskStatus(detail.display_status, detail.state, language);
+  if (detail.is_archived) {
+    taskDetailArchivedBadge.hidden = false;
+    taskDetailArchivedBadge.textContent = ar ? "مؤرشفة · قراءة فقط" : "ARCHIVED · READ-ONLY";
+  } else {
+    taskDetailArchivedBadge.hidden = true;
+    taskDetailArchivedBadge.textContent = "";
+  }
   taskDetailModeBanner.textContent = detail.is_simulated
     ? (ar ? "تقدم محاكى فقط · بلا تنفيذ فعلي" : "SIMULATED PROGRESS ONLY · NO REAL EXECUTION")
     : (ar ? "خطة فقط · بلا تنفيذ فعلي" : "PLAN ONLY · NO REAL EXECUTION");
@@ -979,6 +1001,12 @@ function renderTaskDetail() {
   ];
   if (detail.repository_commit) {
     metaParts.push(`${ar ? "الالتزام" : "Commit"}: ${sanitizeTaskText(detail.repository_commit, 12, { singleLine: true })}`);
+  }
+  if (detail.is_archived) {
+    const archivedTime = typeof detail.archived_at === "string" && detail.archived_at
+      ? `: ${sanitizeTaskText(detail.archived_at, 40, { singleLine: true })}`
+      : "";
+    metaParts.push(`${ar ? "أُرشفت" : "Archived"}${archivedTime}`);
   }
   if (detail.is_expired) {
     metaParts.push(ar ? "منتهية الصلاحية" : "Expired");
@@ -1127,6 +1155,7 @@ function clearTaskControlCenter({ en, ar, isError = false, preserveFilter = fals
   if (!preserveFilter) {
     taskStatusFilter.value = "all";
     taskIncludeHistory.checked = true;
+    taskIncludeArchived.checked = false;
   }
   const defaultEn = authenticated
     ? "Select an authorized workspace to inspect its tasks."
@@ -1159,6 +1188,7 @@ async function loadTaskList({ offset = 0, refreshDetail = false, clearMissingDet
       limit: String(TASK_LIST_LIMIT),
       offset: String(taskState.listOffset),
       include_history: taskState.includeHistory ? "true" : "false",
+      include_archived: taskState.includeArchived ? "true" : "false",
       status: taskState.statusFilter,
     });
     const response = await fetch(`/api/v1/tasks?${query.toString()}`, {
@@ -2392,6 +2422,10 @@ taskStatusFilter.addEventListener("change", () => {
 });
 taskIncludeHistory.addEventListener("change", () => {
   taskState.includeHistory = Boolean(taskIncludeHistory.checked);
+  loadTaskList({ offset: 0, clearMissingDetail: true });
+});
+taskIncludeArchived.addEventListener("change", () => {
+  taskState.includeArchived = Boolean(taskIncludeArchived.checked);
   loadTaskList({ offset: 0, clearMissingDetail: true });
 });
 taskRefreshButton.addEventListener("click", () => {

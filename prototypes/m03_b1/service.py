@@ -89,7 +89,7 @@ _TASK_ALLOWED_STATUS_FILTERS = frozenset({
 _SAFE_EVENT_METADATA_KEYS = frozenset({
     "revision", "subtask_count", "subtask_id", "progress_percent",
     "simulated", "simulated_only", "previous_state", "reason",
-    "capabilities", "auto_resume", "explicit",
+    "capabilities", "auto_resume", "explicit", "archived_at",
 })
 _BIDI_AND_CONTROL_CHARS = frozenset({
     "\u200e", "\u200f", "\u061c",
@@ -991,6 +991,8 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             "updated_at": task.updated_at,
             "expires_at": task.expires_at,
             "is_expired": _task_is_expired(task.expires_at),
+            "is_archived": task.archived_at is not None,
+            "archived_at": task.archived_at,
         }
 
     @staticmethod
@@ -1049,6 +1051,8 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             "updated_at": task.updated_at,
             "expires_at": task.expires_at,
             "is_expired": _task_is_expired(task.expires_at),
+            "is_archived": task.archived_at is not None,
+            "archived_at": task.archived_at,
         }
 
     @staticmethod
@@ -1142,8 +1146,8 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             return
         try:
             if path == base:
-                params = parse_qs(query, strict_parsing=bool(query), max_num_fields=4)
-                allowed_params = {"limit", "offset", "include_history", "status"}
+                params = parse_qs(query, strict_parsing=bool(query), max_num_fields=5)
+                allowed_params = {"limit", "offset", "include_history", "include_archived", "status"}
                 if set(params) - allowed_params:
                     self._json(400, {"error": "invalid_query"})
                     return
@@ -1154,6 +1158,11 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                     self._json(400, {"error": "invalid_query"})
                     return
                 include_history = include_history_raw[0] == "true"
+                include_archived_raw = params.get("include_archived", ["false"])
+                if len(include_archived_raw) != 1 or include_archived_raw[0] not in {"true", "false"}:
+                    self._json(400, {"error": "invalid_query"})
+                    return
+                include_archived = include_archived_raw[0] == "true"
                 status_raw = params.get("status", ["all"])
                 if len(status_raw) != 1 or status_raw[0] not in _TASK_ALLOWED_STATUS_FILTERS:
                     self._json(400, {"error": "invalid_query"})
@@ -1161,7 +1170,11 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                 status_filter = status_raw[0]
 
                 all_tasks = self.server.orchestration.list_tasks(
-                    actor, workspace, limit=TASK_SERVICE_WINDOW_LIMIT, include_history=include_history
+                    actor,
+                    workspace,
+                    limit=TASK_SERVICE_WINDOW_LIMIT,
+                    include_history=include_history,
+                    include_archived=include_archived,
                 )
                 counts = {
                     "draft": 0,
@@ -1208,6 +1221,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                         "has_more": offset + len(page_items) < len(filtered),
                         "status_filter": status_filter,
                         "include_history": include_history,
+                        "include_archived": include_archived,
                     },
                     "tasks": task_payloads,
                 })

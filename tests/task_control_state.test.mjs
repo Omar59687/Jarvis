@@ -335,3 +335,122 @@ test("app.js event pagination handles 409 workspace mismatch and 404 unavailable
   assert.match(evCode, /task_unavailable/);
   assert.match(evCode, /clearTaskDetailState/);
 });
+
+test("archived visibility defaults to hidden, clears selected archived detail when toggled off, and resets on workspace clear", () => {
+  const state = createTaskControlState();
+  assert.equal(state.includeArchived, false);
+
+  // Enable archived visibility and select an archived task
+  state.includeArchived = true;
+  const gen1 = beginTaskListLoad(state, { offset: 0 });
+  const payloadWithArchived = sampleListPayload("ws-a");
+  payloadWithArchived.pagination.include_archived = true;
+  payloadWithArchived.tasks.push({
+    id: "task-arch-1",
+    workspace_id: "ws-a",
+    goal: "Archived historical run",
+    state: "cancelled",
+    display_status: "cancelled",
+    execution_mode: "plan_only",
+    is_simulated: false,
+    is_archived: true,
+    archived_at: "2026-11-22T09:00:00+00:00",
+    current_plan_revision: 1,
+    approved_plan_revision: null,
+  });
+  const res1 = applyTaskListResponse(state, {
+    generation: gen1,
+    workspaceId: "ws-a",
+    payload: payloadWithArchived,
+  });
+  assert.equal(res1.applied, true);
+  assert.equal(state.pagination.includeArchived, true);
+  assert.equal(state.tasks.find((t) => t.id === "task-arch-1")?.is_archived, true);
+
+  const dLoad = beginTaskDetailLoad(state, "task-arch-1");
+  const dRes = applyTaskDetailResponse(state, {
+    generation: dLoad.generation,
+    detailGeneration: dLoad.detailGeneration,
+    workspaceId: "ws-a",
+    taskId: "task-arch-1",
+    detailPayload: {
+      workspace_id: "ws-a",
+      read_only: true,
+      task: {
+        id: "task-arch-1",
+        workspace_id: "ws-a",
+        goal: "Archived historical run",
+        state: "cancelled",
+        display_status: "cancelled",
+        is_archived: true,
+        archived_at: "2026-11-22T09:00:00+00:00",
+      },
+    },
+    plansPayload: { workspace_id: "ws-a", task_id: "task-arch-1", read_only: true, plans: [] },
+    eventsPayload: {
+      workspace_id: "ws-a",
+      task_id: "task-arch-1",
+      read_only: true,
+      events: [{ id: 2, event_type: "task_archived", details: { archived_at: "2026-11-22T09:00:00+00:00" } }],
+    },
+  });
+  assert.equal(dRes.applied, true);
+  assert.equal(state.detail.is_archived, true);
+
+  // Unchecking "Show archived tasks" reloads with clearMissingDetail and wipes stale archived detail
+  state.includeArchived = false;
+  const gen2 = beginTaskListLoad(state, { offset: 0 });
+  const payloadActiveOnly = sampleListPayload("ws-a");
+  payloadActiveOnly.pagination.include_archived = false;
+  const res2 = applyTaskListResponse(state, {
+    generation: gen2,
+    workspaceId: "ws-a",
+    payload: payloadActiveOnly,
+    clearMissingDetail: true,
+  });
+  assert.equal(res2.applied, true);
+  assert.equal(state.pagination.includeArchived, false);
+  assert.equal(state.selectedTaskId, null);
+  assert.equal(state.detail, null);
+  assert.deepEqual(state.events, []);
+
+  // Workspace clear resets includeArchived to false unless preserveFilter is true
+  state.includeArchived = true;
+  clearTaskControlState(state, { preserveFilter: true });
+  assert.equal(state.includeArchived, true);
+  clearTaskControlState(state);
+  assert.equal(state.includeArchived, false);
+
+  // Localized archive/restore lifecycle event labels
+  assert.equal(formatEventType("task_archived", "en"), "Task archived");
+  assert.equal(formatEventType("task_archived", "ar"), "أُرشفت المهمة");
+  assert.equal(formatEventType("task_restored", "en"), "Task restored from archive");
+  assert.equal(formatEventType("task_restored", "ar"), "استُعيدت المهمة من الأرشيف");
+});
+
+test("archive visibility UI controls are localized in English and Arabic and strictly read-only", () => {
+  const html = fs.readFileSync(path.join(repoRoot, "prototypes", "m03_b1", "index.html"), "utf8");
+  const start = html.indexOf('<section id="task-control-center"');
+  const end = html.indexOf("</section>", html.indexOf("task-events-pagination", start));
+  const section = html.slice(start, end);
+
+  assert.match(section, /id="task-include-archived"\s+type="checkbox"\s+disabled/);
+  assert.doesNotMatch(section, /id="task-include-archived"[^>]*checked/);
+  assert.match(section, /data-en="Show archived tasks"/);
+  assert.match(section, /data-ar="إظهار المهام المؤرشفة"/);
+  assert.match(section, /id="task-detail-archived-badge"/);
+  // Strictly read-only: no archive/restore/purge action buttons
+  assert.doesNotMatch(section, /\bRestore\b/i);
+  assert.doesNotMatch(section, /\bPurge\b/i);
+  assert.doesNotMatch(section, /\bArchive task\b/i);
+
+  const appJs = fs.readFileSync(path.join(repoRoot, "prototypes", "m03_b1", "app.js"), "utf8");
+  const ccStart = appJs.indexOf("function setTaskStatusCopy(");
+  const ccEnd = appJs.indexOf("function clearEphemeralWorkspaceView(");
+  const ccCode = appJs.slice(ccStart, ccEnd);
+  assert.match(ccCode, /include_archived:\s*taskState\.includeArchived \? "true" : "false"/);
+  assert.match(ccCode, /taskIncludeArchived\.checked = false/);
+  assert.match(ccCode, /task-archived-badge/);
+  assert.match(ccCode, /is-archived/);
+  assert.doesNotMatch(ccCode, /innerHTML|outerHTML|insertAdjacentHTML/);
+});
