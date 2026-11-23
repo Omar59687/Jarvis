@@ -129,3 +129,13 @@ The product targets Arabic and English, Windows desktop, and a browser dashboard
 ## Change process
 
 Update this log when a proposal is accepted, revised, or rejected. Record the decision owner, date, implementation evidence, and consequences; do not mark a decision “implemented” based only on this document.
+
+### M06 Approval-Controlled File Changes — 2026-11-23
+
+**Confirmed for this approved milestone:** Add a narrowly scoped approval workflow for bounded repository file changes. Authorization is a separate repository capability and still requires authenticated workspace READ and WRITE; neither workspace WRITE nor prior proposal permission alone authorizes application. Approval binds the principal, workspace, repository, base snapshot, exact patch digest, target paths, expiry, and single-use state. Deletes require an additional delete-specific confirmation.
+
+**Implemented in this branch:** Proposals are reviewed before approval, and approved results are materialized only into a private per-proposal task workspace. The registered source repository remains unchanged. Task workspaces contain only affected files; application writes use staged atomic replacement with bounded rollback/recovery. Audit events record operation, targets, digest, and outcome without storing file content in audit metadata. No shell commands, repository code, verification commands, commits, pushes, PRs, merge, or deployment are executed or enabled.
+
+**Security limit:** The private task workspace is application-level path scoping, not OS-enforced isolation. This workflow does not claim sandboxing against other same-user processes or Windows reparse-point races. Verification and promotion remain disabled until the Windows isolation gate in [P4 security and acceptance plan](P4_SECURITY_AND_ACCEPTANCE_PLAN.md) is independently satisfied. See [M06 implementation status](M06_APPROVAL_CONTROLLED_EXECUTION.md).
+
+**Evidence:** `tests/test_approved_changes.py` and `tests/test_approved_changes_http.py`; full regression evidence is recorded with the implementation commit.

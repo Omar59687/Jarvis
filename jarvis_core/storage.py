@@ -20,7 +20,7 @@ from typing import Iterator, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 REQUIRED_BACKUP_COLUMNS = {
     "workspaces": {"id", "name", "kind", "created_at"},
     "workspace_permissions": {
@@ -963,7 +963,41 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
             "UPDATE developer_repositories SET index_status='stale' WHERE head_commit IS NOT NULL",
         ),
     ),
-)
+    Migration(
+        version=14,
+        statements=(
+            "ALTER TABLE coding_repository_grants RENAME TO coding_repository_grants_v13",
+            "DROP INDEX IF EXISTS coding_repository_grants_lookup",
+            """CREATE TABLE coding_repository_grants (
+                id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, repository_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                capability TEXT NOT NULL CHECK(capability IN (
+                    'read_repository_metadata','read_indexed_source','propose_code_modifications',
+                    'apply_approved_file_changes','create_isolated_worktree','modify_task_worktree',
+                    'execute_verification','request_network_access','create_commit','push_branch',
+                    'open_pull_request','merge_or_deploy')),
+                granted_by TEXT NOT NULL, granted_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT,
+                FOREIGN KEY(repository_id,workspace_id)
+                    REFERENCES developer_repositories(id,workspace_id) ON DELETE CASCADE
+            )""",
+            "INSERT INTO coding_repository_grants SELECT * FROM coding_repository_grants_v13",
+            "DROP TABLE coding_repository_grants_v13",
+            "CREATE INDEX coding_repository_grants_lookup ON coding_repository_grants(workspace_id,repository_id,principal_id,capability,revoked_at)",
+            """CREATE TABLE coding_file_change_proposals (
+                id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, repository_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL, base_commit TEXT NOT NULL CHECK(length(base_commit) IN (40,64)),
+                patch_sha256 TEXT NOT NULL CHECK(length(patch_sha256)=64), proposal_json TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN (
+                    'pending_approval','applying','applied','rejected','failed','recovery_required','recovered','expired')),
+                approved_by TEXT, approved_at TEXT, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(id,workspace_id,repository_id,principal_id),
+                FOREIGN KEY(repository_id,workspace_id)
+                    REFERENCES developer_repositories(id,workspace_id) ON DELETE CASCADE
+            )""",
+            "CREATE INDEX coding_file_change_workspace ON coding_file_change_proposals(workspace_id,repository_id,status,created_at)",
+        ),
+    ),)
 
 
 def default_database_path(app_name: str = "Jarvis") -> Path:

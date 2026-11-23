@@ -1,0 +1,9 @@
+.file-change-panel { margin-top: 1rem; padding: 1rem; border: 1px solid rgba(110, 154, 190, .28); border-radius: 12px; background: rgba(9, 18, 31, .5); }
+.file-change-form { display: grid; gap: .5rem; margin-top: .75rem; }
+.file-change-form input, .file-change-form textarea, .file-change-form select { width: 100%; min-width: 0; box-sizing: border-box; }
+.file-change-form textarea, .file-change-diff { font-family: ui-monospace, Consolas, monospace; white-space: pre; overflow: auto; }
+.file-change-diff { max-height: 22rem; padding: .75rem; border: 1px solid rgba(110, 154, 190, .25); border-radius: 8px; background: rgba(3, 9, 16, .85); font-size: .76rem; }
+.file-change-list { display: grid; gap: .4rem; margin: .6rem 0; padding: 0; list-style: none; }
+.file-change-review code { overflow-wrap: anywhere; font-size: .7rem; }
+.file-change-review .pair-actions { flex-wrap: wrap; }
+.file-change-output h5 { margin: .75rem 0 .25rem; overflow-wrap: anywhere; }

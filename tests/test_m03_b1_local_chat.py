@@ -527,7 +527,7 @@ class M03B1LocalChatTests(unittest.TestCase):
         self.assertIn('id="developer-graph-list"', index_html)
         self.assertIn('id="developer-compare-base"', index_html)
         self.assertIn('data-ar="رسم المستودع المرتبط بالالتزام"', index_html)
-        self.assertIn("galaxy above remains synthetic", index_html)
+        self.assertIn("galaxy remains synthetic.", index_html)
         self.assertNotIn('fetch("http', app_js.lower())
         self.assertNotIn("11434", app_js)
         self.assertIn("updateChatInputPlaceholder()", app_js)
