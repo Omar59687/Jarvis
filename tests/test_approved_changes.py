@@ -171,6 +171,69 @@ class ApprovedFileChangeTests(unittest.TestCase):
             self._approve(proposal)
         self.assertEqual((self.repo_path / "main.py").read_text(), "VALUE = 1\n")
 
+    def test_capability_revocation_before_approval_commit_is_rechecked(self):
+        proposal = self._proposal()
+        grant_id = next(g.id for g in self.policy.list_grants(
+            "owner", "ws-m06", self.repository.id)
+            if g.capability is CodingCapability.APPLY_APPROVED_FILE_CHANGES)
+        check_preconditions = self.service._check_preconditions
+
+        def revoke_after_preconditions(root, operations):
+            check_preconditions(root, operations)
+            self.policy.revoke("owner", grant_id, confirmed=True)
+
+        with patch.object(self.service, "_check_preconditions", revoke_after_preconditions):
+            with self.assertRaisesRegex(CodingAuthorizationDenied, "coding_capability_denied"):
+                self._approve(proposal)
+        self.assertEqual((self.repo_path / "main.py").read_text(), "VALUE = 1\n")
+        self.assertEqual(self.service.get("owner", "ws-m06", proposal["id"])["status"],
+                         "pending_approval")
+
+    def test_workspace_write_revocation_before_approval_commit_is_rechecked(self):
+        proposal = self._proposal()
+        check_preconditions = self.service._check_preconditions
+
+        def revoke_after_preconditions(root, operations):
+            check_preconditions(root, operations)
+            self.db.revoke_permission("owner", "ws-m06", "owner", Permission.WRITE)
+
+        with patch.object(self.service, "_check_preconditions", revoke_after_preconditions):
+            with self.assertRaises(AccessDenied):
+                self._approve(proposal)
+        self.assertEqual((self.repo_path / "main.py").read_text(), "VALUE = 1\n")
+        self.assertEqual(self.service.get("owner", "ws-m06", proposal["id"])["status"],
+                         "pending_approval")
+
+    def test_task_workspace_inside_registered_checkout_is_rejected(self):
+        nested_db = Database(self.repo_path / "jarvis.sqlite3")
+        nested_db.initialize()
+        nested_db.create_workspace("Nested database", WorkspaceKind.PROJECT,
+                                   "owner", "ws-nested")
+        nested_root = nested_db.register_approved_root("owner", "ws-nested", self.root)
+        repositories = DeveloperRepositoryService(nested_db)
+        registered = repositories.register("owner", "ws-nested", nested_root.id,
+                                            self.repo_path, confirmed=True)
+        repository = repositories.index("owner", "ws-nested", registered.id)
+        policy = CodingCapabilityPolicy(nested_db)
+        for capability in (CodingCapability.READ_REPOSITORY_METADATA,
+                           CodingCapability.READ_INDEXED_SOURCE,
+                           CodingCapability.PROPOSE_CODE_MODIFICATIONS,
+                           CodingCapability.APPLY_APPROVED_FILE_CHANGES):
+            policy.grant("owner", "ws-nested", repository.id, "owner",
+                         capability, confirmed=True)
+        service = ApprovedFileChangeService(nested_db, repositories, policy)
+        proposal = service.propose("owner", "ws-nested", repository.id, [{
+            "path": "main.py", "operation": "modify", "content": "VALUE = 2\n"
+        }])
+
+        with self.assertRaisesRegex(CodingAuthorizationDenied,
+                                    "task_workspace_overlaps_repository"):
+            service.approve_and_apply("owner", "ws-nested", proposal["id"],
+                                      proposal["patch_sha256"], confirmed=True)
+        self.assertEqual((self.repo_path / "main.py").read_text(encoding="utf-8"),
+                         "VALUE = 1\n")
+        self.assertFalse((self.repo_path / "coding_tasks").exists())
+
     def test_modified_payload_and_expired_approval_are_rejected(self):
         proposal = self._proposal()
         with self.db._connection() as connection:

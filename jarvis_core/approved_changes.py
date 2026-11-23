@@ -50,6 +50,27 @@ class ApprovedFileChangeService:
     def _scope(connection, actor: str, workspace: str) -> None:
         Database._require_access(connection, actor, workspace, Permission.READ)
 
+    @staticmethod
+    def _require_apply_in_transaction(connection, actor: str, workspace: str,
+                                      repository: str) -> None:
+        Database._require_access(connection, actor, workspace, Permission.READ)
+        Database._require_access(connection, actor, workspace, Permission.WRITE)
+        grant = connection.execute(
+            """SELECT 1 FROM coding_repository_grants g
+               JOIN developer_repositories r ON r.id=g.repository_id
+                 AND r.workspace_id=g.workspace_id
+               JOIN approved_roots a ON a.id=r.approved_root_id
+                 AND a.workspace_id=r.workspace_id
+               WHERE g.principal_id=? AND g.workspace_id=? AND g.repository_id=?
+                 AND g.capability=? AND g.revoked_at IS NULL
+                 AND (g.expires_at IS NULL OR g.expires_at>?)
+                 AND r.revoked_at IS NULL AND a.revoked_at IS NULL LIMIT 1""",
+            (actor, workspace, repository,
+             CodingCapability.APPLY_APPROVED_FILE_CHANGES.value, _now()),
+        ).fetchone()
+        if grant is None:
+            raise CodingAuthorizationDenied("coding_capability_denied")
+
     def _require_proposal(self, actor: str, workspace: str, repository: str) -> None:
         self.db.require_access(actor, workspace, Permission.READ)
         self.policy.require(actor, workspace, repository, CodingCapability.READ_REPOSITORY_METADATA)
@@ -442,12 +463,15 @@ class ApprovedFileChangeService:
             repository, root = self._repository(actor, workspace, row["repository_id"])
             if repository.head_commit != row["base_commit"]:
                 raise StaleRepository()
+            task_root = self._task_workspace_path(workspace, row["repository_id"], proposal_id)
+            self._require_disjoint_task_workspace(task_root, root)
             self._check_preconditions(root, operations)
             now = _now()
             with self.db._connection() as connection:
                 self.db._begin(connection)
                 try:
-                    self._scope(connection, actor, workspace)
+                    self._require_apply_in_transaction(
+                        connection, actor, workspace, row["repository_id"])
                     cursor = connection.execute(
                         "UPDATE coding_file_change_proposals SET status='applying',approved_by=?,approved_at=?,updated_at=? "
                         "WHERE id=? AND principal_id=? AND workspace_id=? AND status='pending_approval' "
@@ -461,7 +485,6 @@ class ApprovedFileChangeService:
                 except Exception:
                     self.db._rollback(connection)
                     raise
-            task_root = None
             try:
                 task_root = self._create_task_workspace(workspace, row["repository_id"], proposal_id)
                 self._seed_task_workspace(task_root, operations)
@@ -481,6 +504,21 @@ class ApprovedFileChangeService:
         workspace_key = hashlib.sha256(workspace.encode("utf-8")).hexdigest()
         repository_key = hashlib.sha256(repository_id.encode("utf-8")).hexdigest()
         return self.db.path.parent / "coding_tasks" / workspace_key / repository_key / proposal_id
+
+    @staticmethod
+    def _require_disjoint_task_workspace(task_root: Path, repository_root: Path) -> None:
+        task_path = task_root.resolve(strict=False)
+        repository_path = repository_root.resolve(strict=True)
+        try:
+            task_path.relative_to(repository_path)
+            raise CodingAuthorizationDenied("task_workspace_overlaps_repository")
+        except ValueError:
+            pass
+        try:
+            repository_path.relative_to(task_path)
+        except ValueError:
+            return
+        raise CodingAuthorizationDenied("task_workspace_overlaps_repository")
 
     def _create_task_workspace(self, workspace: str, repository_id: str, proposal_id: str) -> Path:
         base = self.db.path.parent.resolve(strict=True)
