@@ -9,17 +9,18 @@ from __future__ import annotations
 
 from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 from typing import Iterator, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 REQUIRED_BACKUP_COLUMNS = {
     "workspaces": {"id", "name", "kind", "created_at"},
     "workspace_permissions": {
@@ -72,6 +73,14 @@ class InvalidPath(ValueError):
 
 class LastWorkspaceManager(RuntimeError):
     """Raised when an operation would leave a workspace without a manager."""
+
+
+class ConversationMemoryDisabled(RuntimeError):
+    """Raised when persistent conversation consent is absent or revoked."""
+
+
+class ConversationMemoryChanged(RuntimeError):
+    """Raised when consent or saved history changes during a chat request."""
 
 
 @dataclass(frozen=True)
@@ -903,6 +912,49 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
                 BEGIN SELECT RAISE(ABORT, 'orchestration approvals are immutable'); END""",
         ),
     ),
+    Migration(
+        version=12,
+        statements=(
+            """CREATE TABLE conversation_memory_settings (
+                actor_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+                retention_days INTEGER NOT NULL CHECK(retention_days BETWEEN 1 AND 365),
+                revision INTEGER NOT NULL CHECK(revision >= 1),
+                consented_at TEXT,
+                revoked_at TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(actor_id,workspace_id),
+                CHECK((enabled=1 AND consented_at IS NOT NULL AND revoked_at IS NULL)
+                   OR (enabled=0 AND revoked_at IS NOT NULL))
+            )""",
+            """CREATE TABLE persistent_conversations (
+                id TEXT PRIMARY KEY,
+                actor_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                UNIQUE(id,actor_id,workspace_id)
+            )""",
+            """CREATE TABLE persistent_conversation_turns (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL CHECK(ordinal >= 1),
+                user_text TEXT NOT NULL CHECK(length(user_text) BETWEEN 1 AND 1000),
+                assistant_text TEXT NOT NULL CHECK(length(assistant_text) BETWEEN 1 AND 16000),
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                UNIQUE(conversation_id,ordinal),
+                FOREIGN KEY(conversation_id,actor_id,workspace_id)
+                    REFERENCES persistent_conversations(id,actor_id,workspace_id) ON DELETE CASCADE
+            )""",
+            "CREATE INDEX persistent_conversations_scope_expiry ON persistent_conversations(actor_id,workspace_id,expires_at,updated_at DESC,id)",
+            "CREATE INDEX persistent_conversation_turns_scope_order ON persistent_conversation_turns(actor_id,workspace_id,expires_at,created_at DESC,id)",
+        ),
+    ),
 )
 
 
@@ -992,6 +1044,7 @@ class Database:
         connection = sqlite3.connect(self.path, timeout=5.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA secure_delete = ON")
         connection.execute("PRAGMA busy_timeout = 5000")
         try:
             yield connection
@@ -1506,6 +1559,403 @@ class Database:
                 for row in rows
             ]
 
+    @staticmethod
+    def _purge_expired_conversations(
+        connection: sqlite3.Connection, actor_id: str, workspace_id: str, now: str
+    ) -> int:
+        expired_turns = connection.execute(
+            "DELETE FROM persistent_conversation_turns "
+            "WHERE actor_id=? AND workspace_id=? AND expires_at<=?",
+            (actor_id, workspace_id, now),
+        ).rowcount
+        expired_conversations = connection.execute(
+            """DELETE FROM persistent_conversations
+                WHERE actor_id=? AND workspace_id=?
+                  AND (expires_at<=? OR NOT EXISTS (
+                      SELECT 1 FROM persistent_conversation_turns t
+                      WHERE t.conversation_id=persistent_conversations.id
+                        AND t.actor_id=persistent_conversations.actor_id
+                        AND t.workspace_id=persistent_conversations.workspace_id))""",
+            (actor_id, workspace_id, now),
+        ).rowcount
+        if expired_turns or expired_conversations:
+            connection.execute(
+                "UPDATE conversation_memory_settings SET revision=revision+1,updated_at=? "
+                "WHERE actor_id=? AND workspace_id=?",
+                (now, actor_id, workspace_id),
+            )
+        return int(expired_turns) + int(expired_conversations)
+
+    def purge_expired_conversation_memory(self, actor_id: str) -> int:
+        """Hard-delete expired turns for one trusted principal; used by the local retention sweep."""
+        self.initialize()
+        actor_id = _nonempty(actor_id, "actor ID")
+        now = _now()
+        deleted = 0
+        with self._connection() as connection:
+            self._begin(connection)
+            try:
+                workspaces = connection.execute(
+                    "SELECT DISTINCT workspace_id FROM persistent_conversations WHERE actor_id=?",
+                    (actor_id,),
+                ).fetchall()
+                for row in workspaces:
+                    deleted += self._purge_expired_conversations(
+                        connection, actor_id, str(row["workspace_id"]), now,
+                    )
+                self._commit(connection)
+                return deleted
+            except Exception:
+                self._rollback(connection)
+                raise
+
+    @staticmethod
+    def _conversation_settings_payload(row: sqlite3.Row | None) -> dict[str, object]:
+        if row is None:
+            return {
+                "enabled": False, "retention_days": 30, "revision": 0,
+                "consented_at": None, "revoked_at": None,
+            }
+        return {
+            "enabled": bool(row["enabled"]),
+            "retention_days": int(row["retention_days"]),
+            "revision": int(row["revision"]),
+            "consented_at": row["consented_at"],
+            "revoked_at": row["revoked_at"],
+        }
+
+    def conversation_memory_settings(self, actor_id: str, workspace_id: str) -> dict[str, object]:
+        """Return workspace-scoped consent and retention settings; never enables by default."""
+        self.initialize()
+        actor_id = _nonempty(actor_id, "actor ID")
+        workspace_id = _nonempty(workspace_id, "workspace ID")
+        with self._connection() as connection:
+            self._require_access(connection, actor_id, workspace_id, Permission.READ)
+            self._purge_expired_conversations(connection, actor_id, workspace_id, _now())
+            connection.commit()
+            row = connection.execute(
+                "SELECT enabled,retention_days,revision,consented_at,revoked_at "
+                "FROM conversation_memory_settings WHERE actor_id=? AND workspace_id=?",
+                (actor_id, workspace_id),
+            ).fetchone()
+            can_write = connection.execute(
+                "SELECT 1 FROM workspace_permissions WHERE workspace_id=? "
+                "AND principal_id=? AND permission=?",
+                (workspace_id, actor_id, Permission.WRITE.value),
+            ).fetchone() is not None
+            return {**self._conversation_settings_payload(row), "can_write": can_write}
+
+    def set_conversation_memory_settings(
+        self, actor_id: str, workspace_id: str, *, enabled: bool, retention_days: int = 30
+    ) -> dict[str, object]:
+        """Set explicit per-user/workspace consent. Revocation deletes saved content atomically."""
+        self.initialize()
+        actor_id = _nonempty(actor_id, "actor ID")
+        workspace_id = _nonempty(workspace_id, "workspace ID")
+        if type(enabled) is not bool:
+            raise ValueError("enabled must be a boolean")
+        if type(retention_days) is not int or not 1 <= retention_days <= 365:
+            raise ValueError("retention_days must be an integer between 1 and 365")
+        now = _now()
+        with self._connection() as connection:
+            self._begin(connection)
+            try:
+                self._require_access(
+                    connection, actor_id, workspace_id,
+                    Permission.WRITE if enabled else Permission.READ,
+                )
+                previous = connection.execute(
+                    "SELECT revision FROM conversation_memory_settings "
+                    "WHERE actor_id=? AND workspace_id=?",
+                    (actor_id, workspace_id),
+                ).fetchone()
+                revision = (int(previous["revision"]) + 1) if previous else 1
+                if not enabled:
+                    connection.execute(
+                        "DELETE FROM persistent_conversations WHERE actor_id=? AND workspace_id=?",
+                        (actor_id, workspace_id),
+                    )
+                connection.execute(
+                    """INSERT INTO conversation_memory_settings
+                        (actor_id,workspace_id,enabled,retention_days,revision,
+                         consented_at,revoked_at,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?)
+                    ON CONFLICT(actor_id,workspace_id) DO UPDATE SET
+                        enabled=excluded.enabled, retention_days=excluded.retention_days,
+                        revision=excluded.revision,
+                        consented_at=CASE WHEN excluded.enabled=1 THEN excluded.consented_at
+                                          ELSE conversation_memory_settings.consented_at END,
+                        revoked_at=excluded.revoked_at, updated_at=excluded.updated_at""",
+                    (actor_id, workspace_id, int(enabled), retention_days, revision,
+                     now if enabled else None, None if enabled else now, now),
+                )
+                self._insert_audit(
+                    connection, workspace_id, actor_id,
+                    "conversation_memory.enabled" if enabled else "conversation_memory.revoked",
+                    "conversation_memory_policy", workspace_id,
+                    {"enabled": str(enabled).lower(), "retention_days": str(retention_days)},
+                )
+                self._commit(connection)
+            except Exception:
+                self._rollback(connection)
+                raise
+        return self.conversation_memory_settings(actor_id, workspace_id)
+
+    def list_persistent_conversations(
+        self, actor_id: str, workspace_id: str, *, limit: int = 25
+    ) -> list[dict[str, object]]:
+        self.initialize()
+        actor_id = _nonempty(actor_id, "actor ID")
+        workspace_id = _nonempty(workspace_id, "workspace ID")
+        if type(limit) is not int or not 1 <= limit <= 50:
+            raise ValueError("limit must be between 1 and 50")
+        with self._connection() as connection:
+            self._require_access(connection, actor_id, workspace_id, Permission.READ)
+            now = _now()
+            self._purge_expired_conversations(connection, actor_id, workspace_id, now)
+            connection.commit()
+            settings = connection.execute(
+                "SELECT enabled FROM conversation_memory_settings WHERE actor_id=? AND workspace_id=?",
+                (actor_id, workspace_id),
+            ).fetchone()
+            if settings is None or not bool(settings["enabled"]):
+                return []
+            rows = connection.execute(
+                """SELECT c.id,c.created_at,c.updated_at,c.expires_at,
+                           COUNT(t.id) AS turn_count,
+                           (SELECT user_text FROM persistent_conversation_turns first_turn
+                            WHERE first_turn.conversation_id=c.id
+                            ORDER BY first_turn.ordinal LIMIT 1) AS preview
+                    FROM persistent_conversations c
+                    LEFT JOIN persistent_conversation_turns t
+                      ON t.conversation_id=c.id AND t.actor_id=c.actor_id
+                     AND t.workspace_id=c.workspace_id AND t.expires_at>?
+                    WHERE c.actor_id=? AND c.workspace_id=? AND c.expires_at>?
+                    GROUP BY c.id ORDER BY c.updated_at DESC,c.id LIMIT ?""",
+                (now, actor_id, workspace_id, now, limit),
+            ).fetchall()
+            return [{
+                "id": row["id"], "created_at": row["created_at"],
+                "updated_at": row["updated_at"], "expires_at": row["expires_at"],
+                "turn_count": int(row["turn_count"]),
+                "preview": str(row["preview"] or "")[:160],
+            } for row in rows]
+
+    def get_persistent_conversation(
+        self, actor_id: str, workspace_id: str, conversation_id: str, *, limit: int = 100
+    ) -> dict[str, object] | None:
+        self.initialize()
+        actor_id = _nonempty(actor_id, "actor ID")
+        workspace_id = _nonempty(workspace_id, "workspace ID")
+        conversation_id = _nonempty(conversation_id, "conversation ID", 128)
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        with self._connection() as connection:
+            self._require_access(connection, actor_id, workspace_id, Permission.READ)
+            now = _now()
+            self._purge_expired_conversations(connection, actor_id, workspace_id, now)
+            connection.commit()
+            settings = connection.execute(
+                "SELECT enabled FROM conversation_memory_settings WHERE actor_id=? AND workspace_id=?",
+                (actor_id, workspace_id),
+            ).fetchone()
+            if settings is None or not bool(settings["enabled"]):
+                return None
+            conversation = connection.execute(
+                """SELECT id,created_at,updated_at,expires_at FROM persistent_conversations
+                    WHERE id=? AND actor_id=? AND workspace_id=? AND expires_at>?""",
+                (conversation_id, actor_id, workspace_id, now),
+            ).fetchone()
+            if conversation is None:
+                return None
+            turns = connection.execute(
+                """SELECT ordinal,user_text,assistant_text,created_at,expires_at
+                    FROM persistent_conversation_turns
+                    WHERE conversation_id=? AND actor_id=? AND workspace_id=? AND expires_at>?
+                    ORDER BY ordinal DESC LIMIT ?""",
+                (conversation_id, actor_id, workspace_id, now, limit),
+            ).fetchall()
+            return {
+                "id": conversation["id"], "created_at": conversation["created_at"],
+                "updated_at": conversation["updated_at"], "expires_at": conversation["expires_at"],
+                "turns": [{"ordinal": row["ordinal"], "user": row["user_text"],
+                           "assistant": row["assistant_text"], "created_at": row["created_at"],
+                           "expires_at": row["expires_at"]} for row in reversed(turns)],
+            }
+
+    def delete_persistent_conversation(
+        self, actor_id: str, workspace_id: str, conversation_id: str
+    ) -> bool:
+        self.initialize()
+        actor_id = _nonempty(actor_id, "actor ID")
+        workspace_id = _nonempty(workspace_id, "workspace ID")
+        conversation_id = _nonempty(conversation_id, "conversation ID", 128)
+        now = _now()
+        with self._connection() as connection:
+            self._begin(connection)
+            try:
+                self._require_access(connection, actor_id, workspace_id, Permission.READ)
+                cursor = connection.execute(
+                    "DELETE FROM persistent_conversations WHERE id=? AND actor_id=? AND workspace_id=?",
+                    (conversation_id, actor_id, workspace_id),
+                )
+                if cursor.rowcount:
+                    connection.execute(
+                        "UPDATE conversation_memory_settings SET revision=revision+1,updated_at=? "
+                        "WHERE actor_id=? AND workspace_id=?",
+                        (now, actor_id, workspace_id),
+                    )
+                    self._insert_audit(
+                        connection, workspace_id, actor_id,
+                        "conversation_memory.conversation_deleted", "conversation", conversation_id, {},
+                    )
+                self._commit(connection)
+                return cursor.rowcount == 1
+            except Exception:
+                self._rollback(connection)
+                raise
+
+    def search_persistent_conversation_context(
+        self, actor_id: str, workspace_id: str, query: str, *,
+        exclude_conversation_id: str | None = None, limit: int = 6,
+        max_bytes: int = 3072,
+    ) -> tuple[int, list[tuple[str, str]]]:
+        """Retrieve bounded, workspace-authorized turns; returned text is always untrusted context."""
+        self.initialize()
+        actor_id = _nonempty(actor_id, "actor ID")
+        workspace_id = _nonempty(workspace_id, "workspace ID")
+        if not isinstance(query, str) or len(query) > 1000:
+            raise ValueError("query must be a string of at most 1000 characters")
+        if type(limit) is not int or not 1 <= limit <= 12 or type(max_bytes) is not int or not 256 <= max_bytes <= 8192:
+            raise ValueError("context bounds are invalid")
+        with self._connection() as connection:
+            self._require_access(connection, actor_id, workspace_id, Permission.READ)
+            now = _now()
+            self._purge_expired_conversations(connection, actor_id, workspace_id, now)
+            connection.commit()
+            settings = connection.execute(
+                "SELECT enabled,revision FROM conversation_memory_settings WHERE actor_id=? AND workspace_id=?",
+                (actor_id, workspace_id),
+            ).fetchone()
+            if settings is None or not bool(settings["enabled"]):
+                return (int(settings["revision"]) if settings else 0, [])
+            sql = """SELECT user_text,assistant_text,created_at,id,conversation_id
+                FROM persistent_conversation_turns WHERE actor_id=? AND workspace_id=? AND expires_at>?"""
+            params: list[object] = [actor_id, workspace_id, now]
+            if exclude_conversation_id is not None:
+                sql += " AND conversation_id<>?"
+                params.append(exclude_conversation_id)
+            sql += " ORDER BY created_at DESC,id DESC LIMIT 120"
+            rows = connection.execute(sql, params).fetchall()
+            stop_words = {"what", "when", "where", "which", "who", "why", "how", "was", "were", "did", "does", "the", "and", "for", "with", "from", "that", "this", "have", "your", "my", "you", "jarvis", "please", "about", "say", "said", "we", "our", "were", "are", "is", "it", "to", "of", "in", "on"}
+            terms = {term for term in re.findall(r"\w+", query.casefold(), flags=re.UNICODE)
+                     if len(term) > 2 and term not in stop_words}
+            ranked: list[tuple[int, str, str, str, str]] = []
+            for row in rows:
+                user = str(row["user_text"])
+                assistant = str(row["assistant_text"])
+                stored_terms = set(re.findall(r"\w+", f"{user} {assistant}".casefold(), flags=re.UNICODE))
+                score = len(terms & stored_terms)
+                ranked.append((score, str(row["created_at"]), str(row["id"]), user, assistant))
+            ranked.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+            selected: list[tuple[str, str]] = []
+            used = 2
+            for _, _, _, user, assistant in ranked:
+                encoded_user = json.dumps(user, ensure_ascii=False, separators=(",", ":"))
+                encoded_assistant = json.dumps(assistant, ensure_ascii=False, separators=(",", ":"))
+                size = len((f'{{"user":{encoded_user},"assistant":{encoded_assistant}}}').encode("utf-8"))
+                separator_size = 1 if selected else 0
+                if used + separator_size + size > max_bytes:
+                    continue
+                selected.append((user, assistant))
+                used += separator_size + size
+                if len(selected) >= limit:
+                    break
+            selected.reverse()
+            return int(settings["revision"]), selected
+
+    def save_persistent_conversation_turn(
+        self, actor_id: str, workspace_id: str, *, conversation_id: str | None,
+        expected_revision: int, user_text: str, assistant_text: str,
+    ) -> str:
+        """Append a completed opted-in turn with current WRITE permission and consent revision."""
+        self.initialize()
+        actor_id = _nonempty(actor_id, "actor ID")
+        workspace_id = _nonempty(workspace_id, "workspace ID")
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise ConversationMemoryChanged("conversation memory settings changed")
+        if (not isinstance(user_text, str) or not user_text.strip() or len(user_text) > 1000
+                or "\x00" in user_text or not isinstance(assistant_text, str)
+                or not assistant_text.strip() or len(assistant_text) > 16000 or "\x00" in assistant_text):
+            raise ValueError("conversation turn exceeds storage bounds")
+        user_text.encode("utf-8")
+        assistant_text.encode("utf-8")
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat(timespec="microseconds")
+        with self._connection() as connection:
+            self._begin(connection)
+            try:
+                self._require_access(connection, actor_id, workspace_id, Permission.READ)
+                self._require_access(connection, actor_id, workspace_id, Permission.WRITE)
+                self._purge_expired_conversations(connection, actor_id, workspace_id, now)
+                setting = connection.execute(
+                    "SELECT enabled,retention_days,revision FROM conversation_memory_settings "
+                    "WHERE actor_id=? AND workspace_id=?",
+                    (actor_id, workspace_id),
+                ).fetchone()
+                if setting is None or not bool(setting["enabled"]):
+                    raise ConversationMemoryDisabled("persistent conversation memory is disabled")
+                if int(setting["revision"]) != expected_revision:
+                    raise ConversationMemoryChanged("conversation memory settings changed")
+                expires_at = (now_dt + timedelta(days=int(setting["retention_days"]))).isoformat(timespec="microseconds")
+                if conversation_id is None:
+                    conversation_id = uuid4().hex
+                    connection.execute(
+                        "INSERT INTO persistent_conversations "
+                        "(id,actor_id,workspace_id,created_at,updated_at,expires_at) VALUES (?,?,?,?,?,?)",
+                        (conversation_id, actor_id, workspace_id, now, now, expires_at),
+                    )
+                else:
+                    conversation = connection.execute(
+                        """SELECT c.id,COALESCE(MAX(t.ordinal),0) AS last_ordinal
+                            FROM persistent_conversations c LEFT JOIN persistent_conversation_turns t
+                              ON t.conversation_id=c.id AND t.actor_id=c.actor_id
+                             AND t.workspace_id=c.workspace_id
+                            WHERE c.id=? AND c.actor_id=? AND c.workspace_id=? GROUP BY c.id""",
+                        (conversation_id, actor_id, workspace_id),
+                    ).fetchone()
+                    if conversation is None:
+                        raise ConversationMemoryChanged("conversation was deleted or is unavailable")
+                    if int(conversation["last_ordinal"]) >= 100:
+                        conversation_id = uuid4().hex
+                        connection.execute(
+                            "INSERT INTO persistent_conversations "
+                            "(id,actor_id,workspace_id,created_at,updated_at,expires_at) VALUES (?,?,?,?,?,?)",
+                            (conversation_id, actor_id, workspace_id, now, now, expires_at),
+                        )
+                    else:
+                        connection.execute(
+                            "UPDATE persistent_conversations SET updated_at=?,expires_at=? WHERE id=? AND actor_id=? AND workspace_id=?",
+                            (now, expires_at, conversation_id, actor_id, workspace_id),
+                        )
+                ordinal = int(connection.execute(
+                    "SELECT COALESCE(MAX(ordinal),0)+1 FROM persistent_conversation_turns "
+                    "WHERE conversation_id=? AND actor_id=? AND workspace_id=?",
+                    (conversation_id, actor_id, workspace_id),
+                ).fetchone()[0])
+                connection.execute(
+                    """INSERT INTO persistent_conversation_turns
+                        (id,conversation_id,actor_id,workspace_id,ordinal,user_text,assistant_text,created_at,expires_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (uuid4().hex, conversation_id, actor_id, workspace_id, ordinal,
+                     user_text.strip(), assistant_text.strip(), now, expires_at),
+                )
+                self._commit(connection)
+                return conversation_id
+            except Exception:
+                self._rollback(connection)
+                raise
+
     def _require_full_database_manager(
         self, connection: sqlite3.Connection, actor_id: str
     ) -> None:
@@ -1738,6 +2188,32 @@ class Database:
                     } <= v10_triggers:
                         raise sqlite3.DatabaseError(
                             "backup is missing orchestration purge tombstone protections")
+                if source_version >= 12:
+                    conversation_tables = {
+                        "conversation_memory_settings": {
+                            "actor_id", "workspace_id", "enabled", "retention_days",
+                            "revision", "consented_at", "revoked_at", "updated_at",
+                        },
+                        "persistent_conversations": {
+                            "id", "actor_id", "workspace_id", "created_at", "updated_at", "expires_at",
+                        },
+                        "persistent_conversation_turns": {
+                            "id", "conversation_id", "actor_id", "workspace_id", "ordinal",
+                            "user_text", "assistant_text", "created_at", "expires_at",
+                        },
+                    }
+                    for table, required_columns in conversation_tables.items():
+                        columns = {row[1] for row in source.execute(
+                            f"PRAGMA table_info({table})").fetchall()}
+                        if not required_columns <= columns:
+                            raise sqlite3.DatabaseError(
+                                f"backup is missing required schema for table {table}")
+                    conversation_foreign_keys = source.execute(
+                        "PRAGMA foreign_key_list(persistent_conversation_turns)"
+                    ).fetchall()
+                    if not any(row[2] == "persistent_conversations" for row in conversation_foreign_keys):
+                        raise sqlite3.DatabaseError(
+                            "backup is missing conversation ownership constraints")
                 if source.execute("PRAGMA foreign_key_check").fetchone() is not None:
                     raise sqlite3.DatabaseError("backup contains foreign key violations")
                 source.backup(target)

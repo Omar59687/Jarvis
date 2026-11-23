@@ -218,3 +218,23 @@ html[dir="rtl"] .task-sim-banner, html[dir="rtl"] .task-archived-badge { letter-
 .voice-ptt-button[aria-pressed="true"] { background: rgba(250,143,168,.2); border-color: rgba(250,143,168,.65); color: #ffd4df; }
 .voice-ptt-button:disabled { opacity: .45; cursor: not-allowed; }
 html[dir="rtl"] .voice-posture-badge, html[dir="rtl"] .voice-state-pill, html[dir="rtl"] .voice-ptt-button { letter-spacing: 0; }
+.conversation-memory-panel { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: rgba(7,13,22,.55); display: grid; gap: 8px; }
+.conversation-memory-panel[hidden], .conversation-memory-detail[hidden] { display: none; }
+.conversation-memory-note { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.conversation-memory-form { display: grid; gap: 8px; }
+.conversation-memory-retention { display: grid; gap: 5px; color: var(--muted); font-size: 11px; }
+.conversation-memory-retention select { min-height: 32px; }
+.conversation-memory-form button { justify-self: start; }
+.conversation-memory-subheading { margin: 3px 0 0; font-size: 12px; }
+.conversation-memory-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.conversation-memory-item { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 5px; align-items: center; padding: 7px; border: 1px solid rgba(143,174,205,.14); border-radius: 6px; background: rgba(255,255,255,.025); }
+.conversation-memory-open { min-width: 0; padding: 0; border: 0; background: transparent; color: var(--ink); text-align: start; cursor: pointer; overflow-wrap: anywhere; }
+.conversation-memory-open span { display: block; color: var(--muted); font-size: 10px; margin-top: 3px; }
+.conversation-memory-detail { padding-top: 8px; border-top: 1px solid var(--line); }
+.conversation-memory-detail-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 11px; }
+.conversation-memory-turns { display: grid; gap: 7px; padding-inline-start: 22px; max-height: 260px; overflow: auto; }
+.conversation-memory-turn { display: grid; gap: 4px; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+.conversation-memory-turn p { margin: 0; white-space: pre-wrap; }
+.conversation-memory-turn strong { color: #a7ecf9; }
+html[dir="rtl"] .conversation-memory-note, html[dir="rtl"] .conversation-memory-form,
+html[dir="rtl"] .conversation-memory-item, html[dir="rtl"] .conversation-memory-turn { font-size: 12px; line-height: 1.55; }
