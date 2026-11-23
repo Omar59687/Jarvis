@@ -96,3 +96,9 @@ The harness tests the deny-by-default capability set, synthetic path checks, and
 - Microsoft, [Windows Sandbox configuration and mapped-folder behavior](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-configure-using-wsb-file)
 - Microsoft, [Hyper-V requirements and Home edition support](https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/get-started/install-hyper-v)
 - Microsoft, [WSL enterprise security and Windows file permissions](https://learn.microsoft.com/en-us/windows/wsl/enterprise)
+
+## M06-B update — 2026-11-23
+
+**Implemented:** The M06-B assessment API and comparison are recorded in [M06-B Windows Execution Isolation](M06B_WINDOWS_EXECUTION_ISOLATION.md). Windows Sandbox remains only the proposed disposable evaluation candidate; the assessment consumes supplied facts and never creates or certifies the boundary. The full comparison includes Hyper-V, Windows containers, restricted tokens/AppContainer, Job Objects, and WSL2/WSL Containers, with official source links and access date.
+
+**Decision:** Continue to deny execution. No runtime, Windows feature, or permission was installed/enabled. The assessment is not evidence of Sandbox availability or containment. Do not proceed to command execution until the independent acceptance gate in the M06-B document passes on the actual target Windows edition.
