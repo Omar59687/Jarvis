@@ -234,6 +234,19 @@ class ApprovedFileChangeTests(unittest.TestCase):
                          "VALUE = 1\n")
         self.assertFalse((self.repo_path / "coding_tasks").exists())
 
+    def test_task_workspace_failure_diagnostic_omits_filesystem_paths(self):
+        with patch.object(Path, "mkdir",
+                          side_effect=PermissionError(5, "denied", str(self.base))):
+            with self.assertLogs("jarvis_core.approved_changes", level="WARNING") as captured:
+                with self.assertRaisesRegex(CodingAuthorizationDenied,
+                                            "task_workspace_unavailable"):
+                    self.service._create_task_workspace(
+                        "ws-m06", self.repository.id, "a" * 32)
+        diagnostic = "\n".join(captured.output)
+        self.assertIn("stage=create_directory", diagnostic)
+        self.assertIn("exception_type=PermissionError", diagnostic)
+        self.assertNotIn(str(self.base), diagnostic)
+
     def test_modified_payload_and_expired_approval_are_rejected(self):
         proposal = self._proposal()
         with self.db._connection() as connection:

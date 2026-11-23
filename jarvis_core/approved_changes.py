@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import difflib
 import hashlib
 import json
+import logging
 import os
 import re
 from pathlib import Path, PurePosixPath
@@ -29,6 +30,7 @@ MAX_FILE_BYTES = 256 * 1024
 MAX_TOTAL_BYTES = 1024 * 1024
 MAX_DIFF_BYTES = 1024 * 1024
 PROPOSAL_TTL_SECONDS = 15 * 60
+_LOGGER = logging.getLogger(__name__)
 
 
 class FileChangeRecoveryRequired(RuntimeError):
@@ -521,30 +523,44 @@ class ApprovedFileChangeService:
         raise CodingAuthorizationDenied("task_workspace_overlaps_repository")
 
     def _create_task_workspace(self, workspace: str, repository_id: str, proposal_id: str) -> Path:
-        base = self.db.path.parent.resolve(strict=True)
-        path = self._task_workspace_path(workspace, repository_id, proposal_id)
+        stage = "resolve_database_directory"
         try:
+            base = self.db.path.parent.resolve(strict=True)
+            path = self._task_workspace_path(workspace, repository_id, proposal_id)
+            stage = "validate_destination_scope"
             relative = path.relative_to(base)
             current = base
             for index, part in enumerate(relative.parts):
                 current = current / part
+                stage = "reject_link_component"
                 if current.exists() and (current.is_symlink()
                         or getattr(current, "is_junction", lambda: False)()):
                     raise CodingAuthorizationDenied("task_workspace_path_invalid")
                 if not current.exists():
+                    stage = "create_directory"
                     current.mkdir(mode=0o700)
+                stage = "verify_directory_type"
                 if not current.is_dir():
                     raise CodingAuthorizationDenied("task_workspace_path_invalid")
+                stage = "resolve_directory"
                 resolved = current.resolve(strict=True)
+                stage = "verify_directory_containment"
                 resolved.relative_to(base)
-                if index == len(relative.parts) - 1 and any(current.iterdir()):
-                    raise CodingAuthorizationDenied("task_workspace_unavailable")
+                if index == len(relative.parts) - 1:
+                    stage = "verify_destination_empty"
+                    if any(current.iterdir()):
+                        raise CodingAuthorizationDenied("task_workspace_unavailable")
             if os.name != "nt":
                 current.chmod(0o700)
             return current
         except CodingAuthorizationDenied:
             raise
-        except (OSError, RuntimeError, ValueError):
+        except (OSError, RuntimeError, ValueError) as exc:
+            _LOGGER.warning(
+                "task_workspace_creation_failed stage=%s exception_type=%s errno=%s winerror=%s",
+                stage, type(exc).__name__, getattr(exc, "errno", None),
+                getattr(exc, "winerror", None),
+            )
             raise CodingAuthorizationDenied("task_workspace_unavailable") from None
 
     def _seed_task_workspace(self, root: Path, operations: list[dict[str, Any]]) -> None:
