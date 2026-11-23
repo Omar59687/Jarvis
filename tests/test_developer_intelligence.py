@@ -557,6 +557,7 @@ class DeveloperSearchRankingTests(unittest.TestCase):
         self.root.mkdir()
         self.root_record = self.db.register_approved_root("alice", "ws-rank", self.root)
         self.service = DeveloperRepositoryService(self.db)
+        self.provider = FakeProvider()
 
     def tearDown(self):
         self.temp.cleanup()
@@ -826,6 +827,139 @@ class DeveloperSearchRankingTests(unittest.TestCase):
         # calculate_fare above stronger FTS content matches.
         partial_hits = self.service.search("alice", "ws-rank", repo.id, "fare")
         self.assertEqual(partial_hits[0]["relative_path"], "docs/dense_tariff.md")
+
+    def test_incremental_index_reports_add_modify_delete_rename_and_reuses_blobs(self):
+        repo_path, repo = self._create_repo("DeltaRepo", {
+            "src/stable.py": "def stable():\n    return 1\n",
+            "src/old_name.py": "def moved():\n    return 2\n",
+            "src/change.py": "def changed():\n    return 3\n",
+            "src/delete.py": "def removed():\n    return 4\n",
+        })
+        (repo_path / "src/change.py").write_text(
+            "def changed():\n    return 30\n", encoding="utf-8")
+        (repo_path / "src/delete.py").unlink()
+        (repo_path / "src/new.py").write_text(
+            "def added():\n    return 5\n", encoding="utf-8")
+        self._git(repo_path, "mv", "src/old_name.py", "src/new_name.py")
+        self._git(repo_path, "add", "-A")
+        self._git(repo_path, "commit", "-qm", "delta snapshot")
+
+        indexed = self.service.index("alice", "ws-rank", repo.id)
+        summary = self.service.last_index_summary
+        self.assertEqual(indexed.index_status, "ready")
+        self.assertEqual({key: summary[key] for key in
+                          ("added", "modified", "deleted", "renamed")},
+                         {"added": 1, "modified": 1, "deleted": 1, "renamed": 1})
+        self.assertGreaterEqual(summary["reused_blobs"], 1)
+        paths = {item["relative_path"] for item in
+                 self.service.search("alice", "ws-rank", repo.id, "stable")}
+        self.assertIn("src/stable.py", paths)
+        self.assertEqual(self.service.search("alice", "ws-rank", repo.id, "removed"), [])
+
+    def test_incomplete_tree_scan_preserves_previous_snapshot(self):
+        _, repo = self._create_repo("IncompleteScanRepo", {
+            "src/kept.py": "def kept_symbol():\n    return 1\n",
+        })
+        before = self.service.search("alice", "ws-rank", repo.id, "kept_symbol")
+        with patch.object(self.service, "_read_tree", side_effect=RepositoryError("repository_index_incomplete")):
+            with self.assertRaises(RepositoryError):
+                self.service.index("alice", "ws-rank", repo.id)
+        after = self.service.search("alice", "ws-rank", repo.id, "kept_symbol")
+        self.assertEqual([item["id"] for item in before], [item["id"] for item in after])
+
+    def test_cross_file_call_candidates_have_locations_and_bounded_evidence(self):
+        _, repo = self._create_repo("CallGraphRepo", {
+            "src/fare.py": "def calculate_fare(miles):\n    return miles * 2\n",
+            "src/billing.py": (
+                "def create_invoice(miles):\n"
+                "    return calculate_fare(miles)\n"
+            ),
+            "src/ui.ts": "export function displayFare(value: number) { return value; }\n",
+        })
+        graph = self.service.graph("alice", "ws-rank", repo.id, limit=100)
+        symbols = [node for node in graph["nodes"] if node["type"] == "symbol"]
+        fare = next(node for node in symbols if node["label"] == "calculate_fare")
+        caller = next(node for node in symbols if node["label"] == "create_invoice")
+        edge = next(item for item in graph["edges"]
+                    if item["type"] == "calls" and item["source"] == caller["id"]
+                    and item["target"] == fare["id"])
+        self.assertEqual(edge["confidence"], "ast_candidate")
+        self.assertEqual(fare["relative_path"], "src/fare.py")
+        self.assertEqual(fare["start_line"], 1)
+
+        self.provider.text = "The caller is in the billing module [R1]."
+        answer = self.service.answer("alice", "ws-rank", repo.id,
+                                     "Which files call calculate_fare?", self.provider, "local")
+        self.assertEqual(answer.outcome, "valid_citations")
+        self.assertTrue(answer.citations)
+        self.assertIn("src/billing.py", self.provider.calls[-1][0])
+        self.assertIn("calculate_fare(miles)", self.provider.calls[-1][0])
+
+    def test_typescript_references_are_explicitly_partial_candidates(self):
+        _, repo = self._create_repo("TypeScriptReferenceRepo", {
+            "src/target.ts": "export function calculateFare(miles: number) { return miles; }\n",
+            "src/caller.ts": "export function quote(miles: number) { return calculateFare(miles); }\n",
+        })
+        hits = self.service.search("alice", "ws-rank", repo.id, "calculateFare")
+        caller = next(item for item in hits if item["relative_path"] == "src/caller.ts")
+        ref = next(item for item in caller["references"] if item["name"] == "calculateFare")
+        self.assertEqual(ref["kind"], "call_candidate")
+        self.assertEqual(ref["confidence"], "lexical_partial")
+        self.assertEqual(ref["line"], 1)
+
+    def test_graph_cycle_reporting_is_bounded_and_marks_call_cycles_as_candidates(self):
+        _, repo = self._create_repo("CycleCandidateRepo", {
+            "src/cycle.py": (
+                "def first():\n    return second()\n\n"
+                "def second():\n    return first()\n"
+            ),
+        })
+        graph = self.service.graph("alice", "ws-rank", repo.id, limit=100)
+        self.assertTrue(graph["cycles"])
+        self.assertEqual(graph["cycles"][0]["kind"], "possible_static_call_cycle")
+        self.assertEqual(graph["cycles"][0]["confidence"], "candidate")
+        self.assertLessEqual(len(graph["cycles"]), 20)
+
+    def test_schema_v12_upgrade_stales_existing_repository_until_reindexed(self):
+        path = self.base / "schema-v12.sqlite3"
+        legacy = Database(path, migrations=DEFAULT_MIGRATIONS[:12])
+        legacy.initialize()
+        legacy.create_workspace("Legacy", WorkspaceKind.PROJECT, "alice", "ws-legacy")
+        root = self.base / "legacy-approved"
+        root.mkdir()
+        root_record = legacy.register_approved_root("alice", "ws-legacy", root)
+        repository_id = "legacy-repository"
+        with legacy._connection() as connection:
+            connection.execute(
+                "INSERT INTO developer_repositories(id,workspace_id,approved_root_id,relative_path,name,registered_by,registered_at,head_commit,index_status) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (repository_id, "ws-legacy", root_record.id, "LegacyRepo", "LegacyRepo",
+                 "alice", "2026-01-01T00:00:00Z", "a" * 40, "ready"),
+            )
+            connection.execute(
+                "INSERT INTO developer_files(id,repository_id,workspace_id,commit_sha,relative_path,extension,language,git_blob_oid,content_sha256,size_bytes,content,symbols_json,imports_json,analysis_status) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("legacy-file", repository_id, "ws-legacy", "a" * 40, "module.py", ".py",
+                 "python", "b" * 40, "c" * 64, 33, "def legacy_symbol(): pass\n",
+                 "[]", "[]", "complete"),
+            )
+            legacy._commit(connection)
+
+        upgraded = Database(path)
+        upgraded.initialize()
+        with upgraded._connection() as connection:
+            status = connection.execute(
+                "SELECT index_status FROM developer_repositories WHERE id=?", (repository_id,)
+            ).fetchone()[0]
+            metadata = connection.execute(
+                "SELECT analysis_status,references_json FROM developer_files WHERE repository_id=?",
+                (repository_id,),
+            ).fetchone()
+        self.assertEqual(status, "stale")
+        self.assertEqual(tuple(metadata), ("unknown", "[]"))
+        with self.assertRaises(StaleRepository):
+            DeveloperRepositoryService(upgraded).search(
+                "alice", "ws-legacy", repository_id, "legacy_symbol")
 
 
 if __name__ == "__main__":

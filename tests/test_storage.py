@@ -144,15 +144,16 @@ class StorageTests(unittest.TestCase):
         )
         version_current = Database(path)
         version_current.initialize()
+        next_version = DEFAULT_MIGRATIONS[-1].version + 1
         version_next_migrations = (
             *DEFAULT_MIGRATIONS,
-            Migration(13, ("CREATE TABLE migration_marker (value TEXT NOT NULL)",)),
+            Migration(next_version, ("CREATE TABLE migration_marker (value TEXT NOT NULL)",)),
         )
         version_next = Database(path, migrations=version_next_migrations)
         version_next.initialize()
         version_next.initialize()
         with version_next._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 13)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], next_version)
             self.assertEqual(
                 connection.execute(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type = ? AND name = ?",

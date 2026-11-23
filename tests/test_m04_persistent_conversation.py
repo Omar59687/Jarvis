@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from jarvis_core import AccessDenied, Database, GenerationResult, Permission, WorkspaceKind
 from jarvis_core.ingestion import FolderSynchronizer
+from jarvis_core.storage import SCHEMA_VERSION
 from prototypes.m03_b1.service import API_PREFIX, make_server
 
 
@@ -71,7 +72,7 @@ class PersistentConversationStorageTests(unittest.TestCase):
         )
 
         restarted = Database(self.path)
-        self.assertEqual(restarted.current_version, 12)
+        self.assertEqual(restarted.current_version, SCHEMA_VERSION)
         detail = restarted.get_persistent_conversation("alice", "ws-a", conversation_id)
         self.assertEqual(detail["turns"][0]["user"], "Earlier question: what is the blue marker?")
         revision, context = restarted.search_persistent_conversation_context(

@@ -136,6 +136,7 @@ class LMStudioBionicTests(unittest.TestCase):
 
         class TargetHandler(BaseHTTPRequestHandler):
             def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
                 redirected_requests.append(self.path)
                 self.send_response(200)
                 self.send_header("Content-Length", "49")
@@ -149,6 +150,7 @@ class LMStudioBionicTests(unittest.TestCase):
 
         class RedirectHandler(BaseHTTPRequestHandler):
             def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
                 self.send_response(302)
                 self.send_header("Location", f"http://127.0.0.1:{target.server_port}/escaped")
                 self.send_header("Content-Length", "0")

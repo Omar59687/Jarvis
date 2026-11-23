@@ -105,6 +105,14 @@ The product targets Arabic and English, Windows desktop, and a browser dashboard
 
 **Evidence:** `tests/test_m04_persistent_conversation.py` plus the full regression results recorded with the feature commit.
 
+### M05 Developer Intelligence 2.0 — 2026-11-23
+
+**Confirmed for this approved milestone:** Extend the existing P3 repository intelligence rather than replacing it. Add incremental snapshot deltas, bounded Python references and partial JavaScript/TypeScript references, confidence-labeled cross-file graph candidates, source-grounded multi-file retrieval, and deterministic ranking. Add lightweight Python/Node CI on hosted Linux and Windows runners.
+
+**Implemented:** Schema v13 stores bounded references. Existing snapshots become stale and require explicit re-indexing. Incomplete tree reads abort before replacing indexed state. Python call edges require unique indexed caller and callee symbols; uncertain calls are candidates, not proven runtime edges. Existing workspace authorization, terminal approval, no-execution rule, untrusted-source framing, and citation validation remain in force. See [M05 Developer Intelligence 2.0](M05_DEVELOPER_INTELLIGENCE_2.md).
+
+**Limitations:** JavaScript/TypeScript references are lexical and partial. Dynamic dispatch, aliases, reflection, framework behavior, and unsupported languages are not semantically resolved. Graph cycles and call relationships are static candidates only. No repository code is executed.
+
 ## Open decisions
 
 - Exact system RAM and supported Windows versions.
