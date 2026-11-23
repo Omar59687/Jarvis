@@ -38,6 +38,7 @@ class CodingCapability(str, Enum):
     READ_REPOSITORY_METADATA = "read_repository_metadata"
     READ_INDEXED_SOURCE = "read_indexed_source"
     PROPOSE_CODE_MODIFICATIONS = "propose_code_modifications"
+    APPLY_APPROVED_FILE_CHANGES = "apply_approved_file_changes"
     CREATE_ISOLATED_WORKTREE = "create_isolated_worktree"
     MODIFY_TASK_WORKTREE = "modify_task_worktree"
     EXECUTE_VERIFICATION = "execute_verification"
@@ -48,12 +49,13 @@ class CodingCapability(str, Enum):
     MERGE_OR_DEPLOY = "merge_or_deploy"
 
 
-# Until the target Windows isolation gate passes, no capability can authorize
-# repository mutation or process/network execution.
+# The host may apply only an explicitly approved, digest-bound file proposal.
+# Agent subprocesses, shells, network, and automated Git operations stay unavailable.
 GRANTABLE_CODING_CAPABILITIES = frozenset({
     CodingCapability.READ_REPOSITORY_METADATA,
     CodingCapability.READ_INDEXED_SOURCE,
     CodingCapability.PROPOSE_CODE_MODIFICATIONS,
+    CodingCapability.APPLY_APPROVED_FILE_CHANGES,
 })
 
 
@@ -266,6 +268,7 @@ class CodingCapabilityPolicy:
             "interactive_approval_required": [
                 CodingCapability.PROPOSE_CODE_MODIFICATIONS.value,
                 CodingCapability.CREATE_ISOLATED_WORKTREE.value,
+                CodingCapability.APPLY_APPROVED_FILE_CHANGES.value,
                 CodingCapability.MODIFY_TASK_WORKTREE.value,
                 CodingCapability.EXECUTE_VERIFICATION.value,
                 CodingCapability.REQUEST_NETWORK_ACCESS.value,

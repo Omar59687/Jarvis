@@ -100,6 +100,26 @@ const conversationMemoryTurns = $("#conversation-memory-turns");
 const conversationMemoryDetailClose = $("#conversation-memory-detail-close");
 const developerRepoSelect = $("#developer-repo");
 const developerState = $("#developer-state");
+const fileChangePanel = $("#file-change-panel");
+const fileChangeForm = $("#file-change-form");
+const fileChangeModelForm = $("#file-change-model-form");
+const fileChangeRequest = $("#file-change-request");
+const fileChangeModelPaths = $("#file-change-model-paths");
+const fileChangePath = $("#file-change-path");
+const fileChangeOperation = $("#file-change-operation");
+const fileChangeContent = $("#file-change-content");
+const fileChangeStatus = $("#file-change-status");
+const fileChangeList = $("#file-change-list");
+const fileChangeReview = $("#file-change-review");
+const fileChangeReviewStatus = $("#file-change-review-status");
+const fileChangeDigest = $("#file-change-digest");
+const fileChangeDiff = $("#file-change-diff");
+const fileChangeDeleteRow = $("#file-change-delete-confirm-row");
+const fileChangeDeleteConfirm = $("#file-change-delete-confirm");
+const fileChangeAudit = $("#file-change-audit");
+const fileChangeOutput = $("#file-change-output");
+const fileChangeApprove = $("#file-change-approve");
+const fileChangeReject = $("#file-change-reject");
 const developerSearchForm = $("#developer-search-form");
 const developerSearch = $("#developer-search");
 const developerResults = $("#developer-results");
@@ -190,6 +210,8 @@ let developerLoadGeneration = 0;
 let developerStatus = ["Pair and select a workspace to load repositories.", "اربط الجلسة واختر مساحة عمل لتحميل المستودعات."];
 let developerGraphStatus = ["Select a ready repository to load its indexed structure.", "اختر مستودعًا جاهزًا لتحميل بنيته المفهرسة."];
 let developerChangeStatus = ["", ""];
+let activeFileChange = null;
+let fileChangeGeneration = 0;
 const taskState = createTaskControlState();
 let taskStatusCopy = [
   "Pair this browser and select an authorized workspace to inspect tasks.",
@@ -399,6 +421,7 @@ async function loadDeveloperRepositories() {
   clearDeveloperGraph();
   developerRepositories = [];
   activeDeveloperRepoId = null;
+  resetFileChangePanel();
   developerRepoSelect.replaceChildren();
   const initial = document.createElement("option");
   initial.value = "";
@@ -454,6 +477,7 @@ function selectDeveloperRepository() {
   activeDeveloperRepoId = developerRepoSelect.value || null;
   clearDeveloperResults();
   clearDeveloperGraph();
+  resetFileChangePanel();
   const repo = developerRepositories.find((item) => item.id === activeDeveloperRepoId);
   if (!repo) {
     setDeveloperState("Choose a registered repository.", "اختر مستودعًا مسجلًا.");
@@ -465,8 +489,232 @@ function selectDeveloperRepository() {
     setDeveloperState(`Indexed ${repo.branch || "detached HEAD"} · ${commit}`,
       `تمت الفهرسة · ${commit}`);
     loadDeveloperGraphAndCommits(repo);
+    loadFileChangeList();
   }
   updateDeveloperControls();
+}
+
+function resetFileChangePanel() {
+  fileChangeGeneration += 1;
+  activeFileChange = null;
+  fileChangePanel.hidden = !authenticated || !activeWorkspaceId || !activeDeveloperRepoId;
+  fileChangeReview.hidden = true;
+  fileChangeList.replaceChildren();
+  fileChangeAudit.replaceChildren();
+  fileChangeForm.reset();
+  fileChangeContent.required = fileChangeOperation.value !== "delete";
+  fileChangeDeleteConfirm.checked = false;
+  setFileChangeStatus("", "");
+}
+
+function setFileChangeStatus(en, ar = en) {
+  fileChangeStatus.dataset.en = en;
+  fileChangeStatus.dataset.ar = ar;
+  fileChangeStatus.textContent = language === "ar" ? ar : en;
+}
+
+function renderFileChangeProposal(proposal) {
+  activeFileChange = proposal;
+  fileChangeReview.hidden = false;
+  fileChangeReviewStatus.textContent = proposal.status;
+  fileChangeDigest.textContent = proposal.patch_sha256;
+  fileChangeDiff.textContent = proposal.diff;
+  const hasDelete = proposal.operations?.some((item) => item.operation === "delete");
+  fileChangeDeleteRow.hidden = !hasDelete;
+  fileChangeDeleteConfirm.checked = false;
+  const pending = proposal.status === "pending_approval";
+  fileChangeApprove.disabled = !pending;
+  fileChangeReject.disabled = !pending;
+  fileChangeAudit.replaceChildren();
+  fileChangeOutput.replaceChildren();
+  for (const entry of proposal.audit ?? []) {
+    const item = document.createElement("li");
+    item.textContent = `${entry.created_at} | ${entry.event_type}`;
+    fileChangeAudit.append(item);
+  }
+}
+
+async function loadFileChangeList() {
+  const generation = ++fileChangeGeneration;
+  const workspace = activeWorkspaceId;
+  const repositoryId = activeDeveloperRepoId;
+  fileChangePanel.hidden = !authenticated || !workspace || !repositoryId;
+  fileChangeList.replaceChildren();
+  fileChangeReview.hidden = true;
+  if (fileChangePanel.hidden) return;
+  try {
+    const response = await fetch(`/api/v1/coding/file-changes?repository_id=${encodeURIComponent(repositoryId)}`, {
+      credentials: "same-origin", cache: "no-store"
+    });
+    const value = await responseJson(response);
+    if (generation !== fileChangeGeneration || workspace !== activeWorkspaceId
+        || repositoryId !== activeDeveloperRepoId) return;
+    if (!response.ok || value.workspace_id !== workspace || !Array.isArray(value.proposals)) {
+      throw new Error(value.error || "file_change_list_unavailable");
+    }
+    for (const proposal of value.proposals) {
+      const item = document.createElement("li");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "small-action";
+      button.textContent = `${proposal.status} | ${proposal.id.slice(0, 12)} | ${proposal.patch_sha256.slice(0, 12)}`;
+      button.addEventListener("click", () => loadFileChange(proposal.id));
+      item.append(button);
+      fileChangeList.append(item);
+    }
+  } catch {
+    if (generation === fileChangeGeneration) setFileChangeStatus(
+      "File change review is unavailable or this repository has no proposal grant.");
+  }
+}
+
+async function loadFileChange(proposalId) {
+  const generation = ++fileChangeGeneration;
+  const workspace = activeWorkspaceId;
+  const repositoryId = activeDeveloperRepoId;
+  try {
+    const response = await fetch(`/api/v1/coding/file-changes/${encodeURIComponent(proposalId)}`, {
+      credentials: "same-origin", cache: "no-store"
+    });
+    const value = await responseJson(response);
+    if (generation !== fileChangeGeneration || workspace !== activeWorkspaceId
+        || repositoryId !== activeDeveloperRepoId) return;
+    if (!response.ok || value.workspace_id !== workspace || value.repository_id !== repositoryId) {
+      throw new Error(value.error || "file_change_unavailable");
+    }
+    renderFileChangeProposal(value);
+    setFileChangeStatus("Review the complete diff, targets, and digest before deciding.");
+    if (value.status === "applied") {
+      const outputResponse = await fetch(`/api/v1/coding/file-changes/${encodeURIComponent(proposalId)}/output`, {
+        credentials: "same-origin", cache: "no-store"
+      });
+      const output = await responseJson(outputResponse);
+      if (generation !== fileChangeGeneration || workspace !== activeWorkspaceId
+          || repositoryId !== activeDeveloperRepoId) return;
+      if (!outputResponse.ok || output.workspace_id !== workspace || output.repository_id !== repositoryId
+          || output.source_repository_changed !== false || !Array.isArray(output.files)) {
+        throw new Error(output.error || "file_change_output_unavailable");
+      }
+      for (const file of output.files) {
+        const section = document.createElement("section");
+        const heading = document.createElement("h5");
+        heading.textContent = `${file.operation}: ${file.path}`;
+        section.append(heading);
+        const pre = document.createElement("pre");
+        pre.className = "file-change-diff";
+        pre.dir = "ltr";
+        pre.textContent = file.content === null ? "(deleted from this task workspace)" : file.content;
+        section.append(pre);
+        fileChangeOutput.append(section);
+      }
+    }
+  } catch {
+    if (generation === fileChangeGeneration) setFileChangeStatus(
+      "This file change is unavailable or repository access was revoked.");
+  }
+}
+
+async function submitModelFileChange(event) {
+  event.preventDefault();
+  if (!authenticated || !csrfToken || !activeWorkspaceId || !activeDeveloperRepoId) return;
+  const workspace = activeWorkspaceId;
+  const repositoryId = activeDeveloperRepoId;
+  const paths = fileChangeModelPaths.value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+  if (paths.length < 1 || paths.length > 5 || new Set(paths).size !== paths.length) {
+    setFileChangeStatus("Choose one to five unique indexed file paths.");
+    return;
+  }
+  setFileChangeStatus("Asking the configured local model for a bounded proposal...");
+  try {
+    const response = await fetch("/api/v1/coding/file-changes", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-Jarvis-CSRF": csrfToken },
+      body: JSON.stringify({ repository_id: repositoryId, request: fileChangeRequest.value, paths })
+    });
+    const value = await responseJson(response);
+    if (workspace !== activeWorkspaceId || repositoryId !== activeDeveloperRepoId) return;
+    if (!response.ok || value.workspace_id !== workspace || value.repository_id !== repositoryId) {
+      throw new Error(value.error || "local_proposal_failed");
+    }
+    renderFileChangeProposal(value);
+    setFileChangeStatus("Local model proposal saved. Review the complete diff; no file has changed.");
+    await loadFileChangeList();
+    await loadFileChange(value.id);
+  } catch (error) {
+    if (workspace === activeWorkspaceId && repositoryId === activeDeveloperRepoId) {
+      setFileChangeStatus(`Local proposal failed or was denied: ${String(error?.message || "unknown")}`);
+    }
+  }
+}
+
+async function submitFileChange(event) {
+  event.preventDefault();
+  if (!authenticated || !csrfToken || !activeWorkspaceId || !activeDeveloperRepoId) return;
+  const workspace = activeWorkspaceId;
+  const repositoryId = activeDeveloperRepoId;
+  const operation = fileChangeOperation.value;
+  const content = operation === "delete" ? null : fileChangeContent.value;
+  setFileChangeStatus("Preparing a bounded diff...");
+  try {
+    const response = await fetch("/api/v1/coding/file-changes", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-Jarvis-CSRF": csrfToken },
+      body: JSON.stringify({ repository_id: repositoryId, operations: [{
+        path: fileChangePath.value, operation, content
+      }] })
+    });
+    const value = await responseJson(response);
+    if (workspace !== activeWorkspaceId || repositoryId !== activeDeveloperRepoId) return;
+    if (!response.ok || value.workspace_id !== workspace || value.repository_id !== repositoryId) {
+      throw new Error(value.error || "file_change_proposal_failed");
+    }
+    renderFileChangeProposal(value);
+    setFileChangeStatus("Proposal saved for explicit review. No file has changed.");
+    fileChangeContent.value = "";
+    await loadFileChangeList();
+    await loadFileChange(value.id);
+  } catch (error) {
+    if (workspace === activeWorkspaceId && repositoryId === activeDeveloperRepoId) {
+      setFileChangeStatus(String(error?.message || "Proposal denied. Check path, content, and repository grants."));
+    }
+  }
+}
+
+async function decideFileChange(action) {
+  if (!activeFileChange || !csrfToken || !activeWorkspaceId || !activeDeveloperRepoId) return;
+  const proposal = activeFileChange;
+  const workspace = activeWorkspaceId;
+  const repositoryId = activeDeveloperRepoId;
+  const hasDelete = proposal.operations?.some((item) => item.operation === "delete");
+  if (action === "approve" && hasDelete && !fileChangeDeleteConfirm.checked) {
+    setFileChangeStatus("Check the delete-specific confirmation before approving.");
+    return;
+  }
+  if (action === "approve" && !window.confirm("Only the displayed change will be applied. Have you reviewed and approved it?")) return;
+  setFileChangeStatus(action === "approve" ? "Applying the approved change..." : "Rejecting proposal...");
+  try {
+    const response = await fetch(`/api/v1/coding/file-changes/${encodeURIComponent(proposal.id)}/${action}`, {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-Jarvis-CSRF": csrfToken },
+      body: JSON.stringify({ patch_sha256: proposal.patch_sha256, confirmed: true,
+        delete_confirmed: action === "approve" && hasDelete && fileChangeDeleteConfirm.checked })
+    });
+    const value = await responseJson(response);
+    if (workspace !== activeWorkspaceId || repositoryId !== activeDeveloperRepoId) return;
+    if (!response.ok || value.workspace_id !== workspace || value.repository_id !== repositoryId) {
+      throw new Error(value.error || "file_change_decision_failed");
+    }
+    renderFileChangeProposal(value);
+    setFileChangeStatus(action === "approve" ? "Approved change applied and audit recorded."
+      : "Proposal rejected; repository files were not changed.");
+    await loadFileChangeList();
+    await loadFileChange(proposal.id);
+  } catch (error) {
+    if (workspace === activeWorkspaceId && repositoryId === activeDeveloperRepoId) {
+      setFileChangeStatus(`Operation denied or recovery needed: ${String(error?.message || "unknown")}`);
+      await loadFileChange(proposal.id);
+    }
+  }
 }
 
 function renderDeveloperGraph(data) {
@@ -3317,6 +3565,11 @@ conversationMemoryRefresh.addEventListener("click", loadConversationMemory);
 conversationMemoryEnabled.addEventListener("change", updateConversationMemoryControls);
 conversationMemoryDetailClose.addEventListener("click", () => { conversationMemoryDetail.hidden = true; });
 developerRepoSelect.addEventListener("change", selectDeveloperRepository);
+fileChangeModelForm.addEventListener("submit", submitModelFileChange);
+fileChangeForm.addEventListener("submit", submitFileChange);
+fileChangeApprove.addEventListener("click", () => decideFileChange("approve"));
+fileChangeReject.addEventListener("click", () => decideFileChange("reject"));
+fileChangeOperation.addEventListener("change", () => { fileChangeContent.required = fileChangeOperation.value !== "delete"; });
 developerCompareButton.addEventListener("click", compareDeveloperCommits);
 developerSearchForm.addEventListener("submit", searchDeveloperFiles);
 developerChatForm.addEventListener("submit", askDeveloper);

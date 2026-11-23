@@ -23,6 +23,8 @@ from urllib.parse import parse_qs, urlsplit
 
 from jarvis_core.lmstudio import LMStudioBionicClient
 from jarvis_core.developer import DeveloperRepositoryService, RepositoryError, StaleRepository
+from jarvis_core.approved_changes import ApprovedFileChangeService
+from jarvis_core.coding_agents import CodingAuthorizationDenied
 from jarvis_core.orchestration import (
     MAX_GOAL_CHARS,
     MAX_RESULT_SUMMARY_CHARS,
@@ -83,6 +85,7 @@ PAIR_MAX_ATTEMPTS = 5
 CHAT_MAX_REQUEST_BYTES = 4096
 PAIR_MAX_REQUEST_BYTES = 2048
 WORKSPACE_MAX_REQUEST_BYTES = 2048
+CODING_FILE_CHANGE_MAX_REQUEST_BYTES = 1200 * 1024
 VOICE_SYNTHESIZE_MAX_REQUEST_BYTES = 8192
 MAX_MESSAGE_CHARS = 1000
 MAX_REPLY_CHARS = 16000
@@ -606,6 +609,10 @@ class LocalChatServer(ThreadingHTTPServer):
         self.memory_service = MemoryService(configured_database, self.decision_key) if configured_database else None
         self.rag = DocumentRAG(self.search_index, generator) if configured_database else None
         self.developer = DeveloperRepositoryService(configured_database) if configured_database else None
+        self.approved_changes = (
+            ApprovedFileChangeService(configured_database, repositories=self.developer)
+            if configured_database else None
+        )
         self.orchestration = (
             TaskOrchestrationService(configured_database, repositories=self.developer)
             if configured_database else None
@@ -739,6 +746,11 @@ class LocalChatHandler(BaseHTTPRequestHandler):
 
     def _is_task_route(self, path: str) -> bool:
         return path == f"{API_PREFIX}/tasks" or path.startswith(f"{API_PREFIX}/tasks/")
+
+    @staticmethod
+    def _is_coding_change_route(path: str) -> bool:
+        base = f"{API_PREFIX}/coding/file-changes"
+        return path == base or path.startswith(base + "/")
 
     def _discard_bounded_request_body(self, max_bytes: int) -> None:
         """Consume a safely bounded body before closing an early-rejected request.
@@ -880,7 +892,7 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             return
         path, query = self._request_path()
         if query and not (path.startswith(f"{API_PREFIX}/developer/repositories")
-                          or self._is_task_route(path)):
+                          or self._is_task_route(path) or self._is_coding_change_route(path)):
             self._json(404, {"error": "not_found"})
             return
         if path == "/health":
@@ -951,6 +963,11 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         if path.startswith(f"{API_PREFIX}/developer/repositories"):
             self._developer_get(path, query)
             return
+        if self._is_coding_change_route(path):
+            if self._reject_foreign_origin_if_present():
+                return
+            self._coding_changes_get(path, query)
+            return
         if self._is_task_route(path):
             if self._reject_foreign_origin_if_present():
                 return
@@ -975,7 +992,8 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         self._send(200, body, content_type)
 
     def do_POST(self) -> None:
-        post_body_limit = max(CHAT_MAX_REQUEST_BYTES, PAIR_MAX_REQUEST_BYTES, 8192)
+        post_body_limit = max(CHAT_MAX_REQUEST_BYTES, PAIR_MAX_REQUEST_BYTES, 8192,
+                               CODING_FILE_CHANGE_MAX_REQUEST_BYTES)
         if (self._reject_host(discard_body_limit=post_body_limit)
                 or self._reject_origin(discard_body_limit=post_body_limit)):
             return
@@ -983,6 +1001,13 @@ class LocalChatHandler(BaseHTTPRequestHandler):
         if self._is_task_route(path):
             self._discard_bounded_request_body(post_body_limit)
             self._json(405, {"error": "method_not_allowed"}, extra_headers={"Allow": "GET"})
+            return
+        if self._is_coding_change_route(path):
+            if query:
+                self._discard_bounded_request_body(post_body_limit)
+                self._json(404, {"error": "not_found"})
+                return
+            self._coding_changes_post(path)
             return
         if query:
             self._discard_bounded_request_body(post_body_limit)
@@ -1135,6 +1160,134 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             "branch": repository.branch_name, "commit_sha": repository.head_commit,
             "indexed_at": repository.indexed_at, "index_status": repository.index_status,
         }
+
+    def _coding_changes_get(self, path: str, query: str) -> None:
+        context = self._authenticated_workspace()
+        if context is None:
+            return
+        session_id, _, actor, workspace = context
+        service = self.server.approved_changes
+        if service is None:
+            self._json(503, {"error": "coding_service_unavailable"})
+            return
+        base = f"{API_PREFIX}/coding/file-changes"
+        try:
+            if path == base:
+                params = parse_qs(query, strict_parsing=True, max_num_fields=2)
+                if set(params) - {"repository_id", "limit"} or len(params.get("repository_id", [])) != 1:
+                    self._json(400, {"error": "invalid_request"})
+                    return
+                limit = int(params.get("limit", ["20"])[0])
+                proposals = service.list(actor, workspace, params["repository_id"][0], limit)
+                self._json(200, {"workspace_id": workspace, "proposals": proposals})
+                return
+            suffix = path[len(base) + 1:]
+            pieces = suffix.split("/")
+            if len(pieces) == 1 and re.fullmatch(r"[0-9a-f]{32}", pieces[0]) and not query:
+                proposal = service.get(actor, workspace, pieces[0])
+                proposal["audit"] = service.audit(actor, workspace, pieces[0])
+                self._json(200, proposal)
+                return
+            if (len(pieces) == 2 and pieces[1] == "output"
+                    and re.fullmatch(r"[0-9a-f]{32}", pieces[0]) and not query):
+                self._json(200, service.get_output(actor, workspace, pieces[0]))
+                return
+            self._json(404, {"error": "not_found"})
+        except AccessDenied:
+            self._json(404, {"error": "file_change_unavailable"})
+        except (ValueError, RepositoryError):
+            self._json(400, {"error": "invalid_request"})
+        except Exception:
+            self._json(503, {"error": "coding_service_unavailable"})
+
+    def _coding_changes_post(self, path: str) -> None:
+        context = self._authenticated_workspace(write=True)
+        if context is None:
+            return
+        session_id, _, actor, workspace = context
+        service = self.server.approved_changes
+        if service is None:
+            self._json(503, {"error": "coding_service_unavailable"})
+            return
+        base = f"{API_PREFIX}/coding/file-changes"
+        value = self._read_json(CODING_FILE_CHANGE_MAX_REQUEST_BYTES)
+        if value is None:
+            return
+        try:
+            if path == base:
+                if set(value) == {"repository_id", "request", "paths"}:
+                    def context_is_current() -> bool:
+                        current = self.server.sessions.resolve(session_id)
+                        return bool(current is not None and current.actor_id == actor
+                                    and current.active_workspace_id == workspace)
+                    proposal = service.propose_from_local_model(
+                        actor, workspace, value["repository_id"], value["request"],
+                        value["paths"], self.server.generator, self.server.model,
+                        context_is_current=context_is_current)
+                elif set(value) == {"repository_id", "operations"}:
+                    proposal = service.propose(actor, workspace,
+                                               value["repository_id"], value["operations"])
+                else:
+                    raise ValueError("invalid fields")
+                self._json(201, proposal)
+                return
+            pieces = path[len(base) + 1:].split("/")
+            if len(pieces) != 2 or not re.fullmatch(r"[0-9a-f]{32}", pieces[0]):
+                self._json(404, {"error": "not_found"})
+                return
+            if pieces[1] == "approve":
+                if set(value) - {"patch_sha256", "confirmed", "delete_confirmed"}:
+                    raise ValueError("invalid fields")
+                result = service.approve_and_apply(
+                    actor, workspace, pieces[0], value.get("patch_sha256", ""),
+                    confirmed=value.get("confirmed") is True,
+                    delete_confirmed=value.get("delete_confirmed") is True)
+            elif pieces[1] == "reject":
+                if set(value) - {"patch_sha256", "confirmed"}:
+                    raise ValueError("invalid fields")
+                result = service.reject(actor, workspace, pieces[0],
+                                        value.get("patch_sha256", ""),
+                                        confirmed=value.get("confirmed") is True)
+            elif pieces[1] == "recover":
+                if value:
+                    raise ValueError("invalid fields")
+                result = service.recover(actor, workspace, pieces[0])
+            else:
+                self._json(404, {"error": "not_found"})
+                return
+            result["audit"] = service.audit(actor, workspace, pieces[0])
+            self._json(200, result)
+        except CodingAuthorizationDenied as exc:
+            error = str(exc)
+            try:
+                proposal_id = pieces[0] if "pieces" in locals() and re.fullmatch(r"[0-9a-f]{32}", pieces[0]) else "unavailable"
+                service.record_denial(actor, workspace, proposal_id, error)
+            except Exception:
+                pass
+            code = 403 if error == "coding_capability_denied" else 409
+            self._json(code, {"error": error})
+        except AccessDenied:
+            try:
+                proposal_id = pieces[0] if "pieces" in locals() and re.fullmatch(r"[0-9a-f]{32}", pieces[0]) else "unavailable"
+                service.record_denial(actor, workspace, proposal_id, "file_change_unauthorized")
+            except Exception:
+                pass
+            self._json(404, {"error": "file_change_unavailable"})
+        except StaleRepository:
+            try:
+                proposal_id = pieces[0] if "pieces" in locals() and re.fullmatch(r"[0-9a-f]{32}", pieces[0]) else "unavailable"
+                service.record_denial(actor, workspace, proposal_id, "repository_snapshot_stale")
+            except Exception:
+                pass
+            self._json(409, {"error": "repository_snapshot_stale"})
+        except (ValueError, RepositoryError):
+            try:
+                service.record_denial(actor, workspace, "unavailable", "invalid_request")
+            except Exception:
+                pass
+            self._json(400, {"error": "invalid_request"})
+        except Exception:
+            self._json(503, {"error": "coding_service_unavailable"})
 
     def _developer_get(self, path: str, query: str) -> None:
         context = self._authenticated_workspace()
