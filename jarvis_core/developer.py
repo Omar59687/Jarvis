@@ -164,12 +164,32 @@ def _path_has_link_component(path: Path, stop: Path) -> bool:
     try:
         relative = path.relative_to(stop)
     except ValueError:
-        return True
-    current = stop
-    components = [current]
-    for part in relative.parts:
-        current = current / part
-        components.append(current)
+        # On Windows, tempfile paths can use an 8.3 short-name alias while an
+        # approved root is stored with its long name. Resolve both only to
+        # establish containment, then inspect the original spelling's full
+        # component chain so resolving cannot hide a junction or symlink.
+        if os.name != "nt":
+            return True
+        try:
+            resolved_path = path.resolve(strict=True)
+            resolved_stop = stop.resolve(strict=True)
+            relative = resolved_path.relative_to(resolved_stop)
+            alias_stop = path.parents[len(relative.parts) - 1] if relative.parts else path
+            if not os.path.samefile(alias_stop, stop):
+                return True
+        except (OSError, RuntimeError, ValueError, IndexError):
+            return True
+        current = Path(path.anchor)
+        components = [current]
+        for part in path.parts[1:]:
+            current = current / part
+            components.append(current)
+    else:
+        current = stop
+        components = [current]
+        for part in relative.parts:
+            current = current / part
+            components.append(current)
     for component in components:
         try:
             info = component.lstat()
@@ -333,13 +353,14 @@ def _check_git_tree_for_links(start: Path, *, max_entries: int = 100_000) -> boo
         return False
 
 
-def _python_metadata(content: str) -> tuple[list[dict[str, object]], list[dict[str, object]], str]:
+def _python_metadata(content: str) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], str]:
     symbols: list[dict[str, object]] = []
     imports: list[dict[str, object]] = []
+    references: list[dict[str, object]] = []
     try:
         tree = ast.parse(content)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
-        return symbols, imports, "failed"
+        return symbols, imports, references, "failed"
 
     truncated = False
 
@@ -382,8 +403,76 @@ def _python_metadata(content: str) -> tuple[list[dict[str, object]], list[dict[s
                 else:
                     truncated = True
     walk(tree.body)
-    status = "partial" if truncated else "complete"
-    return symbols[:_METADATA_LIMIT], imports[:_METADATA_LIMIT], status
+    references_truncated = False
+
+    def expression_name(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            parent = expression_name(node.value)
+            return f"{parent}.{node.attr}" if parent else node.attr
+        return None
+
+    class ReferenceVisitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.scope: list[str] = []
+
+        def add(self, name: str, line: int, kind: str) -> None:
+            nonlocal references_truncated
+            if len(name) > 512:
+                return
+            if len(references) >= 300:
+                references_truncated = True
+                return
+            references.append({
+                "name": name.rsplit(".", 1)[-1], "qualified_name": name,
+                "line": line, "kind": kind,
+                "scope": ".".join(self.scope) or None, "confidence": "ast_candidate",
+            })
+
+        def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+            for item in (*node.decorator_list, *node.args.defaults, *[x for x in node.args.kw_defaults if x]):
+                self.visit(item)
+            self.scope.append(node.name)
+            for item in node.body:
+                self.visit(item)
+            self.scope.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            for item in (*node.decorator_list, *node.bases, *node.keywords):
+                self.visit(item)
+            self.scope.append(node.name)
+            for item in node.body:
+                self.visit(item)
+            self.scope.pop()
+
+        def visit_Call(self, node: ast.Call) -> None:
+            target = expression_name(node.func)
+            if target:
+                self.add(target, node.lineno, "call")
+            for item in (*node.args, *node.keywords):
+                self.visit(item)
+
+        def visit_Name(self, node: ast.Name) -> None:
+            if isinstance(node.ctx, ast.Load):
+                self.add(node.id, node.lineno, "reference")
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            if isinstance(node.ctx, ast.Load):
+                target = expression_name(node)
+                if target:
+                    self.add(target, node.lineno, "reference")
+            self.visit(node.value)
+
+    try:
+        ReferenceVisitor().visit(tree)
+    except (RecursionError, MemoryError):
+        references = []
+        references_truncated = True
+    status = "partial" if truncated or references_truncated else "complete"
+    return symbols[:_METADATA_LIMIT], imports[:_METADATA_LIMIT], references, status
 
 
 def _mask_comments(content: str, language: str) -> str:
@@ -498,7 +587,7 @@ def _mask_strings(content: str, language: str) -> str:
     return "".join(chars)
 
 
-def _lexical_metadata(language: str, content: str) -> tuple[list[dict[str, object]], list[dict[str, object]], str]:
+def _lexical_metadata(language: str, content: str) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], str]:
     """Return conservative declarations and dependencies with explicit partial status."""
     symbols: list[dict[str, object]] = []
     imports: list[dict[str, object]] = []
@@ -548,21 +637,41 @@ def _lexical_metadata(language: str, content: str) -> tuple[list[dict[str, objec
                                 "kind": "documentation_reference", "confidence": "lexical_partial"})
     symbols = symbols[:_METADATA_LIMIT]
     imports = imports[:_METADATA_LIMIT]
-    return symbols, imports, "partial"
+    references: list[dict[str, object]] = []
+    if language in {"javascript", "typescript"}:
+        keywords = {"if", "for", "while", "switch", "catch", "return", "function", "new", "typeof", "await", "throw"}
+        definition_lines = {(str(item.get("name")), int(item.get("start_line", 0))) for item in symbols}
+        identifiers = re.compile(r"(?<![\w$])(?P<name>[A-Za-z_$][\w$]{0,255})(?![\w$])")
+        for match in identifiers.finditer(declaration_code):
+            name = match.group("name")
+            if name.casefold() in keywords or (name, _line_of(declaration_code, match.start())) in definition_lines:
+                continue
+            tail = declaration_code[match.end():match.end() + 16].lstrip()
+            references.append({
+                "name": name, "qualified_name": name,
+                "line": _line_of(declaration_code, match.start()),
+                "kind": "call_candidate" if tail.startswith("(") else "reference",
+                "scope": None, "confidence": "lexical_partial",
+            })
+            if len(references) >= 250:
+                break
+    return symbols, imports, references, "partial"
 
 
-def _extract_metadata(language: str, content: str) -> tuple[list[dict[str, object]], list[dict[str, object]], str]:
+def _extract_metadata(language: str, content: str) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], str]:
     if language == "python":
         return _python_metadata(content)
     if language in {"dart", "csharp", "javascript", "typescript", "sql", "markdown"}:
         return _lexical_metadata(language, content)
-    return [], [], "unsupported"
+    return [], [], [], "unsupported"
 
 
 _RANK_EXACT_SYMBOL = 0
 _RANK_EXACT_QUALIFIED_SYMBOL = 1
 _RANK_QUALIFIED_SUFFIX_SYMBOL = 2
-_RANK_CONTENT_ONLY = 3
+_RANK_SYMBOL_REFERENCE = 3
+_RANK_PATH_MATCH = 4
+_RANK_CONTENT_ONLY = 5
 _QUERY_TOKEN_SPLIT = re.compile(r"[\s()\[\]{}<>,;:?!'\"`]+")
 
 
@@ -619,47 +728,131 @@ def _symbol_query_targets(query: str) -> tuple[str, ...]:
     return tuple(targets)
 
 
-def _symbol_match_rank(language: object, symbols_json: object,
+def _symbol_match_rank(language: object, symbols_json: object, references_json: object,
                        targets: tuple[str, ...]) -> int:
-    """Return a bounded match tier prioritizing code symbol definitions.
-
-    Markdown headings are documentation metadata rather than code definitions
-    and remain in the FTS content tier so code definitions outrank mentions.
-    """
-    if (not targets or not isinstance(language, str) or language == "markdown"
-            or not isinstance(symbols_json, str) or not symbols_json
-            or symbols_json == "[]"):
-        return _RANK_CONTENT_ONLY
-    try:
-        symbols = json.loads(symbols_json)
-    except (TypeError, json.JSONDecodeError):
-        return _RANK_CONTENT_ONLY
-    if not isinstance(symbols, list):
-        return _RANK_CONTENT_ONLY
+    """Rank exact definitions, then qualified definitions and indexed references."""
     best = _RANK_CONTENT_ONLY
-    for symbol in symbols:
-        if not isinstance(symbol, dict):
-            continue
-        raw_name = symbol.get("name")
-        if not isinstance(raw_name, str) or not raw_name:
-            continue
-        name = unicodedata.normalize("NFKC", raw_name).casefold()
-        raw_qualified = symbol.get("qualified_name")
-        qualified = (
-            unicodedata.normalize("NFKC", raw_qualified).casefold()
-            if isinstance(raw_qualified, str) and raw_qualified
-            else name
-        )
-        for target in targets:
-            if name == target and qualified == target:
-                return _RANK_EXACT_SYMBOL
-            if qualified == target:
-                if _RANK_EXACT_QUALIFIED_SYMBOL < best:
-                    best = _RANK_EXACT_QUALIFIED_SYMBOL
-            elif name == target or qualified.endswith("." + target):
-                if _RANK_QUALIFIED_SUFFIX_SYMBOL < best:
-                    best = _RANK_QUALIFIED_SUFFIX_SYMBOL
+    if isinstance(language, str) and language != "markdown" and isinstance(symbols_json, str):
+        try:
+            symbols = json.loads(symbols_json)
+        except (TypeError, json.JSONDecodeError):
+            symbols = []
+        if isinstance(symbols, list):
+            for symbol in symbols:
+                if not isinstance(symbol, dict):
+                    continue
+                raw_name = symbol.get("name")
+                if not isinstance(raw_name, str) or not raw_name:
+                    continue
+                name = unicodedata.normalize("NFKC", raw_name).casefold()
+                raw_qualified = symbol.get("qualified_name")
+                qualified = (unicodedata.normalize("NFKC", raw_qualified).casefold()
+                             if isinstance(raw_qualified, str) and raw_qualified else name)
+                for target in targets:
+                    if name == target and qualified == target:
+                        return _RANK_EXACT_SYMBOL
+                    if qualified == target:
+                        best = min(best, _RANK_EXACT_QUALIFIED_SYMBOL)
+                    elif name == target or qualified.endswith("." + target):
+                        best = min(best, _RANK_QUALIFIED_SUFFIX_SYMBOL)
+    if isinstance(references_json, str) and targets:
+        try:
+            references = json.loads(references_json)
+        except (TypeError, json.JSONDecodeError):
+            references = []
+        if isinstance(references, list):
+            for reference in references:
+                if not isinstance(reference, dict):
+                    continue
+                name = reference.get("name")
+                qualified = reference.get("qualified_name")
+                name = unicodedata.normalize("NFKC", name).casefold() if isinstance(name, str) else ""
+                qualified = unicodedata.normalize("NFKC", qualified).casefold() if isinstance(qualified, str) else name
+                if any(name == target or qualified == target or qualified.endswith("." + target)
+                       for target in targets):
+                    return min(best, _RANK_SYMBOL_REFERENCE)
     return best
+
+
+def _path_match_rank(relative_path: object, query: object) -> int:
+    if not isinstance(relative_path, str) or not isinstance(query, str):
+        return 9
+    normalized_path = unicodedata.normalize("NFKC", relative_path).replace("\\", "/").casefold()
+    normalized_query = unicodedata.normalize("NFKC", query).strip().strip("`'\"").replace("\\", "/").casefold()
+    if not normalized_query:
+        return 9
+    if normalized_path == normalized_query:
+        return 0
+    basename = normalized_path.rsplit("/", 1)[-1]
+    if basename == normalized_query:
+        return 1
+    if normalized_path.endswith("/" + normalized_query):
+        return 2
+    # Substring filename matches are too weak to outrank relevant FTS content
+    # (for example, "fare" should not boost a file named fare.py).
+    return 9
+
+
+def _graph_cycles(nodes: dict[str, dict[str, object]], edges: list[dict[str, str]],
+                  *, max_cycles: int = 20) -> list[dict[str, object]]:
+    """Return bounded possible SCC cycles; static name matches are never runtime proof."""
+    allowed = {"depends_on", "calls"}
+    adjacency: dict[str, set[str]] = {node_id: set() for node_id in nodes}
+    reverse: dict[str, set[str]] = {node_id: set() for node_id in nodes}
+    edge_metadata: dict[tuple[str, str], list[dict[str, str]]] = {}
+    for edge in edges:
+        if edge.get("type") not in allowed or edge.get("source") not in nodes or edge.get("target") not in nodes:
+            continue
+        source, target = edge["source"], edge["target"]
+        adjacency[source].add(target)
+        reverse[target].add(source)
+        edge_metadata.setdefault((source, target), []).append(edge)
+    visited: set[str] = set()
+    order: list[str] = []
+    for root in adjacency:
+        if root in visited:
+            continue
+        stack: list[tuple[str, bool]] = [(root, False)]
+        while stack:
+            node, finished = stack.pop()
+            if finished:
+                order.append(node)
+                continue
+            if node in visited:
+                continue
+            visited.add(node)
+            stack.append((node, True))
+            stack.extend((target, False) for target in adjacency[node] if target not in visited)
+    assigned: set[str] = set()
+    cycles: list[dict[str, object]] = []
+    for root in reversed(order):
+        if root in assigned:
+            continue
+        component: set[str] = set()
+        stack = [root]
+        assigned.add(root)
+        while stack:
+            node = stack.pop()
+            component.add(node)
+            for source in reverse[node]:
+                if source not in assigned:
+                    assigned.add(source)
+                    stack.append(source)
+        if len(component) == 1 and root not in adjacency[root]:
+            continue
+        internal = [edge for (source, target), values in edge_metadata.items()
+                    if source in component and target in component for edge in values]
+        has_calls = any(edge.get("type") == "calls" for edge in internal)
+        members = sorted(str(nodes[item].get("relative_path") or nodes[item].get("label") or item)
+                         for item in component)
+        cycles.append({
+            "kind": "possible_static_call_cycle" if has_calls else "dependency_cycle",
+            "confidence": "candidate" if has_calls else "resolved_local_import",
+            "members": members[:50],
+        })
+        if len(cycles) >= max_cycles:
+            break
+    return cycles
 
 
 class DeveloperRepositoryService:
@@ -667,6 +860,7 @@ class DeveloperRepositoryService:
                  (MAX_INDEX_FILES, MAX_FILE_BYTES, MAX_INDEX_BYTES)):
         self.db = database
         self.max_files, self.max_file_bytes, self.max_total_bytes = limits
+        self.last_index_summary: dict[str, object] = {}
 
     def _repository(self, actor_id: str, workspace_id: str, repository_id: str) -> Repository:
         self.db.initialize()
@@ -823,8 +1017,10 @@ class DeveloperRepositoryService:
                 header, raw_path = record.split(b"\t", 1)
                 mode, kind, oid = header.decode("ascii").split(" ")
                 relative = raw_path.decode("utf-8", "strict")
-            except (ValueError, UnicodeDecodeError):
-                continue
+            except (ValueError, UnicodeDecodeError) as exc:
+                # A malformed tree entry means we cannot prove the snapshot is
+                # complete. Keep the prior indexed snapshot intact.
+                raise RepositoryError("repository_index_incomplete") from exc
             try:
                 safe = _safe_relative(relative)
             except RepositoryError:
@@ -838,7 +1034,7 @@ class DeveloperRepositoryService:
             if mode == "120000" or mode == "160000" or kind != "blob":
                 continue
             if not re.fullmatch(r"[0-9a-f]{40,64}", oid):
-                continue
+                raise RepositoryError("repository_index_incomplete")
             previous = existing.get(safe)
             if previous is not None and previous[1] == oid and previous[3] != "unknown":
                 size = previous[2]
@@ -852,10 +1048,10 @@ class DeveloperRepositoryService:
                 continue
             size_text = _git_text(path, "cat-file", "-s", oid, limit=64)
             if not size_text.isdigit():
-                continue
+                raise RepositoryError("repository_index_incomplete")
             size = int(size_text)
             if size > self.max_file_bytes or total + size > self.max_total_bytes:
-                continue
+                raise RepositoryError("repository_index_limit")
             total += size
             raw = _git(path, ["cat-file", "blob", oid], limit=self.max_file_bytes)
             try:
@@ -864,7 +1060,7 @@ class DeveloperRepositoryService:
                 continue
             if not content or "\x00" in content or _contains_secret_material(content):
                 continue
-            symbols, imports, analysis_status = _extract_metadata(language, content)
+            symbols, imports, references, analysis_status = _extract_metadata(language, content)
             result.append({
                 "id": uuid4().hex, "relative_path": safe, "extension": suffix,
                 "git_blob_oid": oid, "reuse": False,
@@ -872,6 +1068,7 @@ class DeveloperRepositoryService:
                 "content_sha256": hashlib.sha256(raw).hexdigest(),
                 "symbols_json": json.dumps(symbols, ensure_ascii=False, separators=(",", ":")),
                 "imports_json": json.dumps(imports, ensure_ascii=False, separators=(",", ":")),
+                "references_json": json.dumps(references, ensure_ascii=False, separators=(",", ":")),
                 "analysis_status": analysis_status,
             })
             if len(result) > self.max_files:
@@ -925,6 +1122,32 @@ class DeveloperRepositoryService:
             ).fetchall()
         existing = {row[1]: (row[0], row[2], row[3], row[4]) for row in previous_rows}
         files = self._read_tree(path, commit, existing)
+        new_oids = {str(item["relative_path"]): str(item["git_blob_oid"]) for item in files}
+        old_oids = {relative: str(value[1]) for relative, value in existing.items()}
+        added_paths = set(new_oids) - set(old_oids)
+        deleted_paths = set(old_oids) - set(new_oids)
+        modified_paths = {path_name for path_name in set(new_oids) & set(old_oids)
+                          if new_oids[path_name] != old_oids[path_name]}
+        old_by_blob: dict[str, list[str]] = {}
+        new_by_blob: dict[str, list[str]] = {}
+        for relative in deleted_paths:
+            old_by_blob.setdefault(old_oids[relative], []).append(relative)
+        for relative in added_paths:
+            new_by_blob.setdefault(new_oids[relative], []).append(relative)
+        renames = [(old_paths[0], new_by_blob[blob][0])
+                   for blob, old_paths in old_by_blob.items()
+                   if len(old_paths) == 1 and len(new_by_blob.get(blob, ())) == 1]
+        renamed_old = {old for old, _ in renames}
+        renamed_new = {new for _, new in renames}
+        summary = {
+            "commit": commit,
+            "added": len(added_paths - renamed_new),
+            "modified": len(modified_paths),
+            "deleted": len(deleted_paths - renamed_old),
+            "renamed": len(renames),
+            "reused_blobs": sum(item.get("reuse") is True for item in files),
+            "indexed_files": len(files),
+        }
         if _repo_head(path)[0] != commit:
             raise RepositoryError("repository_changed_during_index")
         self.db.initialize()
@@ -950,13 +1173,14 @@ class DeveloperRepositoryService:
                                            (commit, item["id"], repository_id, workspace_id))
                     else:
                         connection.execute(
-                            "INSERT INTO developer_files(id,repository_id,workspace_id,commit_sha,relative_path,extension,language,git_blob_oid,content_sha256,size_bytes,content,symbols_json,imports_json,analysis_status) "
-                            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(repository_id,relative_path) DO UPDATE SET "
+                            "INSERT INTO developer_files(id,repository_id,workspace_id,commit_sha,relative_path,extension,language,git_blob_oid,content_sha256,size_bytes,content,symbols_json,imports_json,references_json,analysis_status) "
+                            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(repository_id,relative_path) DO UPDATE SET "
                             "commit_sha=excluded.commit_sha,extension=excluded.extension,language=excluded.language,git_blob_oid=excluded.git_blob_oid," 
-                            "content_sha256=excluded.content_sha256,size_bytes=excluded.size_bytes,content=excluded.content,symbols_json=excluded.symbols_json,imports_json=excluded.imports_json,analysis_status=excluded.analysis_status",
+                            "content_sha256=excluded.content_sha256,size_bytes=excluded.size_bytes,content=excluded.content,symbols_json=excluded.symbols_json,imports_json=excluded.imports_json,references_json=excluded.references_json,analysis_status=excluded.analysis_status",
                             (item["id"], repository_id, workspace_id, commit, item["relative_path"],
                              item["extension"], item["language"], item["git_blob_oid"], item["content_sha256"],
-                             item["size_bytes"], item["content"], item["symbols_json"], item["imports_json"],item["analysis_status"]),
+                             item["size_bytes"], item["content"], item["symbols_json"], item["imports_json"],
+                             item["references_json"], item["analysis_status"]),
                         )
                 connection.execute(
                     "UPDATE developer_repositories SET head_commit=?,branch_name=?,indexed_at=?,index_status='ready' WHERE id=? AND workspace_id=?",
@@ -964,11 +1188,13 @@ class DeveloperRepositoryService:
                 )
                 Database._insert_audit(connection, workspace_id, actor_id,
                     "developer_repository.indexed", "developer_repository", repository_id,
-                    {"commit": commit, "file_count": str(len(files))})
+                    {"commit": commit, "file_count": str(len(files)),
+                     **{key: str(value) for key, value in summary.items() if key != "commit"}})
                 self.db._commit(connection)
             except Exception:
                 self.db._rollback(connection)
                 raise
+        self.last_index_summary = summary
         return self._repository(actor_id, workspace_id, repository_id)
 
     def _ensure_current(self, actor_id: str, workspace_id: str, repo: Repository) -> Path:
@@ -994,27 +1220,31 @@ class DeveloperRepositoryService:
         symbol_targets = _symbol_query_targets(query)
         with self.db._connection() as connection:
             Database._require_access(connection, actor_id, workspace_id, Permission.READ)
+            connection.create_function(
+                "jarvis_symbol_rank", 3,
+                lambda language, symbols_json, references_json: _symbol_match_rank(
+                    language, symbols_json, references_json, symbol_targets
+                ), deterministic=True,
+            )
+            connection.create_function(
+                "jarvis_path_rank", 1,
+                lambda relative_path: _path_match_rank(relative_path, query), deterministic=True,
+            )
             if symbol_targets:
-                connection.create_function(
-                    "jarvis_symbol_rank",
-                    2,
-                    lambda language, symbols_json: _symbol_match_rank(
-                        language, symbols_json, symbol_targets
-                    ),
-                    deterministic=True,
-                )
                 order_by = (
-                    "jarvis_symbol_rank(f.language, f.symbols_json) ASC, "
+                    "jarvis_symbol_rank(f.language, f.symbols_json, f.references_json) ASC, "
+                    "jarvis_path_rank(f.relative_path) ASC, "
                     "bm25(developer_file_search,0.0,0.0,0.0,0.0,1.0,0.0,1.0) ASC, "
                     "f.relative_path ASC, f.id ASC"
                 )
             else:
                 order_by = (
+                    "jarvis_path_rank(f.relative_path) ASC, "
                     "bm25(developer_file_search,0.0,0.0,0.0,0.0,1.0,0.0,1.0) ASC, "
                     "f.relative_path ASC, f.id ASC"
                 )
             rows = connection.execute(
-                "SELECT f.id,f.relative_path,f.language,f.extension,f.commit_sha,f.content_sha256,f.size_bytes,f.symbols_json,f.imports_json,f.analysis_status "
+                "SELECT f.id,f.relative_path,f.language,f.extension,f.commit_sha,f.content_sha256,f.size_bytes,f.symbols_json,f.imports_json,f.references_json,f.analysis_status "
                 "FROM developer_file_search s "
                 "JOIN developer_files f ON f.id=s.file_id AND f.workspace_id=s.workspace_id AND f.repository_id=s.repository_id AND f.commit_sha=s.commit_sha "
                 "JOIN developer_repositories r ON r.id=f.repository_id AND r.workspace_id=f.workspace_id "
@@ -1026,7 +1256,7 @@ class DeveloperRepositoryService:
         return [{"id": row[0], "relative_path": row[1], "language": row[2], "extension": row[3],
                  "commit_sha": row[4], "content_sha256": row[5], "size_bytes": row[6],
                  "symbols": json.loads(row[7]), "imports": json.loads(row[8]),
-                 "analysis_status": row[9]} for row in rows]
+                 "references": json.loads(row[9]), "analysis_status": row[10]} for row in rows]
 
     def source(self, actor_id: str, workspace_id: str, repository_id: str,
                file_id: str, *, start_line: int = 1, line_count: int = 160) -> dict[str, object]:
@@ -1037,7 +1267,7 @@ class DeveloperRepositoryService:
         with self.db._connection() as connection:
             Database._require_access(connection, actor_id, workspace_id, Permission.READ)
             row = connection.execute(
-                "SELECT f.id,f.relative_path,f.language,f.commit_sha,f.content_sha256,f.size_bytes,f.content,f.symbols_json,f.imports_json,f.analysis_status "
+                "SELECT f.id,f.relative_path,f.language,f.commit_sha,f.content_sha256,f.size_bytes,f.content,f.symbols_json,f.imports_json,f.references_json,f.analysis_status "
                 "FROM developer_files f JOIN developer_repositories r ON r.id=f.repository_id AND r.workspace_id=f.workspace_id "
                 "JOIN approved_roots a ON a.id=r.approved_root_id "
                 "WHERE f.id=? AND f.repository_id=? AND f.workspace_id=? AND f.commit_sha=? AND r.revoked_at IS NULL AND a.revoked_at IS NULL",
@@ -1053,7 +1283,7 @@ class DeveloperRepositoryService:
                 "start_line": start, "end_line": finish,
                 "content": "\n".join(all_lines[start - 1:finish]),
                 "symbols": json.loads(row[7]), "imports": json.loads(row[8]),
-                "analysis_status": row[9]}
+                "references": json.loads(row[9]), "analysis_status": row[10]}
 
     @staticmethod
     def _resolve_import_path(importer: str, module: str, language: str, paths: set[str]) -> str | None:
@@ -1098,7 +1328,7 @@ class DeveloperRepositoryService:
         with self.db._connection() as connection:
             Database._require_access(connection, actor_id, workspace_id, Permission.READ)
             rows = connection.execute(
-                "SELECT id,relative_path,language,commit_sha,symbols_json,imports_json,analysis_status "
+                "SELECT id,relative_path,language,commit_sha,symbols_json,imports_json,references_json,analysis_status "
                 "FROM developer_files WHERE workspace_id=? AND repository_id=? AND commit_sha=? "
                 "ORDER BY relative_path LIMIT ?",
                 (workspace_id, repository_id, repo.head_commit, MAX_GRAPH_FILES + 1),
@@ -1128,7 +1358,7 @@ class DeveloperRepositoryService:
         repository_node = "repo:" + repo.id
         add_node(repository_node, "repository", repo.name, commit_sha=repo.head_commit)
         file_node_ids: dict[str, str] = {}
-        file_data: list[tuple[sqlite3.Row, list[dict[str, object]], list[dict[str, object]]]] = []
+        file_data: list[tuple[sqlite3.Row, list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]] = []
         for row in rows:
             path = row[1]
             parts = PurePosixPath(path).parts
@@ -1143,7 +1373,7 @@ class DeveloperRepositoryService:
                 parent_id = directory_id
             file_id = f"file:{row[0]}"
             if not add_node(file_id, "file", PurePosixPath(path).name, relative_path=path,
-                            file_id=row[0], language=row[2], analysis_status=row[6], commit_sha=row[3]):
+                            file_id=row[0], language=row[2], analysis_status=row[7], commit_sha=row[3]):
                 truncated = True
                 continue
             add_edge(parent_id, file_id, "contains")
@@ -1151,13 +1381,16 @@ class DeveloperRepositoryService:
             try:
                 symbols = json.loads(row[4])
                 imports = json.loads(row[5])
+                references = json.loads(row[6])
             except (TypeError, json.JSONDecodeError):
-                symbols, imports = [], []
+                symbols, imports, references = [], [], []
             file_data.append((row, symbols if isinstance(symbols, list) else [],
-                              imports if isinstance(imports, list) else []))
+                              imports if isinstance(imports, list) else [],
+                              references if isinstance(references, list) else []))
         module_nodes: dict[str, str] = {}
         reference_edges: list[tuple[str, str]] = []
-        for row, symbols, imports in file_data:
+        symbol_nodes: dict[str, list[tuple[str, str, str]]] = {}
+        for row, symbols, _, _ in file_data:
             source_id = file_node_ids[row[1]]
             for index, symbol in enumerate(symbols[:50]):
                 if not isinstance(symbol, dict) or not isinstance(symbol.get("name"), str):
@@ -1169,9 +1402,15 @@ class DeveloperRepositoryService:
                             start_line=int(symbol.get("start_line", 1)),
                             end_line=int(symbol.get("end_line", symbol.get("start_line", 1))),
                             confidence=symbol.get("confidence", "ast"),
-                            analysis_status=row[6]):
+                            analysis_status=row[7]):
                     add_edge(source_id, symbol_id, "defines",
                              str(symbol.get("confidence", "ast")))
+                    name = str(symbol["name"]).casefold()
+                    qualified = str(symbol.get("qualified_name", symbol["name"])).casefold()
+                    symbol_nodes.setdefault(name, []).append((symbol_id, qualified, str(symbol.get("kind", ""))))
+                    symbol_nodes.setdefault(qualified, []).append((symbol_id, qualified, str(symbol.get("kind", ""))))
+        for row, _, imports, references in file_data:
+            source_id = file_node_ids[row[1]]
             for item in imports[:100]:
                 if not isinstance(item, dict) or not isinstance(item.get("module"), str):
                     continue
@@ -1194,10 +1433,45 @@ class DeveloperRepositoryService:
                     reference_edges.append((source_id, file_node_ids[target]))
         for source, target in reference_edges:
             add_edge(source, target, "references", "resolved_local_reference")
+            add_edge(source, target, "depends_on", "resolved_local_import")
+        call_edges: list[tuple[str, str, str, str]] = []
+        dependency_edges: list[tuple[str, str]] = []
+        for row, _, _, references in file_data:
+            source_id = file_node_ids.get(row[1])
+            if not source_id:
+                continue
+            for reference in references[:300]:
+                if not isinstance(reference, dict) or not isinstance(reference.get("name"), str):
+                    continue
+                name = str(reference["name"]).casefold()
+                qualified = reference.get("qualified_name")
+                candidates = symbol_nodes.get(str(qualified).casefold(), []) if isinstance(qualified, str) else []
+                if not candidates:
+                    candidates = symbol_nodes.get(name, [])
+                unique = {item[0]: item for item in candidates}
+                if len(unique) != 1:
+                    continue
+                target_symbol_id = next(iter(unique))
+                confidence = str(reference.get("confidence", "unknown"))
+                if reference.get("kind") == "call":
+                    scope = reference.get("scope")
+                    caller_candidates = symbol_nodes.get(str(scope).casefold(), []) if isinstance(scope, str) else []
+                    caller_ids = {item[0] for item in caller_candidates}
+                    if len(caller_ids) == 1:
+                        call_edges.append((next(iter(caller_ids)), target_symbol_id, "calls", confidence))
+                    else:
+                        call_edges.append((source_id, target_symbol_id, "call_candidate",
+                                           confidence + "_scope_unknown"))
+                else:
+                    dependency_edges.append((source_id, target_symbol_id))
+        for source, target in dependency_edges:
+            add_edge(source, target, "symbol_reference", "unique_name_candidate")
+        for source, target, relation, confidence in call_edges:
+            add_edge(source, target, relation, confidence)
         self._recheck_snapshot(actor_id, workspace_id, repo)
         return {"workspace_id": workspace_id, "repository_id": repository_id,
                 "commit_sha": repo.head_commit, "nodes": list(nodes.values()),
-                "edges": edges, "truncated": truncated}
+                "edges": edges, "cycles": _graph_cycles(nodes, edges), "truncated": truncated}
 
     def commits(self, actor_id: str, workspace_id: str, repository_id: str,
                 *, limit: int = 20) -> list[dict[str, str]]:

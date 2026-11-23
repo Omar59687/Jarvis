@@ -20,7 +20,7 @@ from typing import Iterator, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 REQUIRED_BACKUP_COLUMNS = {
     "workspaces": {"id", "name", "kind", "created_at"},
     "workspace_permissions": {
@@ -953,6 +953,14 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
             )""",
             "CREATE INDEX persistent_conversations_scope_expiry ON persistent_conversations(actor_id,workspace_id,expires_at,updated_at DESC,id)",
             "CREATE INDEX persistent_conversation_turns_scope_order ON persistent_conversation_turns(actor_id,workspace_id,expires_at,created_at DESC,id)",
+        ),
+    ),
+    Migration(
+        version=13,
+        statements=(
+            "ALTER TABLE developer_files ADD COLUMN references_json TEXT NOT NULL DEFAULT '[]'",
+            "UPDATE developer_files SET analysis_status='unknown'",
+            "UPDATE developer_repositories SET index_status='stale' WHERE head_commit IS NOT NULL",
         ),
     ),
 )
@@ -2117,6 +2125,10 @@ class Database:
                     columns = {row[1] for row in source.execute("PRAGMA table_info(developer_files)").fetchall()}
                     if "analysis_status" not in columns:
                         raise sqlite3.DatabaseError("backup is missing developer analysis status")
+                if source_version >= 13:
+                    columns = {row[1] for row in source.execute("PRAGMA table_info(developer_files)").fetchall()}
+                    if "references_json" not in columns:
+                        raise sqlite3.DatabaseError("backup is missing developer reference metadata")
                 if source_version >= 9:
                     orchestration_tables = {
                         "orchestration_tasks": {"id", "workspace_id", "principal_id", "repository_id", "goal", "state", "execution_mode", "current_plan_revision", "approved_plan_revision"},

@@ -54,7 +54,12 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         repo = service.index_confirmed(args.actor_id, args.workspace_id, args.repository_id,
                                        preview["current_commit"] or "")
+        summary = service.last_index_summary
         print(f"Indexed {repo.name} at commit {repo.head_commit}; status={repo.index_status}.")
+        print("Snapshot delta: " + ", ".join(
+            f"{key}={summary.get(key, 0)}"
+            for key in ("added", "modified", "deleted", "renamed", "reused_blobs", "indexed_files")
+        ) + ".")
         return 0
     except (AccessDenied, RepositoryError, ValueError):
         print("Repository operation was denied or unavailable.", file=sys.stderr)
