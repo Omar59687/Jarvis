@@ -164,12 +164,32 @@ def _path_has_link_component(path: Path, stop: Path) -> bool:
     try:
         relative = path.relative_to(stop)
     except ValueError:
-        return True
-    current = stop
-    components = [current]
-    for part in relative.parts:
-        current = current / part
-        components.append(current)
+        # On Windows, tempfile paths can use an 8.3 short-name alias while an
+        # approved root is stored with its long name. Resolve both only to
+        # establish containment, then inspect the original spelling's full
+        # component chain so resolving cannot hide a junction or symlink.
+        if os.name != "nt":
+            return True
+        try:
+            resolved_path = path.resolve(strict=True)
+            resolved_stop = stop.resolve(strict=True)
+            relative = resolved_path.relative_to(resolved_stop)
+            alias_stop = path.parents[len(relative.parts) - 1] if relative.parts else path
+            if not os.path.samefile(alias_stop, stop):
+                return True
+        except (OSError, RuntimeError, ValueError, IndexError):
+            return True
+        current = Path(path.anchor)
+        components = [current]
+        for part in path.parts[1:]:
+            current = current / part
+            components.append(current)
+    else:
+        current = stop
+        components = [current]
+        for part in relative.parts:
+            current = current / part
+            components.append(current)
     for component in components:
         try:
             info = component.lstat()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import json
 from pathlib import Path
@@ -122,6 +123,29 @@ def compute_total(values):
             self.skipTest(f"directory symlink unavailable: {exc}")
         with self.assertRaises(RepositoryError):
             self.service.register("alice", "ws-dev", self.root_record.id, link, confirmed=True)
+
+    def test_windows_short_name_alias_inside_approved_root_is_accepted(self):
+        if os.name != "nt":
+            self.skipTest("Windows 8.3 path alias behavior")
+        from ctypes import wintypes
+
+        get_short_path = ctypes.WinDLL("kernel32", use_last_error=True).GetShortPathNameW
+        get_short_path.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
+        get_short_path.restype = wintypes.DWORD
+        required = get_short_path(str(self.repo), None, 0)
+        if not required:
+            self.skipTest("Windows short path names are unavailable")
+        buffer = ctypes.create_unicode_buffer(required)
+        if not get_short_path(str(self.repo), buffer, required):
+            self.skipTest("Windows short path names are unavailable")
+        short_repo = Path(buffer.value)
+        if os.path.normcase(str(short_repo)) == os.path.normcase(str(self.repo)):
+            self.skipTest("filesystem returned no distinct short-name alias")
+        repository = self.service.register(
+            "alice", "ws-dev", self.root_record.id, short_repo, confirmed=True
+        )
+        self.assertEqual(repository.relative_path, "Atlas")
+        self.assertEqual(self.service.index("alice", "ws-dev", repository.id).index_status, "ready")
 
     def test_linked_worktrees_are_rejected_and_detached_head_is_supported(self):
         linked = self.root / "linked-worktree"

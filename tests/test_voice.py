@@ -257,7 +257,7 @@ class LocalTTSAdaptersTests(unittest.TestCase):
             self.assertEqual(res_en.backend, "chatterbox-multilingual")
             self.assertEqual(res_en.audio_bytes[:4], b"RIFF")
             self.assertEqual(calls[0][1]["language_id"], "en")
-            self.assertEqual(calls[0][1]["audio_prompt_path"], str(voice_ref.resolve()))
+            self.assertTrue(Path(calls[0][1]["audio_prompt_path"]).samefile(voice_ref))
 
             res_ar = adapter.synthesize("على الرحب والسعة.", language="ar")
             self.assertEqual(res_ar.language, "ar")
@@ -318,7 +318,8 @@ class LocalTTSAdaptersTests(unittest.TestCase):
 
             res_ar = adapter.synthesize("أهلاً بك.", language="ar")
             self.assertEqual(res_ar.language, "ar")
-            self.assertIn(str(ar_onnx.resolve()), invocations[1]["argv"])
+            model_arg = invocations[1]["argv"].index("--model") + 1
+            self.assertTrue(Path(invocations[1]["argv"][model_arg]).samefile(ar_onnx))
 
             # Timeout and non-zero exit handling
             def timeout_runner(*args, **kwargs):
