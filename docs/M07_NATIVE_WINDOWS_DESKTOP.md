@@ -16,7 +16,7 @@ Official references consulted **2026-11-23**: Microsoft [`RegisterHotKey`](https
 
 ## Implemented behavior
 
-- **Tray and dashboard:** a Windows notification-area icon opens `http://127.0.0.1:<port>/` in the default browser. The separate voice action opens the existing dashboard at `#voice-panel`; the companion does not handle microphone access or audio.
+- **Tray and dashboard:** a Windows notification-area icon opens `http://127.0.0.1:<port>/` in the default browser. The separate voice action (`Open voice controls`) opens `http://127.0.0.1:<port>/#voice-panel`; the companion does not handle microphone access or audio. On current `main`, `prototypes/m03_b1/index.html` defines `<section id="voice-panel">` inline beneath the Knowledge Galaxy stage with no JavaScript `location.hash` / `hashchange` routing in `prototypes/m03_b1/app.js` (relying on native browser fragment scrolling, with voice controls gated on browser pairing and configured local STT/TTS). Older pre-M03-C1 `m03-b2` dashboard instances do not serve `#voice-panel` even though `/health` returns `{"status":"ok","service":"m03-b2"}`.
 - **Authentication:** no cookie, pairing secret, CSRF token, principal ID, or workspace data is read by the companion or put in a URL. The browser uses its normal same-origin session. Pairing remains the existing trusted-terminal workflow. A different browser profile may require pairing again.
 - **Backend status:** a bounded, redirect-refusing GET to the fixed numeric-loopback `/health` endpoint checks for the expected M03-B2 liveness response. It sends no credentials and reads at most 2,049 bytes. Health status is liveness only, not proof of backend identity or session authorization.
 - **Lifecycle:** launching the tray app is a user action; there is no startup registration or auto-start. Exit removes only this process's tray icon, hotkey registration, timer, window, and named mutex. It never starts, restarts, signals, or terminates the backend or any unrelated process. The existing backend remains managed using its documented operator command because it has no authenticated lifecycle API.
@@ -43,4 +43,41 @@ Packaging is **Open**. A future signed installer must package the Python applica
 - Windows notifications may be suppressed or transformed by OS policy and Focus Assist. Generic content limits reduce exposure but do not control OS notification history.
 - This tray helper is not a backend supervisor, service installer, automation agent, or microphone monitor. It creates no new authorization and does not widen M04/M06 APIs or permissions.
 
-Focused synthetic coverage is in `tests/test_m07_desktop.py`. Full Python/Node regression evidence is recorded after running the suite for the implementation commit; a target-user Windows UI smoke check remains a manual acceptance step.
+## Windows manual acceptance and automated verification
+
+### Verified manual Windows results (2026-11-23, Zen browser, `http://127.0.0.1:8765`)
+
+| Check | Result | Notes |
+|---|---|---|
+| System tray icon | **PASS** | Tray icon rendered in Windows notification area |
+| Backend connectivity | **PASS** | Companion detected running loopback `m03-b2` `/health` endpoint |
+| Dashboard opens in Zen | **PASS** | Default browser (Zen) opened the loopback dashboard |
+| Tray → Open Dashboard | **PASS** | Menu action opened `http://127.0.0.1:8765/` |
+| Global shortcut `CTRL+ALT+J` | **PASS** | Shortcut opened the dashboard |
+| Tray → Voice Control URL launch | **OBSERVED** | Opened `http://127.0.0.1:8765/#voice-panel` |
+| Voice interface rendering | **NOT VERIFIED** | Opened page displayed Knowledge Galaxy; see `#voice-panel` findings below |
+| Remaining Windows edge cases | **NOT TESTED** | Single-instance launch, clean exit/shutdown cleanup, shortcut conflict handling, opt-in notifications/transitions, and Explorer restart recovery remain untested on Windows |
+
+### `#voice-panel` investigation
+
+- **Current branch (`feature/m07-native-windows-desktop-assistant` / `main`):** `prototypes/m03_b1/index.html` (46,424 bytes in Git) defines `<section id="voice-panel" class="voice-panel">` inline inside `<main id="galaxy">` directly below `<div class="galaxy-stage">` (Knowledge Galaxy), with the push-to-talk `#voice-ptt` button in `#command-dock`. `prototypes/m03_b1/app.js` contains no `location.hash` or `hashchange` handler, so `#voice-panel` is not a dedicated view and relies solely on native browser fragment scrolling; voice controls also remain disabled until the browser is paired and local STT/TTS backends are configured.
+- **Live backend tested on `http://127.0.0.1:8765`:** Read-only inspection returned `200 OK` on `/health` (`{"status":"ok","service":"m03-b2","data_connected":false}`), a 22,539-byte pre-M03-C1 dashboard HTML containing `Knowledge galaxy` but **no** `id="voice-panel"` and **no** `voice-ptt`, and `404 Not Found` on `/voice-ui-state.mjs`. Because `/health` reports liveness only (`service: "m03-b2"`), the companion cannot detect whether the running backend includes the M03-C1 voice panel. Voice rendering and voice operation remain **NOT VERIFIED**.
+
+### Automated test and CI results (2026-11-23)
+
+- Focused M07 tests (`python -m unittest tests/test_m07_desktop.py -v`): **13 passed** (Windows, Python 3.14.10).
+- Full Python regression suite (`python -m unittest discover -s tests`): **402 run, OK (392 passed, 10 skipped)** (Windows, Python 3.14.10).
+- Python syntax compilation (`python -m compileall -q jarvis_core prototypes tests eval`): **PASS**.
+- Node regression suite (`node --test tests/*.test.mjs`): **24 passed** (Node v26.13.1).
+- Dashboard JavaScript syntax (`node --check prototypes/m03_b1/app.js`): **PASS**.
+- GitHub Actions CI on implementation commit `432ed0532725c64be28f7d115161c781903db6e6`: `ubuntu-latest Python 3.12` **PASS**, `windows-latest Python 3.12` **PASS**.
+
+### Release-blocking vs. optional items
+
+- **Release-blocking before merge:**
+  - Manually verify remaining Windows lifecycle and edge cases: single-instance launch behavior (second launch opens dashboard and exits cleanly), clean exit (`Exit Jarvis companion`) removing tray icon/hotkey without touching the backend, global shortcut conflict fallback, and opt-in notification toggle/transition balloons.
+  - Verify `Tray → Open voice controls` (`/#voice-panel`) against a current `main` / M03-C1+ backend build (when the operator is ready to run it), or explicitly scope/revise the voice menu action with approval.
+- **Optional post-M07 improvements (non-blocking):**
+  - Add explicit `#voice-panel` hash-scroll/focus/highlight handling in `prototypes/m03_b1/app.js`.
+  - Handle Windows `TaskbarCreated` messages for tray recovery after Explorer restarts.
+  - Deduplicate double-click tray activation (`WM_LBUTTONUP` + `WM_LBUTTONDBLCLK`), remove unused Win32 constants (`MF_CHECKED`, `ERROR_HOTKEY_ALREADY_REGISTERED`), add a branded Jarvis tray icon, and optionally expose backend capability metadata or packaging/signing later.
