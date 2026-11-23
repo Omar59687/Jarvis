@@ -86,3 +86,7 @@ Hosted Git, push/PR, cloud inference, external skills/connectors, multi-agent co
 ## Release evidence template
 
 For each gate record: commit SHA; OS edition/build; Python/Git/runtime versions; configured provider and inference location; test commands/results; denied network destinations; process-tree cancellation results; filesystem escape probes; permission/revocation results; diff/test artifact hashes; dependency licenses; known failures; reviewer and date. Do not place source excerpts, model transcripts, credentials or personal repository data in public CI artifacts.
+
+## M06-B status
+
+M06-B provides only a synthetic, fail-closed Windows Sandbox capability assessment. It does not satisfy Gate 0's platform validation or establish a process/network/filesystem boundary. Command execution and verification remain unavailable. Use the threat model, mechanism comparison, and explicit future acceptance criteria in [M06-B Windows Execution Isolation](M06B_WINDOWS_EXECUTION_ISOLATION.md); all Windows security evidence must come from independent testing on the actual supported target edition.

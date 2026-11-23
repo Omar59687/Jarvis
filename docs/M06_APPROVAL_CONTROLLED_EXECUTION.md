@@ -22,3 +22,9 @@ These limits preserve the P4 Windows isolation gate in [P4 security and acceptan
 ## Review evidence
 
 Focused coverage is in `tests/test_approved_changes.py` and `tests/test_approved_changes_http.py`. It covers approval-time permission revocation and refuses a task workspace that would overlap the registered checkout. The Windows symlink-creation case may be skipped when the test account lacks the OS privilege; this skip does not establish that link-race protection passed. The earlier full-suite evidence predates the security follow-up; rerun the full Python and Node suites before merge. A successful symlink/junction race-resistance test and OS-level containment are not claimed.
+
+## M06-B — Windows isolation foundation
+
+**Implemented:** [M06-B Windows Execution Isolation](M06B_WINDOWS_EXECUTION_ISOLATION.md) adds a non-executing assessment of caller-reported Windows Sandbox prerequisites, required future control evidence, and proposed resource ceilings. The assessment cannot probe Windows features, launch a guest, execute commands, or grant capabilities. It always returns `execution_enabled=False`; M06-A remains unchanged.
+
+**Open security gate:** The Sandbox candidate, guest identity, filesystem/network boundary, credentials, process-tree containment, resource enforcement, audit durability, cleanup, and NTFS race resistance have not been independently validated on a supported Windows host. No command/verification execution, promotion, or deployment is enabled. Future execution is **NO-GO** until the separately specified acceptance gate passes and is explicitly approved.

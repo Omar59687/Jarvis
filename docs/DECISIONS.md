@@ -139,3 +139,12 @@ Update this log when a proposal is accepted, revised, or rejected. Record the de
 **Security limit:** The private task workspace is application-level path scoping, not OS-enforced isolation. This workflow does not claim sandboxing against other same-user processes or Windows reparse-point races. Verification and promotion remain disabled until the Windows isolation gate in [P4 security and acceptance plan](P4_SECURITY_AND_ACCEPTANCE_PLAN.md) is independently satisfied. See [M06 implementation status](M06_APPROVAL_CONTROLLED_EXECUTION.md).
 
 **Evidence:** `tests/test_approved_changes.py` and `tests/test_approved_changes_http.py`; full regression evidence is recorded with the implementation commit.
+### M06-B Windows Execution Isolation — 2026-11-23
+
+**Confirmed:** Evaluate a bounded Windows isolation foundation for possible future verification commands without enabling execution in this milestone.
+
+**Proposed architecture:** Use Windows Sandbox as a disposable evaluation candidate on a supported, fully patched edition, with every host-integration channel explicitly disabled and all inputs/outputs treated as hostile. Fall back to a dedicated Hyper-V VM if requirements cannot be independently demonstrated. Restricted tokens/AppContainer and Job Objects are defense-in-depth only; Windows containers and WSL2 are not selected as the hostile-code boundary.
+
+**Implemented:** A pure, non-executing assessment API checks supplied host, authorization, control, and resource-limit facts. Unknown or missing evidence blocks; even complete reported evidence cannot enable execution. No new grant, OS feature, runtime, dependency, shell, or command path is added.
+
+**Open:** Actual target Windows edition/build, feature detection, VM configuration, network/filesystem/credential isolation, child-process containment, quota enforcement, audit integrity, cleanup, and reparse-point race resistance require independent Windows validation. Future command execution is **NO-GO** until those tests pass and a separate approval gate is granted. See [M06-B Windows Execution Isolation](M06B_WINDOWS_EXECUTION_ISOLATION.md).
