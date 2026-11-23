@@ -148,3 +148,13 @@ Update this log when a proposal is accepted, revised, or rejected. Record the de
 **Implemented:** A pure, non-executing assessment API checks supplied host, authorization, control, and resource-limit facts. Unknown or missing evidence blocks; even complete reported evidence cannot enable execution. No new grant, OS feature, runtime, dependency, shell, or command path is added.
 
 **Open:** Actual target Windows edition/build, feature detection, VM configuration, network/filesystem/credential isolation, child-process containment, quota enforcement, audit integrity, cleanup, and reparse-point race resistance require independent Windows validation. Future command execution is **NO-GO** until those tests pass and a separate approval gate is granted. See [M06-B Windows Execution Isolation](M06B_WINDOWS_EXECUTION_ISOLATION.md).
+
+### M07 Native Windows Desktop Assistant — 2026-11-23
+
+**Confirmed:** Build a lightweight local-first Windows tray companion that opens the authenticated Jarvis dashboard, reports backend connectivity, provides an optional global shortcut, supports opt-in generic notifications, and links to existing English push-to-talk controls. No automatic startup, continuous listening, or new execution permission is allowed.
+
+**Decision:** Use Python standard library and narrow Win32 tray, named-mutex, and `RegisterHotKey` APIs; keep the existing dashboard in the default browser to preserve its normal same-origin session. Do not adopt Tauri or PySide6 for this small shell. The companion owns only its own UI resources and never starts/stops the backend because the existing service has no authenticated lifecycle API.
+
+**Implemented on `feature/m07-native-windows-desktop-assistant`:** Windows tray menu, fixed numeric-loopback health check, browser actions for dashboard/voice panel, one-instance guard, configurable registered shortcut with conflict fallback, generic backend-transition notifications disabled by default, and cleanup of companion-owned resources. No external package, autostart, credentials, or process runner is added. See [M07 Native Windows Desktop Assistant](M07_NATIVE_WINDOWS_DESKTOP.md).
+
+**Open:** Manual validation on supported Windows versions, actual shortcut conflict behavior, notification policy, tray recovery after Explorer restart, source-vs-packaged Python behavior, and signed installer/upgrade/uninstall strategy.

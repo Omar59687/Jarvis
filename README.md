@@ -30,7 +30,7 @@ Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing,
 | M04 — Integration Platform | Planned |
 | M05 — Reverse Engineering | Planned; authorized targets only |
 | M06 — AI Software Factory | Planned |
-| M07 — Computer and Productivity Automation | Planned |
+| M07 — Native Windows Desktop Assistant | Tray companion foundation implemented on `feature/m07-native-windows-desktop-assistant`; no desktop automation |
 | M08 — Mission Mode, Proactivity and Reliability | Planned |
 
 ## Documentation map
@@ -51,6 +51,7 @@ Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing,
 - [M02-D evaluation](docs/M02D_EVALUATION.md) — synthetic dataset, offline and opt-in local Ollama runners, metrics, and verification.
 - [Q01 model quality checkpoint](docs/M02_Q01_MODEL_QUALITY.md) — historical-memory diagnostic, Ollama timing metadata, and opt-in sequential local comparison.
 - [M03-A desktop foundation](docs/M03A_DESKTOP_FOUNDATION.md) — stack comparison, local-service trust boundary, Windows checks, and prototype acceptance criteria.
+- [M07 Windows desktop companion](docs/M07_NATIVE_WINDOWS_DESKTOP.md) — native tray/shortcut design, run instructions, security boundary, packaging status, and manual Windows acceptance limits.
 - [M03-A mock prototype](prototypes/m03_a/README.md) — browser-only synthetic galaxy preview and harmless loopback health check.
 - [M03-B1 local chat alpha](docs/M03B1_LOCAL_CHAT.md) — original single-provider baseline and its pairing/security boundary.
 - [M03-B2 local provider abstraction](docs/M03B2_LOCAL_PROVIDER.md) — provider configuration, Bionic/Ollama adapters, security boundary, Windows startup, tests, and limitations.
