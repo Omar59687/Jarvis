@@ -234,6 +234,16 @@ class ApprovedFileChangeTests(unittest.TestCase):
                          "VALUE = 1\n")
         self.assertFalse((self.repo_path / "coding_tasks").exists())
 
+    def test_task_workspace_canonicalizes_windows_path_representations(self):
+        expected = self.service._task_workspace_path(
+            "ws-m06", self.repository.id, "a" * 32)
+        noncanonical = expected.parent.parent / "unused" / ".." / expected.parent.name / expected.name
+        with patch.object(self.service, "_task_workspace_path", return_value=noncanonical):
+            created = self.service._create_task_workspace(
+                "ws-m06", self.repository.id, "a" * 32)
+        self.assertEqual(created, expected)
+        self.assertTrue(created.is_dir())
+
     def test_task_workspace_failure_diagnostic_omits_filesystem_paths(self):
         with patch.object(Path, "mkdir",
                           side_effect=PermissionError(5, "denied", str(self.base))):

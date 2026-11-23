@@ -505,7 +505,8 @@ class ApprovedFileChangeService:
     def _task_workspace_path(self, workspace: str, repository_id: str, proposal_id: str) -> Path:
         workspace_key = hashlib.sha256(workspace.encode("utf-8")).hexdigest()
         repository_key = hashlib.sha256(repository_id.encode("utf-8")).hexdigest()
-        return self.db.path.parent / "coding_tasks" / workspace_key / repository_key / proposal_id
+        return (self.db.path.parent.resolve(strict=True) / "coding_tasks" / workspace_key
+                / repository_key / proposal_id)
 
     @staticmethod
     def _require_disjoint_task_workspace(task_root: Path, repository_root: Path) -> None:
@@ -526,7 +527,8 @@ class ApprovedFileChangeService:
         stage = "resolve_database_directory"
         try:
             base = self.db.path.parent.resolve(strict=True)
-            path = self._task_workspace_path(workspace, repository_id, proposal_id)
+            path = self._task_workspace_path(workspace, repository_id, proposal_id).resolve(
+                strict=False)
             stage = "validate_destination_scope"
             relative = path.relative_to(base)
             current = base
