@@ -3565,7 +3565,7 @@ conversationMemoryRefresh.addEventListener("click", loadConversationMemory);
 conversationMemoryEnabled.addEventListener("change", updateConversationMemoryControls);
 conversationMemoryDetailClose.addEventListener("click", () => { conversationMemoryDetail.hidden = true; });
 developerRepoSelect.addEventListener("change", selectDeveloperRepository);
-fileChangeModelForm.addEventListener("submit", submitModelFileChange);
+fileChangeModelForm?.addEventListener("submit", submitModelFileChange);
 fileChangeForm.addEventListener("submit", submitFileChange);
 fileChangeApprove.addEventListener("click", () => decideFileChange("approve"));
 fileChangeReject.addEventListener("click", () => decideFileChange("reject"));

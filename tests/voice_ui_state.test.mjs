@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   VOICE_STATES,
   applyVoiceStatus,
@@ -171,4 +172,37 @@ test("pending microphone permission can be cancelled and invalidates the acquisi
   const cancelled = interruptVoiceState(state);
   assert.equal(cancelled.status, "stopped");
   assert.equal(cancelled.generation, state.generation + 1);
+});
+test("dashboard markup includes #voice-panel controls and app.js has no unguarded missing-ID listeners", () => {
+  const html = readFileSync(new URL("../prototypes/m03_b1/index.html", import.meta.url), "utf8");
+  const appJs = readFileSync(new URL("../prototypes/m03_b1/app.js", import.meta.url), "utf8");
+
+  const htmlIds = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
+  for (const requiredId of [
+    "voice-panel",
+    "voice-ptt",
+    "voice-state",
+    "voice-posture",
+    "voice-play",
+    "voice-stop",
+    "voice-mute",
+    "voice-transcript-toggle",
+  ]) {
+    assert.ok(htmlIds.has(requiredId), `Missing required voice element #${requiredId} in index.html`);
+  }
+
+  // Every const varName = $("#id") bound via top-level unguarded varName.addEventListener(...)
+  // must exist in index.html so app.js cannot crash before pairing/voice initialization.
+  const bindings = new Map();
+  for (const match of appJs.matchAll(/^const\s+([A-Za-z_$][\w$]*)\s*=\s*\$\("#([^"]+)"\);/gm)) {
+    bindings.set(match[1], match[2]);
+  }
+  const missingListeners = [];
+  for (const match of appJs.matchAll(/^([A-Za-z_$][\w$]*)\.addEventListener\(/gm)) {
+    const id = bindings.get(match[1]);
+    if (id && !htmlIds.has(id)) {
+      missingListeners.push(`${match[1]} -> #${id}`);
+    }
+  }
+  assert.deepEqual(missingListeners, []);
 });
