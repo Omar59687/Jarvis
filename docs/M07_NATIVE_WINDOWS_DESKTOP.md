@@ -45,7 +45,7 @@ Packaging is **Open**. A future signed installer must package the Python applica
 
 ## Windows manual acceptance and automated verification
 
-### Verified manual Windows results (2026-11-23, Zen browser, `http://127.0.0.1:8765`)
+### Preserved manual Windows results (2026-11-23, Zen browser, `http://127.0.0.1:8765`)
 
 | Check | Result | Notes |
 |---|---|---|
@@ -54,30 +54,41 @@ Packaging is **Open**. A future signed installer must package the Python applica
 | Dashboard opens in Zen | **PASS** | Default browser (Zen) opened the loopback dashboard |
 | Tray → Open Dashboard | **PASS** | Menu action opened `http://127.0.0.1:8765/` |
 | Global shortcut `CTRL+ALT+J` | **PASS** | Shortcut opened the dashboard |
-| Tray → Voice Control URL launch | **OBSERVED** | Opened `http://127.0.0.1:8765/#voice-panel` |
-| Voice interface rendering | **NOT VERIFIED** | Opened page displayed Knowledge Galaxy; see `#voice-panel` findings below |
-| Remaining Windows edge cases | **NOT TESTED** | Single-instance launch, clean exit/shutdown cleanup, shortcut conflict handling, opt-in notifications/transitions, and Explorer restart recovery remain untested on Windows |
+| Tray → Voice Control URL launch | **OBSERVED** | Opened `http://127.0.0.1:8765/#voice-panel` (the older experimental server running at that time served a pre-M03-C1 build without `#voice-panel`) |
 
-### `#voice-panel` investigation
+### Voice Control (`#voice-panel`) verification against the M07-compatible backend (2026-11-26)
 
-- **Current branch (`feature/m07-native-windows-desktop-assistant` / `main`):** `prototypes/m03_b1/index.html` (46,424 bytes in Git) defines `<section id="voice-panel" class="voice-panel">` inline inside `<main id="galaxy">` directly below `<div class="galaxy-stage">` (Knowledge Galaxy), with the push-to-talk `#voice-ptt` button in `#command-dock`. `prototypes/m03_b1/app.js` contains no `location.hash` or `hashchange` handler, so `#voice-panel` is not a dedicated view and relies solely on native browser fragment scrolling; voice controls also remain disabled until the browser is paired and local STT/TTS backends are configured.
-- **Live backend tested on `http://127.0.0.1:8765`:** Read-only inspection returned `200 OK` on `/health` (`{"status":"ok","service":"m03-b2","data_connected":false}`), a 22,539-byte pre-M03-C1 dashboard HTML containing `Knowledge galaxy` but **no** `id="voice-panel"` and **no** `voice-ptt`, and `404 Not Found` on `/voice-ui-state.mjs`. Because `/health` reports liveness only (`service: "m03-b2"`), the companion cannot detect whether the running backend includes the M03-C1 voice panel. Voice rendering and voice operation remain **NOT VERIFIED**.
+- **Root cause found and fixed:** Testing the current M07-compatible `LocalChatServer` (`prototypes/m03_b1/service.py`) in an isolated headless Chrome instance revealed a pre-existing M06 dashboard boot crash in `prototypes/m03_b1/app.js:3568` (`fileChangeModelForm.addEventListener(...)` threw an uncaught `TypeError` because `#file-change-model-form` is absent from `prototypes/m03_b1/index.html`), which halted script execution before pairing, chat, and voice event listeners or `restoreSession()` ran. Guarding that binding with optional chaining (`fileChangeModelForm?.addEventListener(...)`) and adding a Node DOM-binding regression test resolved the crash.
+- **Verified isolated end-to-end result (ephemeral port, isolated Chrome profile, no user DB/settings touched):**
+  - `backend_is_available(port)` returned `True` against the isolated M07-compatible `LocalChatServer`.
+  - Navigating to `http://127.0.0.1:<port>/#voice-panel` rendered `<section id="voice-panel">` (`display: grid`, `hidden: false`) and natively scrolled it to the top of the viewport (`scrollY: 1197`, `top: 9px`, `height: 90px`, `panelInViewport: true`).
+  - Before pairing, `#pairing-dialog` opened automatically and `#voice-ptt` was disabled (`"Pair browser first"`).
+  - After pairing via `#pair-form` and on a fresh paired navigation to `/#voice-panel`, `#pairing-dialog` remained closed, `#voice-panel` scrolled into view, `#voice-ptt` was enabled (`"Push to talk locally"`), and `#voice-posture` reflected `/api/v1/voice/status` (`STT: faster-whisper · TTS: piper`).
+  - Scope note: live microphone capture and audio playback remain M03-C1 browser/backend responsibilities; the M07 companion never accesses microphone or audio hardware.
 
-### Automated test and CI results (2026-11-23)
+### Automated Windows lifecycle verification (2026-11-26, `tests/test_m07_desktop.py`)
 
-- Focused M07 tests (`python -m unittest tests/test_m07_desktop.py -v`): **13 passed** (Windows, Python 3.14.10).
-- Full Python regression suite (`python -m unittest discover -s tests`): **402 run, OK (392 passed, 10 skipped)** (Windows, Python 3.14.10).
+Exercised against real Windows Win32 APIs (`CreateMutexW`, `RegisterClassExW`, `CreateWindowExW`, `GetMessageW`, `PostQuitMessage`, `DestroyWindow`, `RegisterHotKey`, `UnregisterHotKey`, `SetTimer`, `KillTimer`) with isolated ephemeral backend/resources (`Shell_NotifyIconW` is intercepted in automated tests to inspect marshaled `NOTIFYICONDATAW` payloads and avoid touching live taskbars or failing on headless CI runners without `Shell_TrayWnd`):
+
+| Lifecycle check | Result | Verified behavior |
+|---|---|---|
+| Single-instance behavior | **PASS (automated)** | Real `Local\Jarvis.M07.Desktop` mutex blocks both an in-process second `DesktopCompanion` (`"already_running"`) and a separate child OS process (`main()` opens dashboard URL and exits `0`); mutex is released cleanly on close |
+| Clean shutdown | **PASS (automated)** | Real Win32 message loop exits cleanly via `request_stop()` → `PostQuitMessage(0)` → `close()`, issuing `NIM_DELETE`, destroying `hwnd`, calling `UnregisterClassW` before freeing `WNDPROC`, unregistering the OS hotkey, releasing the mutex, and leaving the isolated `LocalChatServer` running and healthy |
+| Global shortcut conflict handling | **PASS (automated)** | Pre-registered OS hotkey (`ERROR_HOTKEY_ALREADY_REGISTERED` / `1409`) triggers clean fallback (`shortcut_available=False`, `hotkey_registered=False`), tray stays usable, and companion exit leaves the external owner's hotkey intact |
+| Opt-in notifications | **PASS (automated)** | Default-off emits zero `NIF_INFO` payloads on connectivity transitions; explicit opt-in emits exact generic `NOTIFYICONDATAW` payloads (`"Jarvis"` / `"Jarvis is unavailable."` / `"Jarvis is available."`, `NIIF_INFO`). Actual OS banner visibility remains subject to Windows Focus Assist / OS notification settings |
+
+### Automated test suite results (2026-11-26)
+
+- Focused M07 tests (`python -m unittest tests/test_m07_desktop.py -v`): **18 passed** (Windows, Python 3.14.10).
+- Full Python regression suite (`python -m unittest discover -s tests`): recorded in PR #22 and CI for the final commit.
 - Python syntax compilation (`python -m compileall -q jarvis_core prototypes tests eval`): **PASS**.
-- Node regression suite (`node --test tests/*.test.mjs`): **24 passed** (Node v26.13.1).
+- Node regression suite (`node --test tests/*.test.mjs`): **25 passed** (Node v26.13.1).
 - Dashboard JavaScript syntax (`node --check prototypes/m03_b1/app.js`): **PASS**.
-- GitHub Actions CI on implementation commit `432ed0532725c64be28f7d115161c781903db6e6`: `ubuntu-latest Python 3.12` **PASS**, `windows-latest Python 3.12` **PASS**.
 
-### Release-blocking vs. optional items
+### Genuine merge blockers vs. optional improvements
 
-- **Release-blocking before merge:**
-  - Manually verify remaining Windows lifecycle and edge cases: single-instance launch behavior (second launch opens dashboard and exits cleanly), clean exit (`Exit Jarvis companion`) removing tray icon/hotkey without touching the backend, global shortcut conflict fallback, and opt-in notification toggle/transition balloons.
-  - Verify `Tray → Open voice controls` (`/#voice-panel`) against a current `main` / M03-C1+ backend build (when the operator is ready to run it), or explicitly scope/revise the voice menu action with approval.
+- **Genuine merge blockers:** None once GitHub Actions CI (`ubuntu-latest Python 3.12` and `windows-latest Python 3.12`) passes on the final commit and the operator approves merge.
 - **Optional post-M07 improvements (non-blocking):**
-  - Add explicit `#voice-panel` hash-scroll/focus/highlight handling in `prototypes/m03_b1/app.js`.
-  - Handle Windows `TaskbarCreated` messages for tray recovery after Explorer restarts.
-  - Deduplicate double-click tray activation (`WM_LBUTTONUP` + `WM_LBUTTONDBLCLK`), remove unused Win32 constants (`MF_CHECKED`, `ERROR_HOTKEY_ALREADY_REGISTERED`), add a branded Jarvis tray icon, and optionally expose backend capability metadata or packaging/signing later.
+  - Handle Windows `TaskbarCreated` messages for tray icon recovery after Explorer restarts.
+  - Add explicit `#voice-panel` hash-focus/highlight styling in `prototypes/m03_b1/app.js`.
+  - Deduplicate double-click tray activation (`WM_LBUTTONUP` + `WM_LBUTTONDBLCLK`), remove unused Win32 constant `MF_CHECKED`, add a branded Jarvis tray icon, and address future signed installer/packaging separately.

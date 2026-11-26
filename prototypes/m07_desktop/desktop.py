@@ -280,6 +280,8 @@ class WindowsDesktopHost:
         self.backend_status = "Checking backend"
         self.notifications_enabled = False
         self._window_proc = None
+        self._instance = None
+        self._class_registered = False
         self._tick: Callable[[], None] | None = None
         self._class_name = "JarvisM07TrayWindow"
         self._configure_functions()
@@ -287,6 +289,8 @@ class WindowsDesktopHost:
     def _configure_functions(self) -> None:
         self.user32.RegisterClassExW.argtypes = [ctypes.POINTER(self.WNDCLASSEXW)]
         self.user32.RegisterClassExW.restype = self.wintypes.ATOM
+        self.user32.UnregisterClassW.argtypes = [self.wintypes.LPCWSTR, self.wintypes.HINSTANCE]
+        self.user32.UnregisterClassW.restype = self.wintypes.BOOL
         self.user32.CreateWindowExW.argtypes = [
             self.wintypes.DWORD, self.wintypes.LPCWSTR, self.wintypes.LPCWSTR,
             self.wintypes.DWORD, ctypes.c_int, ctypes.c_int, ctypes.c_int,
@@ -391,15 +395,15 @@ class WindowsDesktopHost:
 
         self._window_proc = WNDPROC(window_proc)
         instance = self.kernel32.GetModuleHandleW(None)
+        self._instance = instance
         window_class = self.WNDCLASSEXW()
         window_class.cbSize = ctypes.sizeof(self.WNDCLASSEXW)
         window_class.lpfnWndProc = ctypes.cast(self._window_proc, ctypes.c_void_p).value
         window_class.hInstance = instance
         window_class.lpszClassName = self._class_name
         if not self.user32.RegisterClassExW(ctypes.byref(window_class)):
-            error = ctypes.get_last_error()
-            if error != 1410:
-                raise OSError(error, "could not register the Jarvis tray window")
+            raise OSError(ctypes.get_last_error(), "could not register the Jarvis tray window")
+        self._class_registered = True
         self.hwnd = self.user32.CreateWindowExW(
             0, self._class_name, "Jarvis Desktop Companion", 0,
             0, 0, 0, 0, None, None, instance, None,
@@ -507,6 +511,9 @@ class WindowsDesktopHost:
                 self.icon_added = False
             self.user32.DestroyWindow(self.hwnd)
             self.hwnd = None
+        if self._class_registered:
+            self.user32.UnregisterClassW(self._class_name, self._instance)
+            self._class_registered = False
         if self.mutex:
             self.kernel32.CloseHandle(self.mutex)
             self.mutex = None
