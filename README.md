@@ -30,7 +30,7 @@ Jarvis 2.0 is a modular personal assistant foundation for capturing, organizing,
 | M04 — Integration Platform | Planned |
 | M05 — Reverse Engineering | Planned; authorized targets only |
 | M06 — AI Software Factory | Planned |
-| M07 — Native Windows Desktop Assistant | Tray companion foundation implemented on `feature/m07-native-windows-desktop-assistant`; no desktop automation |
+| M07 — Native Windows Desktop Assistant | Complete on `main` via PR #22; tray companion foundation only, no desktop automation |
 | M08 — Mission Mode, Proactivity and Reliability | Planned |
 
 ## Documentation map

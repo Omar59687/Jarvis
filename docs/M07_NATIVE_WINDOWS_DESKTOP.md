@@ -1,6 +1,6 @@
 # M07 — Native Windows Desktop Assistant
 
-**Status:** Implemented a dependency-free Windows tray companion on this feature branch. It opens the existing loopback dashboard in the user's default browser, reports backend liveness, and never launches or terminates the Jarvis backend.
+**Status:** Complete on `main` via PR #22. This dependency-free Windows tray companion opens the existing loopback dashboard in the user's default browser, reports backend liveness, and never launches or terminates the Jarvis backend.
 
 ## Architecture decision
 

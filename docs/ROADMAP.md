@@ -1,6 +1,6 @@
 # Jarvis 2.0 — Roadmap
 
-**Status:** M01-A through M01-E, M02-A through M02-D, Q01, M03-A, P2-A, M05, and M06 implementation are present in project history. P2 owner acceptance remains open. M06-A provides approval-controlled file changes in private per-proposal task workspaces. M06-B adds only a non-executing Windows isolation assessment and architecture; neither changes registered repositories nor enables command execution, verification, or promotion.
+**Status:** M01-A through M01-E, M02-A through M02-D, Q01, M03-A, P2-A, M05, M06, and M07 implementation are present in project history. P2 owner acceptance remains open. M06-A provides approval-controlled file changes in private per-proposal task workspaces. M06-B adds only a non-executing Windows isolation assessment and architecture; neither changes registered repositories nor enables command execution, verification, or promotion. M07 is complete on `main` via PR #22; it delivers a local tray companion and does not add desktop automation.
 
 ## Phase gates
 
