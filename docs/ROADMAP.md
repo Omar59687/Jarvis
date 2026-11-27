@@ -80,14 +80,27 @@ See [M08-C implementation and acceptance](M08C_IMPLEMENTATION.md).
 
 ## M08-D status
 
-This branch completes M08-D by reconciling safe startup recovery with the
-existing manager/workspace authorization model, atomically committing mission
-simulation progress with task progress and checkpoints, fencing concurrent
-operations and permission revocation, settling ambiguous simulation
-reservations on recovery, and expiring overdue missions. Recovery never
-resumes work. Schema remains v18; no migration or new dependency is needed.
-See [M08-D implementation and acceptance](M08D_IMPLEMENTATION.md). M08-E is
-not started.
+M08-D was accepted at feature commit
+`ecd40afd42588bbb3c26418a31d22933cd1b513a` and squash-merged by PR #27 to
+`main` at `2c22f586c98641569a3bc7460c4eeae227444242`. Its merged tree matches
+the accepted feature tree. It reconciles safe startup recovery with the
+existing manager/workspace authorization model, atomically commits mission
+simulation progress with task progress and checkpoints, fences concurrent
+operations and permission revocation, settles ambiguous simulation
+reservations on recovery, and expires overdue missions. Recovery never
+resumes work. Schema remains v18; no migration or new dependency was needed.
+See [M08-D implementation and acceptance](M08D_IMPLEMENTATION.md).
+
+## M08-E status
+
+M08-E integration acceptance is being completed on
+`feature/m08-e-acceptance` from verified `main` SHA
+`2c22f586c98641569a3bc7460c4eeae227444242`. The permanent development
+directory is `C:\AI Projects\Jarvis`; existing milestone worktrees remain
+registered as recoverable archives. The required Windows Python and Node
+regression suites passed. Expanded live inference acceptance did not return a
+result within the observed run, and browser preview was unavailable, so those
+acceptance gates remain open. See [M08-E implementation and acceptance](M08E_IMPLEMENTATION.md).
 
 ## Current state and next task
 

@@ -320,3 +320,24 @@ promotion path.
 **Status:** Implemented on `feature/m08-d-reliability`; evidence and limitations
 are recorded in [M08-D implementation and acceptance](M08D_IMPLEMENTATION.md).
 M08-E remains unstarted.
+
+### M08-E Integrated Acceptance — 2026-11-27
+
+**Confirmed:** Consolidate development in `C:\AI Projects\Jarvis` and
+complete M08-E integration acceptance on `feature/m08-e-acceptance`, based on
+verified `main` SHA `2c22f586c98641569a3bc7460c4eeae227444242`. Preserve the
+experimental branch and all milestone worktrees. Keep the existing simulation,
+approval, authorization, privacy, and local-only boundaries.
+
+**Decision:** M08-E is an acceptance and integration milestone; no new
+runtime, dependency, service, execution authority, or database migration is
+needed for the reviewed implementation. Use isolated tests, document only
+observed results, and do not mark unavailable live model or browser checks as
+passed. Existing authenticated HTTP and frontend state tests are supporting
+evidence, not substitutes for an interactive browser run.
+
+**Status:** Windows Python and Node regression suites passed. The expanded
+five-task live inference run did not produce a completed result before the
+acceptance client was interrupted; browser preview tools reported unavailable.
+M08-E and final M08 acceptance remain **Open** pending those gates. See
+[M08-E implementation and acceptance](M08E_IMPLEMENTATION.md).
