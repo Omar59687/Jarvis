@@ -252,7 +252,7 @@ class ProactivityService:
                     "check_interval_seconds,cooldown_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) "
                     "ON CONFLICT(workspace_id,principal_id) DO UPDATE SET enabled=excluded.enabled,"
                     "generation=excluded.generation,check_interval_seconds=excluded.check_interval_seconds,"
-                    "updated_at=excluded.updated_at",
+                    "cooldown_seconds=excluded.cooldown_seconds,updated_at=excluded.updated_at",
                     (workspace_id, actor_id, int(enabled), generation, interval,
                      cooldown, created_at, now),
                 )
