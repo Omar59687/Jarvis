@@ -156,3 +156,16 @@ tokenizer guarantee; actual model RAM/context compatibility is unverified.
 - Python compilation for `jarvis_core` and JavaScript syntax checks for tracked `.js`/`.mjs` files — passed.
 - `git diff --check` — passed.
 - Live Bionic model smoke test — not run for this repair; no service was started.
+
+## Interrupted recovery record — 2026-11-27
+
+- Recovery checkpoint: 76334e0.
+- Linux focused M08 regression: 31 passed.
+- Linux full Python regression: 439 passed, 12 skipped, 0 failed.
+- Linux JavaScript regression: 25 passed, 0 failed.
+- Authenticated API timeout test: passed 4/4 executions.
+- The intermittent API timeout was not reproduced; cause remains unknown.
+- Python compilation, JavaScript syntax and Git diff checks passed.
+- No implementation changes were made during recovery.
+- Windows acceptance and live Bionic acceptance remain pending.
+- No M08-C implementation, merge or deployment was performed.
