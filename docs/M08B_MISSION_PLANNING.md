@@ -169,3 +169,73 @@ tokenizer guarantee; actual model RAM/context compatibility is unverified.
 - No implementation changes were made during recovery.
 - Windows acceptance and live Bionic acceptance remain pending.
 - No M08-C implementation, merge or deployment was performed.
+
+## Final Windows and live model acceptance - 2026-11-27
+
+### Windows regression
+
+- Python version: 3.12.16.
+- Focused M08 regression: 31 passed.
+- Full Python regression: 439 tests total, 429 passed,
+  10 skipped, 0 failures, 0 errors.
+- JavaScript regression: 25 passed, 0 failed.
+- Previously intermittent authenticated API test passed.
+- Git diff check passed.
+
+### Live local model acceptance
+
+Both models were tested through the actual Jarvis mission
+planning service using the Bionic native local API.
+
+| Model | Checks | Duration | Subtasks | Provider calls |
+| --- | --- | --- | --- | --- |
+| qwen3.5-4b | 15/15 | 19.39 seconds | 10 | 1 |
+| prism-ml/bonsai-27b | 15/15 | 74.69 seconds | 5 | 1 |
+
+Both successful runs verified:
+
+- Valid structured mission plans.
+- No deterministic fallback.
+- Persistent plan and provenance.
+- Idempotent replay without duplicate inference.
+- No model-requested capabilities.
+- Plan approval and mission authorization boundaries.
+- Configured context budget of 16384 tokens.
+- Output budget of 4096 tokens.
+- Planning completed within 120 seconds.
+- Clean Git worktree.
+
+### Timeout and recovery evidence
+
+- Initial Qwen inference generated a valid plan in 18.77 seconds.
+- Three initial acceptance assertions incorrectly assumed
+  native metadata types instead of persisted strings.
+- The acceptance harness was corrected without changing Jarvis.
+- A subsequent Qwen request timed out after 120.16 seconds.
+- Jarvis correctly produced a deterministic fallback plan,
+  preserved provenance and prevented duplicate inference.
+- The exact provider timeout cause remains unconfirmed.
+- A subsequent isolated Qwen inference diagnostic passed
+  in 0.42 seconds.
+- Final Qwen acceptance passed all 15 checks.
+
+### Model recommendation
+
+Qwen 3.5 4B is recommended as the default mission planner
+based on the observed planning speed and task decomposition.
+
+Bonsai 27B remains a supported alternative. Broader coding
+and reasoning benchmarks are required before assigning
+more advanced workloads to either model.
+
+### Acceptance boundaries
+
+- Live tests used synthetic objectives and temporary databases.
+- No actual project files were modified by model inference.
+- No autonomous code execution was authorized.
+- Repository-grounded live planning was not tested.
+- Maximum model context capacity was not established.
+- No implementation changes were required during acceptance.
+- Local acceptance is complete.
+- GitHub CI and merge remain pending.
+- M08-C has not been started.
