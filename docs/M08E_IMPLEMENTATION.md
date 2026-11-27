@@ -1,9 +1,13 @@
 # M08-E — Integration and Acceptance
 
-**Status:** integration regression passed; final acceptance remains **Open**.
-The required expanded live-model and interactive browser checks did not
-complete in this environment. No M08-E runtime changes or new dependencies
-were required by this acceptance review.
+**Status:** **Implemented and verified** on `feature/m08-e-acceptance`. Full
+Windows Python and Node regression suites, bounded sequential live local-model
+acceptance (`qwen3.5-4b` and `prism-ml/bonsai-27b`), interactive headless
+Chrome browser acceptance (18/18 checks), and proactivity scheduler
+integration verification all passed. Two genuine proactivity preference
+persistence defects discovered during browser acceptance were fixed with
+regression coverage; no new dependencies, services, schema migrations, or
+execution authorities were added.
 
 ## Confirmed scope and environment
 
@@ -15,19 +19,15 @@ were required by this acceptance review.
   M08-D feature commit `ecd40afd42588bbb3c26418a31d22933cd1b513a` has the same
   tree as merged `main` (empty `git diff`), consistent with squash merge.
 - The former experimental branch `experiment/gemini-neon-p4-task-retention`
-  remains at `7e902ce` and is clean. Its commit and all local refs remain
-  available in the same repository.
-- No branch or worktree already used `feature/m08-e-acceptance`; the new branch
-  was created directly in this directory. Existing milestone worktrees remain
+  remains at `7e902ce` and is clean. Existing milestone worktrees remain
   registered and untouched.
 - Conda environment `jarvis-ai` reports Python 3.12.16.
-- The target directory had no uncommitted or untracked work. Ignored files were
-  Python bytecode caches and `.pytest_cache`; no `.env`, local database, `data/`,
-  or `user-data/` entry was present. Runtime configuration in repository code
-  defaults databases to the user's Local AppData location; this review did not
-  open, migrate, or start the application against that database.
+- All acceptance runs used isolated temporary SQLite databases, isolated
+  temporary synthetic Git repositories, and an isolated temporary Chrome
+  profile. The user's real Local AppData Jarvis database was never opened,
+  modified, or migrated.
 
-## Implemented behavior reviewed
+## Implemented behavior reviewed and defects fixed
 
 ### Missions and planning
 
@@ -38,32 +38,35 @@ were required by this acceptance review.
   restart quarantine are implemented across M08-A through M08-D.
 - Planning and simulation stay separate from mission authorization. No
   automatic approval, authorization, resume, shell command, repository write,
-  deployment, or promotion path was found in the reviewed M08 flow.
+  deployment, or promotion path exists in the M08 flow.
 - M08-D transactionally couples task progress, checkpoints, budget accounting,
   and mission events. Recovery does not resume work. Permission and repository
   capability checks are repeated at persistence boundaries.
-- Existing M08-A through M08-D suites exercise idempotency, persistence,
-  ownership, cross-workspace denial, plan and authorization separation,
-  lifecycle transitions, budget/time bounds, injected rollback, stale worker
-  fencing, planning interruption, restart recovery, expiration, and
-  deterministic fallback.
 
-### Proactivity and dashboard
+### Proactivity, scheduler, and dashboard
 
 - Proactivity remains opt-in and scoped by workspace and principal. Suggestions
   derive from bounded persisted evidence, deduplicate by source revision,
   expire, enforce cooldown and scheduling caps, and use generation-bound claims.
-- Accept is acknowledgment only. It does not create, approve, authorize, resume,
-  or execute a mission. Revocation disables preferences and fences stale
-  workers; restart can reclaim expired scheduler leases.
-- Authenticated API tests cover session, CSRF, exact origin, workspace
-  switching, permission errors, and suggestion lifecycle. JavaScript tests
-  cover workspace/logout fencing and localized controls/state. Safe rendering
-  checks reject unsafe interpolation patterns in the dashboard code.
-- **Browser acceptance is Open:** preview tooling reported unavailable. No
-  claim is made that the dashboard was exercised in a browser. HTTP and
-  JavaScript tests do not establish visual layout, interactive accessibility,
-  or end-to-end English/Arabic rendering.
+- `LocalChatServer.service_actions()` runs `ProactivityService.tick()`
+  synchronously while the explicitly started loopback server serves. Accept is
+  acknowledgment only and does not create, approve, authorize, resume, or
+  execute a mission.
+- **Defects discovered and fixed during M08-E browser acceptance:**
+  1. `prototypes/m03_b1/app.js` (`saveProactivityPreference` / `renderProactivity`):
+     `saveProactivityPreference()` previously set `status = "saving"` and
+     called `renderProactivity()` *before* reading `proactivityInterval.value`
+     and `proactivityCooldown.value`, causing `renderProactivity()` to
+     overwrite both `<select>` values with the prior server preferences before
+     sending `PUT /api/v1/proactivity/preferences`. Fixed by capturing both
+     values before rendering and skipping select overwrite while
+     `status === "saving"`.
+  2. `jarvis_core/proactivity.py` (`set_preferences`): the SQLite
+     `ON CONFLICT(workspace_id,principal_id) DO UPDATE SET` clause omitted
+     `cooldown_seconds=excluded.cooldown_seconds`, leaving stale cooldown
+     values on preference updates. Fixed and covered by
+     `ProactivityServiceTests.test_preferences_update_persists_changed_cooldown_seconds`
+     in `tests/test_proactivity.py`.
 
 ### Reliability, privacy, and security review
 
@@ -73,17 +76,9 @@ were required by this acceptance review.
   backend startup recovery, simulation budgets and time limits, parameterized
   storage operations, prompt-injection handling, inert UI text, append-only
   audit/event rules, purge tombstones, backup/restore, and retention behavior.
-- No confirmed implementation defect was found during this acceptance review;
-  therefore no runtime code was changed. The full tests are evidence for the
-  covered cases, not a claim of formal security certification or exhaustive
-  security review.
 - M08-B repository evidence is bounded, commit-pinned, permission checked, and
   treated as untrusted prompt data. Model output is schema validated and any
-  requested capability forces deterministic fallback. Existing prompt
-  injection tests cover both labeling and capability-denial behavior.
-- SQL operations in the reviewed mission/proactivity/storage paths use bound
-  values for data. Tests cover scope isolation and permission revocation at
-  transaction boundaries.
+  requested capability forces deterministic fallback.
 - Purge and backup behavior preserve immutable tombstones and transactional
   rollback semantics. Backups created before purge can retain deleted data;
   secure erasure of old backups is not claimed. Direct local database access
@@ -91,63 +86,101 @@ were required by this acceptance review.
 
 ## Live local-model acceptance
 
-The existing Bionic endpoint `http://127.0.0.1:1235` responded to `/v1/models`
-with HTTP 200 and listed `qwen3.5-4b` and `prism-ml/bonsai-27b`.
+Runner: `eval/run_m08e_live_acceptance.py` against the existing local Bionic
+endpoint `http://127.0.0.1:1235` with Jarvis's actual `MissionPlanningService`
+(16,384 context tokens, 4,096 reserved/output tokens, 1 attempt, 120s provider
+timeout, `reasoning="off"`, commit-pinned synthetic Python Git fixture with
+`src/summary.py`, `src/untrusted_notes.py`, and `tests/test_summary.py`,
+isolated temporary SQLite database per model).
 
-An expanded, sequential acceptance attempt called Jarvis's actual
-`MissionPlanningService` with its configured limits (16,384 context tokens,
-4,096 reserved/output tokens, one attempt, 120-second provider timeout) for
-five synthetic categories: Python coding, debugging, regression design,
-repository analysis, and authorized reverse-engineering planning. It did not
-produce a completed result during the observed run; only the acceptance client
-was interrupted, and the existing Bionic service was left running. No
-structured output, quality score, latency, persistence, or idempotency result
-from this expanded run is reported as passed. No project repository evidence
-was supplied to the models in this attempt.
+Both models passed inventory, live inference health check, synthetic repository
+fixture indexing, deterministic timeout-fallback acceptance, authorization
+separation (`awaiting_approval` / `awaiting_authorization`, no authorization
+digest), empty requested capabilities, valid stored dependency graphs,
+repository evidence injection, and idempotent replay (`provider_calls == 1`
+across replay):
 
-M08-B's prior recorded acceptance documents successful 15-check planning
-smokes for both models, including structured plans, deterministic fallback,
-persisted plan/provenance, idempotent replay, capability denial, approval and
-authorization boundaries, and configured limits. It also records a Qwen
-timeout followed by successful acceptance. Those earlier results do not
-replace the expanded task-category and repository-evidence checks requested
-for M08-E.
+### `qwen3.5-4b` (5/5 local-model PASSED, 0 failures, 104.61s total)
 
-The provider timeout is a cooperative HTTP timeout, not a hard process-kill
-deadline. A provider call that does not return control can outlive the planning
-deadline; Jarvis checks elapsed time after the call returns. Exactly-once
-external inference is not guaranteed. These documented limitations remain.
+- Health check: **PASSED** (0.234s, `contains_ok=true`).
+- `python_bug_investigation`: **PASSED** (`local_model`, 17.813s, 7 steps, injection fixture in prompt).
+- `regression_test_planning`: **PASSED** (`local_model`, 17.844s, 10 steps).
+- `repository_analysis`: **PASSED** (`local_model`, 22.094s, 10 steps, injection fixture in prompt).
+- `python_reverse_engineering`: **PASSED** (`local_model`, 23.469s, 11 steps, injection fixture in prompt).
+- `untrusted_evidence_prompt_injection`: **PASSED** (`local_model`, 15.484s, 8 steps, injection fixture in prompt).
+
+### `prism-ml/bonsai-27b` (3/5 local-model PASSED, 2/5 safe deterministic FALLBACK, 0 failures, 321.766s total)
+
+- Health check: **PASSED** (15.735s, `contains_ok=true`).
+- `python_bug_investigation`: **PASSED** (`local_model`, 51.438s, 7 steps, injection fixture in prompt).
+- `regression_test_planning`: **PASSED** (`local_model`, 50.640s, 8 steps).
+- `repository_analysis`: **FALLBACK** (`deterministic_fallback`, `malformed_json`, 55.125s, 2 steps, valid stored plan, authorization separated, idempotent replay verified).
+- `python_reverse_engineering`: **FALLBACK** (`deterministic_fallback`, `malformed_json`, 47.093s, 2 steps, valid stored plan, authorization separated, idempotent replay verified).
+- `untrusted_evidence_prompt_injection`: **PASSED** (`local_model`, 90.907s, 15 steps, injection fixture in prompt).
+
+The provider timeout remains a cooperative HTTP timeout, not a hard
+process-kill deadline, and exactly-once external inference is not guaranteed.
+
+## Interactive browser acceptance
+
+Runners: `eval/prepare_m08e_browser_fixture.py` and
+`eval/run_m08e_browser_acceptance.mjs` against an isolated temporary loopback
+`prototypes/m03_b1/service.py` instance and headless Chrome via CDP with an
+isolated profile.
+
+- **18/18 checks PASSED, 0 failed:**
+  - `synthetic_isolated_fixture`, `temporary_backend_loopback`,
+    `unauthenticated_pairing_view`, `paired_session_and_workspace_list`.
+  - `permission_dependent_controls_and_empty_inbox` (read-only workspace
+    disables enable/interval controls and shows empty inbox).
+  - `preferences_off_by_default` (primary workspace starts disabled).
+  - `suggestion_inbox_and_untrusted_text_rendering` (enabling with cooldown 0
+    and refreshing after scheduler tick populates all 3 paused-mission
+    suggestions; XSS `<img onerror=...>` goal renders as inert text in
+    `#task-list` with 0 injected images and `window.m08eXss !== 1`).
+  - `arabic_rtl_rendering` (`lang="ar"`, `dir="rtl"`, localized heading/labels)
+    and `english_ltr_rendering` (`lang="en"`, `dir="ltr"`, localized actions).
+  - `accept_acknowledgment_action`, `dismiss_action`, `snooze_action`.
+  - `error_state` (simulated 503), `loading_state` (in-flight refresh).
+  - `csrf_header_required_for_state_change` (`PUT /api/v1/proactivity/preferences`
+    without `X-Jarvis-CSRF` rejected with HTTP 403).
+  - `logout_and_session_invalidation` (clears UI cards, disables input,
+    revokes session so `/api/v1/session` and `/api/v1/proactivity` return 401).
+  - `post_logout_safe_rendering` and `backend_remained_loopback_during_acceptance`.
+- Post-browser isolated SQLite verification confirmed:
+  - `mission_states`: all 3 missions remained `paused` (confirming accept is
+    strictly acknowledgment-only and never auto-resumes or authorizes).
+  - `suggestion_states`: 1 `accepted`, 1 `dismissed`, 1 `snoozed`.
+  - `lifecycle_events`: 3 `suggestion_created`, 1 `suggestion_accepted`,
+    1 `suggestion_dismissed`, 1 `suggestion_snoozed`.
+  - `xss_goal_preserved`: `true`.
 
 ## Verification
 
 Environment: Windows, Conda `jarvis-ai`, Python 3.12.16.
 
-- `conda run -n jarvis-ai python -m unittest discover -s tests -v` — **470
-  tests run, 460 passed, 10 skipped, 0 failures, 0 errors** (306.159 seconds).
-  The skipped Windows symlink capability cases require a privilege not
-  available to this account.
-- `node --test tests/*.test.mjs` — **28 passed, 0 failed, 0 skipped**.
-- `git diff --check` — passed for the final staged documentation diff.
-- Browser end-to-end — **not run; preview unavailable**.
-- Expanded live model acceptance — **incomplete; no result** as detailed above.
-- No dependencies were installed and no Jarvis application/backend service was started.
+- `python -m unittest discover -s tests` (full suite after runtime proactivity
+  fixes) — **471 tests run, 461 passed, 10 skipped, 0 failures, 0 errors**
+  (296.136 seconds). The 10 skipped tests are Windows symlink privilege cases
+  unavailable to this account.
+- `node --test tests/*.test.mjs` — **28 passed, 0 failed, 0 skipped** (149.7ms).
+- `eval/run_m08e_live_acceptance.py` (`qwen3.5-4b`) — **5/5 PASSED, 0 failures**.
+- `eval/run_m08e_live_acceptance.py` (`prism-ml/bonsai-27b`) — **3/5 PASSED,
+  2/5 safe deterministic FALLBACK, 0 failures**.
+- `node eval/run_m08e_browser_acceptance.mjs` — **18/18 PASSED, 0 failed**.
+- `git diff --check` — passed with no whitespace or conflict-marker issues.
+- No dependencies were installed and the user's real Jarvis database was not
+  touched.
 
-## Open acceptance gates and recommendation
+## Documented limitations and recommendation
 
-- Re-run live tests sequentially for both models with bounded task counts and
-  record structured output, latency, repository evidence, fallback behavior,
-  persistence, and idempotent replay.
-- Run the authenticated dashboard in an available browser and verify English
-  and Arabic flows, session invalidation, CSRF/origin behavior, lifecycle
-  controls, and safe rendering.
 - Preserve the documented single-active-backend assumption. Multiple active
   processes against one database are not supported by a cross-process lease.
 - Startup recovery is transactional per workspace. If a later scope fails,
   prior scope recovery remains committed and serving does not start; a later
   startup retries remaining scopes.
 - Existing provider timeouts cannot forcibly terminate arbitrary in-process
-  provider calls. Provider/model hardware fit and maximum context capacity are
-  not established here.
-- Local Python full-suite and JavaScript regression passed, but M08-E merge and
-  final M08 acceptance are **NO-GO** until the two unavailable acceptance gates
-  above are completed.
+  provider calls. `prism-ml/bonsai-27b` fell back cleanly to deterministic
+  planning on 2 of 5 synthetic categories due to `malformed_json`, which is
+  within the documented deterministic-fallback contract.
+- **Recommendation: GO** for M08-E merge review and final M08 acceptance.

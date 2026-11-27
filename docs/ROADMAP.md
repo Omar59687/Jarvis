@@ -93,14 +93,21 @@ See [M08-D implementation and acceptance](M08D_IMPLEMENTATION.md).
 
 ## M08-E status
 
-M08-E integration acceptance is being completed on
-`feature/m08-e-acceptance` from verified `main` SHA
+M08-E integration, live local-model, and interactive browser acceptance are
+complete on `feature/m08-e-acceptance` from verified `main` SHA
 `2c22f586c98641569a3bc7460c4eeae227444242`. The permanent development
 directory is `C:\AI Projects\Jarvis`; existing milestone worktrees remain
-registered as recoverable archives. The required Windows Python and Node
-regression suites passed. Expanded live inference acceptance did not return a
-result within the observed run, and browser preview was unavailable, so those
-acceptance gates remain open. See [M08-E implementation and acceptance](M08E_IMPLEMENTATION.md).
+registered as recoverable archives. Live local-model acceptance completed for
+both `qwen3.5-4b` (5/5 structured local-model plans) and `prism-ml/bonsai-27b`
+(3/5 structured local-model plans, 2/5 safe deterministic fallbacks on
+`malformed_json`, 0 failures) with repository evidence, capability denial,
+authorization separation, and idempotent replay verified. Interactive headless
+Chrome browser acceptance passed 18/18 checks against an isolated synthetic
+database and loopback backend, uncovering and verifying fixes for two
+proactivity preference persistence defects (`jarvis_core/proactivity.py`
+cooldown upsert and `prototypes/m03_b1/app.js` pre-render input capture). Full
+Windows Python and Node regression suites passed after those fixes. See
+[M08-E implementation and acceptance](M08E_IMPLEMENTATION.md).
 
 ## Current state and next task
 

@@ -330,14 +330,17 @@ experimental branch and all milestone worktrees. Keep the existing simulation,
 approval, authorization, privacy, and local-only boundaries.
 
 **Decision:** M08-E is an acceptance and integration milestone; no new
-runtime, dependency, service, execution authority, or database migration is
-needed for the reviewed implementation. Use isolated tests, document only
-observed results, and do not mark unavailable live model or browser checks as
-passed. Existing authenticated HTTP and frontend state tests are supporting
-evidence, not substitutes for an interactive browser run.
+dependency, external service, execution authority, or database migration is
+needed. Two genuine proactivity preference persistence defects uncovered during
+interactive browser acceptance (missing `cooldown_seconds` update in the SQLite
+upsert in `jarvis_core/proactivity.py` and premature DOM reset before reading
+select values in `prototypes/m03_b1/app.js`) were fixed with regression
+coverage, preserving all security, scheduling, and authorization boundaries.
+Use isolated tests, document only observed results, and preserve reproducible
+synthetic acceptance runners in `eval/`.
 
-**Status:** Windows Python and Node regression suites passed. The expanded
-five-task live inference run did not produce a completed result before the
-acceptance client was interrupted; browser preview tools reported unavailable.
-M08-E and final M08 acceptance remain **Open** pending those gates. See
-[M08-E implementation and acceptance](M08E_IMPLEMENTATION.md).
+**Status:** Implemented and verified on `feature/m08-e-acceptance`. Live
+local-model acceptance (`qwen3.5-4b` and `prism-ml/bonsai-27b`), interactive
+Chrome browser acceptance (18/18 checks), and full Windows Python and Node
+regression suites all passed. M08-E and final M08 acceptance are **GO** for
+merge review. See [M08-E implementation and acceptance](M08E_IMPLEMENTATION.md).
