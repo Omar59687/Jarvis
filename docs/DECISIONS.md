@@ -91,7 +91,35 @@ The product targets Arabic and English, Windows desktop, and a browser dashboard
 
 **Decision:** M08-A uses a durable mission facade over `TaskOrchestrationService`, with separate mission authorization receipts and finite persistent budgets/checkpoints. A mission authorization binds the exact plan and budget digest and grants only deterministic simulation. Existing task-plan approval remains a separate receipt. No model, process, filesystem, network, or external action is enabled.
 **Reason:** add mission-specific lifecycle and accounting without creating a second task engine or treating plan approval as execution authorization.
-**Status:** implemented on the M08-A feature branch with additive schema v15; awaiting review. Proactivity remains disabled and M08-B through M08-E remain gated. See [M08-A specification](M08A_MISSION_FOUNDATION_SPEC.md) and [implementation status](M08A_IMPLEMENTATION_STATUS.md).
+**Status:** merged to `main` via PR #24 at `a8e4c698719e6f9f8f042e3919dbe549535ecb9a` with additive schema v15. Proactivity remains disabled. M08-B is separately approved; M08-C through M08-E remain gated. See [M08-A specification](M08A_MISSION_FOUNDATION_SPEC.md) and [implementation status](M08A_IMPLEMENTATION_STATUS.md).
+
+### P-14 — M08-B provider-neutral bounded planning
+
+**Confirmed for M08-B:** Add optional local-model planning behind the existing
+`ModelProvider` contract, retain a deterministic planner/fallback, and persist
+bounded structured steps using the existing task-plan store. Planning remains
+separate from task approval and mission authorization. Continue Python-first
+development toward independent local Python coding as a future direction;
+external coding agents remain optional. Java and other dedicated language
+support are deferred.
+
+**Decision:** Use standard-library JSON validation and SQLite mission events;
+reuse existing capability/dependency validation and commit-pinned Developer
+Intelligence. Context budget is an explicit heuristic with an output reserve,
+not exact tokenizer accounting. Add no Aider, OpenHands, OpenCode, LangGraph,
+runtime, paid service, or other package dependency. Model/provider choice is
+explicit at trusted service construction; no discovery or remote fallback.
+
+**Security:** Model plans cannot request capabilities; invalid content falls
+back to deterministic planning. Repository content is untrusted. No planning
+output authorizes task approval, file/process/network access, GitHub writes,
+execution, promotion or deployment. M08-A simulation remains the only
+execution boundary. M08-C remains gated.
+
+**Status:** Implemented on `feature/m08-b-mission-planning`; see [M08-B mission
+planning](M08B_MISSION_PLANNING.md) for source research, evidence and
+limitations. Model hardware fit and live endpoint behavior require local
+acceptance and are not claimed by regression tests.
 
 ### Conversational context update — 2026-11-22
 

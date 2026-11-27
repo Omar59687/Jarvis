@@ -1,6 +1,13 @@
 # Jarvis 2.0 — Proposed Architecture
 
-**Status:** the logical product architecture below remains proposed. The stated base implements M01-A through M01-E, M02-A through M02-D, Q01, M03-A, and P2-A1. This branch implements P2-A2/A3/A4 and a partial P3 Developer Intelligence slice. It remains a loopback development alpha, not a production desktop, multi-user dashboard, or autonomous coding agent. P2 live owner acceptance remains open. See [P2 acceptance](P2_FINAL_ENGINEERING_ACCEPTANCE.md), [P3 implementation and limits](P3_DEVELOPER_INTELLIGENCE.md), [M03-B2](M03B2_LOCAL_PROVIDER.md), and [P2-A4](P2A4_CONNECTED_UI.md).
+**Status:** the logical product architecture below remains proposed. `main` includes M01-A through M01-E, M02-A through M02-D, Q01, M03-A, P2-A1 through A4, the partial P3 Developer Intelligence slice, and M08-A. This feature branch adds M08-B mission planning. The product remains a loopback development alpha, not a production desktop, multi-user dashboard, or autonomous coding agent. P2 live owner acceptance remains open. See [P2 acceptance](P2_FINAL_ENGINEERING_ACCEPTANCE.md), [P3 implementation and limits](P3_DEVELOPER_INTELLIGENCE.md), [M03-B2](M03B2_LOCAL_PROVIDER.md), [P2-A4](P2A4_CONNECTED_UI.md), and [M08-B planning](M08B_MISSION_PLANNING.md).
+
+M08-A is merged to `main` via PR #24. M08-B implementation is on
+`feature/m08-b-mission-planning`; it adds bounded local-model-assisted planning
+and does not create an autonomous coding agent. Python is the primary
+development language. Independent local Python coding is a future goal;
+external coding agents are optional integrations. Dedicated Java and other
+language support is deferred.
 
 ## 1. Architecture goals
 
@@ -71,6 +78,8 @@ The signing context verifies that a trusted host issued a decision for the exact
 - Treat model output, tool arguments, and retrieved text as untrusted.
 - Cloud model routing is opt-in, shows which provider may receive content, and should support per-request exclusion/redaction.
 - Model files and model licenses are distinct from Ollama's software license. Record each model's exact revision, terms, and memory requirements before use.
+- M08-B planning reuses the existing `ModelProvider` contract and LM Studio Bionic adapter. A local model may suggest a structured plan; the orchestration validator checks step bounds, capabilities, dependencies and cycles before persistence. A deterministic planner is used when the model is absent, fails, times out, overflows its configured context estimate, or returns invalid output. No Ollama-specific mission adapter is added in M08-B.
+- M08-B retrieves only bounded snippets through the existing permission-checked, commit-pinned `DeveloperRepositoryService`. Retrieved source is untrusted prompt data. Context budgeting estimates tokens from UTF-8 byte length; it is not tokenizer accounting, and the model server's loaded context size remains operator-configured.
 
 ## 7. Integration and execution boundaries
 
@@ -81,6 +90,7 @@ The signing context verifies that a trusted host issued a decision for the exact
 - REA is reserved for legally authorized targets, isolated workspaces, explicit target selection, and an auditable analysis record.
 - Coding agents operate in a repository worktree or similarly scoped workspace; file, shell, network, and subagent capabilities are separately controlled.
 - Future Mission Mode must have named objective, allowed tools, data/workspace scope, time/action budget, stop conditions, dry-run or preview, and a human stop control.
+- M08-B planning cannot approve a plan, expand repository grants, run tools, write files, execute commands, use the network, or trigger promotion. Human mission authorization and the separate task-plan approval remain required before deterministic simulation.
 
 ## 8. Security and privacy requirements for implementation
 

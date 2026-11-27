@@ -14,8 +14,9 @@ from uuid import uuid4
 
 from .orchestration import (
     DeterministicFakePlanner, DeterministicFakeWorker, OrchestrationError,
-    TaskOrchestrationService, _canonical_json, _digest, _idempotency,
+    TaskOrchestrationService, TaskPlanningRequest, _canonical_json, _digest, _idempotency,
 )
+from .mission_planning import MissionPlanResult, MissionPlanningService
 from .storage import Database, Permission, _now, _nonempty
 
 MAX_MISSIONS_PER_WORKSPACE = 100
@@ -106,12 +107,12 @@ class MissionService:
     @staticmethod
     def _metadata(metadata: dict[str, str] | None) -> str:
         value = metadata or {}
-        if (not isinstance(value, dict) or len(value) > 8
+        if (not isinstance(value, dict) or len(value) > 20
                 or any(not isinstance(k, str) or len(k) > 40
-                       or not isinstance(v, str) or len(v) > 120 for k, v in value.items())):
+                       or not isinstance(v, str) or len(v) > 256 for k, v in value.items())):
             raise ValueError("mission event metadata exceeds its bound")
         rendered = _canonical_json(value)
-        if len(rendered.encode("utf-8")) > 1024:
+        if len(rendered.encode("utf-8")) > 2048:
             raise ValueError("mission event metadata exceeds its bound")
         return rendered
 
@@ -252,6 +253,59 @@ class MissionService:
                 self._event(conn, updated, actor_id, "plan_linked", _idempotency(idempotency_key),
                             revision=plan.revision, digest=plan.plan_sha256,
                             metadata={"subtask_count": str(len(plan.subtasks))})
+                self.db._commit(conn)
+            except Exception:
+                self.db._rollback(conn)
+                raise
+        return plan
+
+    def propose_plan(self, actor_id: str, mission_id: str,
+                     planner: MissionPlanningService, *, idempotency_key: str):
+        """Create a reviewable plan; model planning never grants execution authority."""
+        mission = self._require(actor_id, mission_id, write=True, manage=True)
+        key = _idempotency(idempotency_key)
+        if type(planner) is not MissionPlanningService:
+            raise OrchestrationError("mission_planner_unavailable")
+        if mission.state not in {"draft", "awaiting_authorization", "blocked"}:
+            raise OrchestrationError("mission_plan_not_editable")
+        with self.db._connection() as conn:
+            duplicate = conn.execute(
+                "SELECT mission_id,event_type,plan_revision FROM mission_events "
+                "WHERE workspace_id=? AND actor_id=? AND idempotency_key=?",
+                (mission.workspace_id, actor_id, key),
+            ).fetchone()
+        if duplicate is not None:
+            if duplicate["mission_id"] != mission.id or duplicate["event_type"] != "plan_linked":
+                raise OrchestrationError("idempotency_key_conflict")
+            return self.tasks.get_plan(actor_id, mission.task_id, int(duplicate["plan_revision"]))
+        task = self.tasks.get_task(actor_id, mission.task_id)
+        request = TaskPlanningRequest(
+            task.id, task.workspace_id, task.repository_id, task.repository_commit, task.goal,
+            task.requested_capabilities, tuple(task.capability_manifest.get("granted", [])),
+        )
+        result: MissionPlanResult = planner.plan(actor_id, request)
+        if type(result) is not MissionPlanResult:
+            raise OrchestrationError("mission_plan_invalid")
+        plan = self.tasks.propose_plan(
+            actor_id, mission.task_id, DeterministicFakePlanner(result.proposal), idempotency_key=key,
+        )
+        if plan.subtasks != result.proposal.subtasks:
+            raise OrchestrationError("idempotency_key_conflict")
+        provenance = result.provenance()
+        metadata = {name: ("" if value is None else str(value))
+                    for name, value in provenance.items()}
+        metadata["subtask_count"] = str(len(plan.subtasks))
+        metadata["provenance_sha256"] = _digest(_canonical_json(metadata))
+        with self.db._connection() as conn:
+            self.db._begin(conn)
+            try:
+                Database._require_access(conn, actor_id, mission.workspace_id, Permission.MANAGE_WORKSPACE)
+                conn.execute("UPDATE missions SET state='awaiting_authorization',plan_revision=?,"
+                             "authorized_revision=NULL,authorization_sha256=NULL,updated_at=? WHERE id=?",
+                             (plan.revision, _now(), mission.id))
+                updated = self._row(conn.execute("SELECT * FROM missions WHERE id=?", (mission.id,)).fetchone())
+                self._event(conn, updated, actor_id, "plan_linked", key,
+                            revision=plan.revision, digest=plan.plan_sha256, metadata=metadata)
                 self.db._commit(conn)
             except Exception:
                 self.db._rollback(conn)
@@ -566,6 +620,12 @@ class MissionService:
                 metadata = json.loads(row["metadata_json"])
                 if self._metadata(metadata) != row["metadata_json"]:
                     raise ValueError
+                provenance_sha = metadata.get("provenance_sha256")
+                if provenance_sha is not None:
+                    evidence = dict(metadata)
+                    del evidence["provenance_sha256"]
+                    if provenance_sha != _digest(_canonical_json(evidence)):
+                        raise ValueError
             except (TypeError, ValueError):
                 raise OrchestrationError("mission_evidence_corrupt") from None
             result.append({"id": row["id"], "event_type": row["event_type"],

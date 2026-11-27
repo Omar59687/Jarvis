@@ -44,11 +44,30 @@ For each milestone:
 ## M08-A status
 
 M08-A scope was approved for the `feature/m08-a-mission-foundation` branch at
-baseline `94b056732038e9cdf1d106aa4fa9838508800da6`. Its implementation is
-awaiting review and does not authorize M08-B. See [M08-A specification](M08A_MISSION_FOUNDATION_SPEC.md)
-and [implementation status](M08A_IMPLEMENTATION_STATUS.md). M08-B through
-M08-E remain unapproved.
+baseline `94b056732038e9cdf1d106aa4fa9838508800da6` and merged to `main` as
+PR #24 at `a8e4c698719e6f9f8f042e3919dbe549535ecb9a`. The concurrent mission
+creation recovery validates both goal and limits digests. See [M08-A
+specification](M08A_MISSION_FOUNDATION_SPEC.md) and [implementation
+status](M08A_IMPLEMENTATION_STATUS.md).
+
+## M08-B status
+
+**Confirmed scope:** bounded, provider-neutral mission planning with an
+optional local model, deterministic fallback, structured dependency-validated
+steps, repository context from approved commit-pinned Developer Intelligence,
+and append-only provenance. Planning cannot authorize execution; M08-A's
+simulation-only boundary remains in force. Python is the primary development
+language. Independent local Python coding is a future direction; T3 Code and
+other external coding agents remain optional integrations. Dedicated Java and
+other language support is deferred.
+
+**Implemented on `feature/m08-b-mission-planning`:** the `MissionPlanningService`
+offers deterministic and optional local-model proposals, strict JSON
+validation, bounded attempts and provider timeout contracts, estimated context
+budgeting with output reserve, repository context retrieval and mission audit
+provenance. This does not implement autonomous coding, execution, M08-C,
+provider selection UI, or exact token accounting. See [M08-B mission planning](M08B_MISSION_PLANNING.md).
 
 ## Current state and next task
 
-M01's acceptance report retains unresolved cross-workspace consent and other documented limitations; aggregation remains unsupported and denied by default. P2-A1 through A4 are implemented, with owner live acceptance and independent review still required. P3 includes terminal-approved repositories under existing approved roots, commit-pinned Git-object indexing, multi-language partial metadata, a bounded permission-scoped graph, commit changes, source citations, and the developer dashboard. M05 Developer Intelligence 2.0 extends that foundation; it is not a complete semantic analyzer and never executes repository code. REA-based reverse-engineering workflows are deferred and require a separately approved roadmap milestone. P4 retains unresolved target-Windows OS isolation; M06-A enables only explicit approved file changes inside private application-scoped task workspaces. M06-B adds a pure assessment API and architecture comparison; command execution, verification, promotion, and deployment remain disabled. See [M06 approval-controlled execution](M06_APPROVAL_CONTROLLED_EXECUTION.md), [P2 acceptance](P2_FINAL_ENGINEERING_ACCEPTANCE.md), [P3 implementation and limits](P3_DEVELOPER_INTELLIGENCE.md), [M05 Developer Intelligence 2.0](M05_DEVELOPER_INTELLIGENCE_2.md), [P4 architecture](P4_SUPERVISED_CODING_AGENTS_DESIGN.md), and [P4 acceptance plan](P4_SECURITY_AND_ACCEPTANCE_PLAN.md).
+M01's acceptance report retains unresolved cross-workspace consent and other documented limitations; aggregation remains unsupported and denied by default. P2-A1 through A4 are implemented, with owner live acceptance and independent review still required. P3 includes terminal-approved repositories under existing approved roots, commit-pinned Git-object indexing, multi-language partial metadata, a bounded permission-scoped graph, commit changes, source citations, and the developer dashboard. M05 Developer Intelligence 2.0 extends that foundation; it is not a complete semantic analyzer and never executes repository code. Independent local Python coding remains a future capability gated by a separately approved execution milestone. REA-based reverse-engineering workflows are deferred and require separate approval. P4 retains unresolved target-Windows OS isolation; M06-A enables only explicit approved file changes inside private application-scoped task workspaces. M06-B adds a pure assessment API and architecture comparison; command execution, verification, promotion, and deployment remain disabled. See [M06 approval-controlled execution](M06_APPROVAL_CONTROLLED_EXECUTION.md), [P2 acceptance](P2_FINAL_ENGINEERING_ACCEPTANCE.md), [P3 implementation and limits](P3_DEVELOPER_INTELLIGENCE.md), [M05 Developer Intelligence 2.0](M05_DEVELOPER_INTELLIGENCE_2.md), [P4 architecture](P4_SUPERVISED_CODING_AGENTS_DESIGN.md), and [P4 acceptance plan](P4_SECURITY_AND_ACCEPTANCE_PLAN.md).

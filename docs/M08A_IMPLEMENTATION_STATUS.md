@@ -1,7 +1,10 @@
 # M08-A implementation status
 
-**Status:** Implemented on `feature/m08-a-mission-foundation`; awaiting review.
-This report records branch evidence and does not approve M08-B.
+**Status:** Implemented and merged to `main` as PR #24 at
+`a8e4c698719e6f9f8f042e3919dbe549535ecb9a`.
+This report records the M08-A implementation and its original verification.
+M08-B has since been separately approved and is tracked in
+[M08-B mission planning](M08B_MISSION_PLANNING.md).
 
 ## Implemented
 
