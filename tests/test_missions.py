@@ -4,6 +4,7 @@ from io import StringIO
 from pathlib import Path
 import sqlite3
 import tempfile
+import threading
 import unittest
 
 from jarvis_core.missions import MissionService
@@ -50,6 +51,60 @@ class MissionTests(unittest.TestCase):
             self.service.create("owner", "missing-workspace", "No access", idempotency_key=key("bad-scope"))
         with self.assertRaises(ValueError):
             self.create(max_steps=1000)
+
+    def test_create_idempotency_validates_immutable_request(self):
+        mission = self.create(max_steps=3, max_requests=4)
+        replay = self.create(max_steps=3, max_requests=4)
+        self.assertEqual(replay.id, mission.id)
+        with self.assertRaisesRegex(OrchestrationError, "idempotency_key_conflict"):
+            self.service.create("owner", "ws", "Different goal", idempotency_key=key("mission-create"),
+                                max_steps=3, max_requests=4)
+        with self.assertRaisesRegex(OrchestrationError, "idempotency_key_conflict"):
+            self.create(max_steps=4, max_requests=4)
+        with self.db._connection() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM missions").fetchone()[0], 1)
+
+    def test_create_idempotency_isolated_by_principal_and_workspace(self):
+        mission = self.create()
+        self.db.grant_permission("owner", "ws", "manager2", Permission.READ)
+        self.db.grant_permission("owner", "ws", "manager2", Permission.WRITE)
+        self.db.grant_permission("owner", "ws", "manager2", Permission.MANAGE_WORKSPACE)
+        other = self.service.create("manager2", "ws", "Summarize the synthetic source",
+                                    idempotency_key=key("mission-create"))
+        self.assertNotEqual(other.id, mission.id)
+        self.db.create_workspace("Another", WorkspaceKind.PROJECT, "owner", "ws2")
+        separate = self.service.create("owner", "ws2", "Summarize the synthetic source",
+                                       idempotency_key=key("mission-create"))
+        self.assertNotEqual(separate.id, mission.id)
+
+    def test_concurrent_create_same_request_is_duplicate_safe(self):
+        barrier = threading.Barrier(2)
+        original = self.tasks.create_task
+
+        def synchronized_create(*args, **kwargs):
+            barrier.wait(timeout=5)
+            return original(*args, **kwargs)
+
+        self.tasks.create_task = synchronized_create
+        results, errors = [], []
+
+        def create():
+            try:
+                results.append(self.create())
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=create) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0].id, results[1].id)
+        with self.db._connection() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM missions").fetchone()[0], 1)
 
     def test_exact_authorization_duplicate_budget_checkpoint_and_simulation(self):
         mission = self.create(max_steps=2, max_requests=2)

@@ -223,7 +223,8 @@ class MissionService:
                     duplicate_meta = json.loads(duplicate["metadata_json"])
                 except (ValueError, TypeError):
                     raise OrchestrationError("mission_evidence_corrupt") from None
-                if duplicate_meta.get("limits_sha256") != limits_hash:
+                if (duplicate_meta.get("goal_sha256") != goal_hash
+                        or duplicate_meta.get("limits_sha256") != limits_hash):
                     raise OrchestrationError("idempotency_key_conflict") from None
                 return self.get(actor_id, duplicate["id"])
             except Exception:
