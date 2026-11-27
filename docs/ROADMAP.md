@@ -80,14 +80,34 @@ See [M08-C implementation and acceptance](M08C_IMPLEMENTATION.md).
 
 ## M08-D status
 
-This branch completes M08-D by reconciling safe startup recovery with the
-existing manager/workspace authorization model, atomically committing mission
-simulation progress with task progress and checkpoints, fencing concurrent
-operations and permission revocation, settling ambiguous simulation
-reservations on recovery, and expiring overdue missions. Recovery never
-resumes work. Schema remains v18; no migration or new dependency is needed.
-See [M08-D implementation and acceptance](M08D_IMPLEMENTATION.md). M08-E is
-not started.
+M08-D was accepted at feature commit
+`ecd40afd42588bbb3c26418a31d22933cd1b513a` and squash-merged by PR #27 to
+`main` at `2c22f586c98641569a3bc7460c4eeae227444242`. Its merged tree matches
+the accepted feature tree. It reconciles safe startup recovery with the
+existing manager/workspace authorization model, atomically commits mission
+simulation progress with task progress and checkpoints, fences concurrent
+operations and permission revocation, settles ambiguous simulation
+reservations on recovery, and expires overdue missions. Recovery never
+resumes work. Schema remains v18; no migration or new dependency was needed.
+See [M08-D implementation and acceptance](M08D_IMPLEMENTATION.md).
+
+## M08-E status
+
+M08-E integration, live local-model, and interactive browser acceptance are
+complete on `feature/m08-e-acceptance` from verified `main` SHA
+`2c22f586c98641569a3bc7460c4eeae227444242`. The permanent development
+directory is `C:\AI Projects\Jarvis`; existing milestone worktrees remain
+registered as recoverable archives. Live local-model acceptance completed for
+both `qwen3.5-4b` (5/5 structured local-model plans) and `prism-ml/bonsai-27b`
+(3/5 structured local-model plans, 2/5 safe deterministic fallbacks on
+`malformed_json`, 0 failures) with repository evidence, capability denial,
+authorization separation, and idempotent replay verified. Interactive headless
+Chrome browser acceptance passed 18/18 checks against an isolated synthetic
+database and loopback backend, uncovering and verifying fixes for two
+proactivity preference persistence defects (`jarvis_core/proactivity.py`
+cooldown upsert and `prototypes/m03_b1/app.js` pre-render input capture). Full
+Windows Python and Node regression suites passed after those fixes. See
+[M08-E implementation and acceptance](M08E_IMPLEMENTATION.md).
 
 ## Current state and next task
 

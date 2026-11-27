@@ -1,11 +1,11 @@
 # Jarvis 2.0 — Proposed Architecture
 
-**Status:** the logical product architecture below remains proposed. `main` includes M01-A through M01-E, M02-A through M02-D, Q01, M03-A, P2-A1 through A4, the partial P3 Developer Intelligence slice, and M08-A through M08-C. This feature branch implements M08-D reliability. The product remains a loopback development alpha, not a production multi-user service or autonomous coding agent. P2 live owner acceptance remains open. See [P2 acceptance](P2_FINAL_ENGINEERING_ACCEPTANCE.md), [P3 implementation and limits](P3_DEVELOPER_INTELLIGENCE.md), [M03-B2](M03B2_LOCAL_PROVIDER.md), [P2-A4](P2A4_CONNECTED_UI.md), [M08-B planning](M08B_MISSION_PLANNING.md), [M08-C implementation and acceptance](M08C_IMPLEMENTATION.md), and [M08-D implementation and acceptance](M08D_IMPLEMENTATION.md).
+**Status:** the logical product architecture below remains proposed. Verified `main` at `2c22f586c98641569a3bc7460c4eeae227444242` includes M08-A through M08-D; M08-D's accepted tree is present after PR #27 squash merge. The M08-E acceptance branch (`feature/m08-e-acceptance`) completes integration, live local-model, and interactive browser acceptance, including targeted proactivity preference persistence fixes. The product remains a loopback development alpha, not a production multi-user service or autonomous coding agent. P2 live owner acceptance remains open. See [P2 acceptance](P2_FINAL_ENGINEERING_ACCEPTANCE.md), [P3 implementation and limits](P3_DEVELOPER_INTELLIGENCE.md), [M03-B2](M03B2_LOCAL_PROVIDER.md), [P2-A4](P2A4_CONNECTED_UI.md), [M08-B planning](M08B_MISSION_PLANNING.md), [M08-C implementation and acceptance](M08C_IMPLEMENTATION.md), [M08-D implementation and acceptance](M08D_IMPLEMENTATION.md), and [M08-E implementation and acceptance](M08E_IMPLEMENTATION.md).
 
 M08-A is merged to `main` via PR #24. M08-B is merged to `main` at
 `debea200e0c9e205ff54e00ab290a2098b72d9f3`; M08-C was merged through PR #26
-at `eca012ace5c1247d682c1821cef1598a5f8d5578`. This feature branch adds M08-D
-reliability. These milestones do not create an autonomous coding agent. Python is the primary
+at `eca012ace5c1247d682c1821cef1598a5f8d5578`; M08-D was squash-merged by PR
+#27 at `2c22f586c98641569a3bc7460c4eeae227444242`. These milestones do not create an autonomous coding agent. Python is the primary
 development language. Independent local Python coding is a future goal;
 external coding agents are optional integrations. Dedicated Java and other
 language support is deferred.

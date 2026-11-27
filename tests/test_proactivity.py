@@ -75,6 +75,18 @@ class ProactivityServiceTests(unittest.TestCase):
         self.assertIsNone(claim["claim_token"])
         self.assertIsNone(claim["next_check_at"])
 
+    def test_preferences_update_persists_changed_cooldown_seconds(self):
+        first = self.enable(cooldown=120, interval=1800)
+        self.assertEqual(first.cooldown_seconds, 120)
+        self.assertEqual(first.check_interval_seconds, 1800)
+        second = self.enable(cooldown=0, interval=900)
+        self.assertEqual(second.cooldown_seconds, 0)
+        self.assertEqual(second.check_interval_seconds, 900)
+        self.assertEqual(second.generation, 2)
+        fetched = self.service.get_preferences("owner", "ws")
+        self.assertEqual(fetched.cooldown_seconds, 0)
+        self.assertEqual(fetched.check_interval_seconds, 900)
+
     def test_preferences_reject_boolean_integer_and_out_of_range_configuration(self):
         for kwargs in (
             {"enabled": 1},

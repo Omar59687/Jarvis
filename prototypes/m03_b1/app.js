@@ -2742,7 +2742,7 @@ function renderProactivity() {
   proactivityStop.disabled = !ready || busy || !proactivityState.canEnable || !proactivityState.enabled;
   proactivityRefresh.disabled = !authenticated || !activeWorkspaceId || busy;
   proactivityStatus.classList.toggle("error", proactivityState.status === "error");
-  if (proactivityState.preferences) {
+  if (proactivityState.preferences && proactivityState.status !== "saving") {
     proactivityInterval.value = String(proactivityState.preferences.check_interval_seconds);
     proactivityCooldown.value = String(proactivityState.preferences.cooldown_seconds);
   }
@@ -2837,6 +2837,8 @@ async function saveProactivityPreference(enabled) {
   if (!authenticated || !csrfToken || !activeWorkspaceId || !proactivityState.canEnable) return;
   const workspace = activeWorkspaceId;
   const generation = proactivityState.generation;
+  const checkIntervalSeconds = Number(proactivityInterval.value);
+  const cooldownSeconds = Number(proactivityCooldown.value);
   proactivityState.status = "saving";
   renderProactivity();
   try {
@@ -2844,8 +2846,8 @@ async function saveProactivityPreference(enabled) {
       method: "PUT", credentials: "same-origin", cache: "no-store",
       headers: { "Content-Type": "application/json", "X-Jarvis-CSRF": csrfToken },
       body: JSON.stringify({ enabled,
-        check_interval_seconds: Number(proactivityInterval.value),
-        cooldown_seconds: Number(proactivityCooldown.value) }),
+        check_interval_seconds: checkIntervalSeconds,
+        cooldown_seconds: cooldownSeconds }),
     });
     const value = await responseJson(response);
     if (response.status === 401) { markSessionExpired(); return; }
