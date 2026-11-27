@@ -43,9 +43,41 @@
    context overflow yields a deterministic bounded plan. No provider response
    text or exception detail is placed in audit metadata.
 6. The task plan persists using existing orchestration storage. An immutable
-   `plan_linked` event binds plan digest and planning provenance. Existing
+   `plan_linked` event binds plan digest and planning provenance. The task plan,
+   mission linkage, provenance event, and reservation completion commit in one
+   SQLite transaction. Existing
    authorization still requires separate digest-bound task-plan approval and
    M08-A mission authorization before deterministic simulation.
+
+## Durable idempotency and recovery
+
+Schema v16 adds `mission_planning_reservations`, uniquely scoped by workspace,
+mission principal, mission, and idempotency key. The immutable request digest
+binds the task goal, repository snapshot, capabilities, model, and planner
+limits. A write transaction inserts the reservation before provider work. A
+second matching caller receives `mission_plan_in_progress`; a different
+request using that key receives an idempotency conflict. Each configured
+provider attempt is counted in a committed transaction immediately before the
+provider call. No SQLite write transaction remains open during inference.
+
+Completed reservations replay their digest-checked task plan without calling
+the provider. An interrupted or expired reservation is moved to `interrupted`
+and is not retried under the same key. Its configured attempt count is durable.
+If a process disappears, other callers observe the active reservation until
+its provider-timeout lease expires; the first caller after expiry fences it as
+interrupted. No automatic takeover or resume occurs. Owner tokens fence plan
+commit, and the plan, task event, mission event, mission state, provenance and
+reservation completion share one `BEGIN IMMEDIATE` transaction.
+
+This provides one provider owner during a live reservation and crash-safe
+single-commit persistence. It cannot guarantee exactly-once external inference:
+a process may crash after the provider accepted a request but before Jarvis
+records its response. That reservation is conservatively interrupted and is
+not automatically repeated. A host crash immediately after the database commit
+may leave the caller unaware of success; a replay reads the completed plan.
+SQLite migration v16 is additive and runs with the existing atomic migration
+chain. Backups at v16 must contain the reservation table and required columns.
+No new runtime or service dependency was added.
 
 ## Context limits and evidence
 
@@ -117,9 +149,10 @@ tokenizer guarantee; actual model RAM/context compatibility is unverified.
 
 ## Verification
 
-- `python -m unittest tests.test_mission_planning tests.test_missions tests.test_orchestration tests.test_developer_intelligence tests.test_lmstudio -q` — 101 passed, 2 skipped.
-- `python -m unittest discover -s tests -v` — 434 passed, 10 skipped.
+- `python -m unittest tests.test_mission_planning tests.test_missions -v` — 31 passed.
+- `python -m unittest discover -s tests -v` — 439 passed, 10 skipped.
+- `python -m unittest tests.test_developer_intelligence.DeveloperIntelligenceTests.test_authenticated_api_returns_workspace_scoped_sources_and_cited_chat -v` — 1 passed when run separately, and passed in the final full suite. An earlier broader focused run hit that test's five-second HTTP timeout once.
 - `node --test tests/*.test.mjs` — 25 passed, 0 failed.
 - Python compilation for `jarvis_core` and JavaScript syntax checks for tracked `.js`/`.mjs` files — passed.
 - `git diff --check` — passed.
-- Live Bionic model smoke test — unverified. No listener was present on the documented loopback port 1235; no service was started.
+- Live Bionic model smoke test — not run for this repair; no service was started.

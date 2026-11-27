@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 
 from jarvis_core.mission_planning import (
@@ -13,7 +14,7 @@ from jarvis_core.missions import MissionService
 from jarvis_core.model_provider import (
     GenerationResult, ProviderHTTPError, ProviderTimeout,
 )
-from jarvis_core.orchestration import TaskOrchestrationService, TaskPlanningRequest
+from jarvis_core.orchestration import OrchestrationError, TaskOrchestrationService, TaskPlanningRequest
 from jarvis_core.storage import AccessDenied, Database, WorkspaceKind
 
 
@@ -217,6 +218,122 @@ class MissionPlanningTests(unittest.TestCase):
             idempotency_key=key("m08a-plan"),
         )
         self.assertEqual(plan.state, "awaiting_approval")
+
+    def test_concurrent_same_key_has_one_provider_call_and_explicit_in_progress(self):
+        mission = self.create_mission()
+        entered, release = threading.Event(), threading.Event()
+
+        class BlockingProvider(FakeProvider):
+            def generate(inner, *args, **kwargs):
+                entered.set()
+                if not release.wait(5):
+                    raise AssertionError("test provider release timed out")
+                return super(BlockingProvider, inner).generate(*args, **kwargs)
+
+        provider = BlockingProvider([response()])
+        planner = MissionPlanningService(provider, model="local")
+        first = threading.Thread(target=lambda: self.missions.propose_plan(
+            "owner", mission.id, planner, idempotency_key=key("concurrent-plan")))
+        first.start()
+        self.assertTrue(entered.wait(5))
+        with self.assertRaisesRegex(OrchestrationError, "mission_plan_in_progress"):
+            self.missions.propose_plan("owner", mission.id, planner,
+                                       idempotency_key=key("concurrent-plan"))
+        release.set()
+        first.join(5)
+        self.assertFalse(first.is_alive())
+        self.assertEqual(len(provider.calls), 1)
+
+    def test_completed_replay_conflicting_request_and_durable_attempts(self):
+        mission = self.create_mission()
+        provider = FakeProvider([ProviderTimeout("timeout"), response()])
+        planner = MissionPlanningService(provider, model="local",
+                                         config=MissionPlanningConfig(max_attempts=2))
+        plan = self.missions.propose_plan("owner", mission.id, planner,
+                                          idempotency_key=key("durable-plan"))
+        replay = self.missions.propose_plan("owner", mission.id, planner,
+                                            idempotency_key=key("durable-plan"))
+        self.assertEqual(replay.plan_sha256, plan.plan_sha256)
+        self.assertEqual(len(provider.calls), 2)
+        self.missions.authorize("owner", mission.id, plan.revision, plan.plan_sha256,
+                               idempotency_key=key("durable-authorize"))
+        replay_after_authorization = self.missions.propose_plan(
+            "owner", mission.id, planner, idempotency_key=key("durable-plan"))
+        self.assertEqual(replay_after_authorization.plan_sha256, plan.plan_sha256)
+        self.assertEqual(len(provider.calls), 2)
+        with self.db._connection() as conn:
+            row = conn.execute("SELECT state,attempts_used FROM mission_planning_reservations "
+                               "WHERE mission_id=?", (mission.id,)).fetchone()
+        self.assertEqual((row["state"], row["attempts_used"]), ("completed", 2))
+        with self.assertRaisesRegex(OrchestrationError, "idempotency_key_conflict"):
+            self.missions.propose_plan("owner", mission.id,
+                MissionPlanningService(FakeProvider([response()]), model="other"),
+                idempotency_key=key("durable-plan"))
+
+    def test_restart_with_interrupted_reservation_does_not_repeat_provider(self):
+        mission = self.create_mission()
+        planner = MissionPlanningService(FakeProvider([response()]), model="local")
+        original_plan = planner.plan
+        planner.plan = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("simulated process interruption"))
+        with self.assertRaisesRegex(RuntimeError, "interruption"):
+            self.missions.propose_plan("owner", mission.id, planner,
+                                       idempotency_key=key("restart-plan"))
+        planner.plan = original_plan
+        with self.db._connection() as conn:
+            conn.execute("UPDATE mission_planning_reservations SET state='interrupted',owner_token=NULL,"
+                         "lease_expires_at=NULL WHERE mission_id=?", (mission.id,))
+            conn.commit()
+        restarted = Database(self.path)
+        restarted_planner = MissionPlanningService(FakeProvider([response()]), model="local")
+        with self.assertRaisesRegex(OrchestrationError, "mission_plan_interrupted"):
+            MissionService(restarted).propose_plan("owner", mission.id, restarted_planner,
+                                                    idempotency_key=key("restart-plan"))
+        self.assertEqual(restarted_planner.provider.calls, [])
+
+    def test_plan_event_and_reservation_roll_back_together_on_persistence_failure(self):
+        mission = self.create_mission()
+        planner = MissionPlanningService(FakeProvider([response()]), model="local")
+        original = self.missions._event
+
+        def fail_event(*args, **kwargs):
+            raise RuntimeError("injected event persistence failure")
+
+        self.missions._event = fail_event
+        try:
+            with self.assertRaisesRegex(RuntimeError, "injected"):
+                self.missions.propose_plan("owner", mission.id, planner,
+                                           idempotency_key=key("atomic-failure"))
+        finally:
+            self.missions._event = original
+        task = self.tasks.get_task("owner", mission.task_id)
+        self.assertEqual(task.current_plan_revision, 0)
+        self.assertFalse(any(event["event_type"] == "plan_linked"
+                             for event in self.missions.events("owner", mission.id)))
+        with self.db._connection() as conn:
+            state = conn.execute("SELECT state FROM mission_planning_reservations WHERE mission_id=?",
+                                 (mission.id,)).fetchone()["state"]
+        self.assertEqual(state, "interrupted")
+
+    def test_provider_observes_persisted_attempt_and_stale_owner_cannot_commit(self):
+        mission = self.create_mission()
+        db, mission_id = self.db, mission.id
+
+        class FencingProvider(FakeProvider):
+            def generate(inner, *args, **kwargs):
+                with db._connection() as conn:
+                    row = conn.execute("SELECT attempts_used FROM mission_planning_reservations "
+                                       "WHERE mission_id=?", (mission_id,)).fetchone()
+                    self.assertEqual(row["attempts_used"], 1)
+                    conn.execute("UPDATE mission_planning_reservations SET owner_token='stolen' "
+                                 "WHERE mission_id=?", (mission_id,))
+                    conn.commit()
+                return super(FencingProvider, inner).generate(*args, **kwargs)
+
+        with self.assertRaisesRegex(OrchestrationError, "mission_plan_owner_stale"):
+            self.missions.propose_plan("owner", mission.id,
+                MissionPlanningService(FencingProvider([response()]), model="local"),
+                idempotency_key=key("stale-owner"))
+        self.assertEqual(self.tasks.get_task("owner", mission.task_id).current_plan_revision, 0)
 
 
 if __name__ == "__main__":

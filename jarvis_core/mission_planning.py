@@ -11,7 +11,7 @@ import json
 import math
 import re
 import time
-from typing import Any
+from typing import Any, Callable
 
 from .model_provider import ModelProvider, ProviderTimeout
 from .orchestration import (
@@ -269,7 +269,8 @@ class MissionPlanningService:
         estimated = math.ceil((len(system.encode("utf-8")) + len(prompt.encode("utf-8"))) / 4)
         return system, prompt, estimated
 
-    def plan(self, actor_id: str, request: TaskPlanningRequest) -> MissionPlanResult:
+    def plan(self, actor_id: str, request: TaskPlanningRequest,
+             before_attempt: Callable[[], None] | None = None) -> MissionPlanResult:
         context: RepositoryContext | None = None
         context_failure: str | None = None
         if request.repository_id is not None:
@@ -308,6 +309,8 @@ class MissionPlanningService:
         if fallback is None:
             assert self.provider is not None and self.model is not None
             for attempt in range(self.config.max_attempts):
+                if before_attempt is not None:
+                    before_attempt()
                 attempts = attempt + 1
                 started = time.monotonic()
                 try:

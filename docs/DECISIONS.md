@@ -192,3 +192,24 @@ Update this log when a proposal is accepted, revised, or rejected. Record the de
 **Implemented and merged to `main` via PR #22:** Windows tray menu, fixed numeric-loopback health check, browser actions for dashboard/voice panel, one-instance guard, configurable registered shortcut with conflict fallback, generic backend-transition notifications disabled by default, and cleanup of companion-owned resources. No external package, autostart, credentials, or process runner is added. See [M07 Native Windows Desktop Assistant](M07_NATIVE_WINDOWS_DESKTOP.md).
 
 **Open:** Core interactive Windows tray/dashboard/shortcut checks passed manually on 2026-11-23; Voice Control (`#voice-panel`) rendering against the M07-compatible backend (including a pre-existing M06 `app.js` null-listener boot fix) and isolated Windows Win32 lifecycle checks (single-instance mutex, clean shutdown, OS hotkey conflict fallback, and opt-in generic notification payloads) passed via automated verification on 2026-11-26. Remaining non-blocking open items are tray recovery after Explorer restart (`TaskbarCreated`), Windows Focus Assist notification policy behavior, source-vs-packaged Python behavior, and a future signed installer/upgrade/uninstall strategy.
+
+### M08-B Durable Planning Commit — 2026-11-27
+
+**Confirmed for the targeted repair:** prevent concurrent same-key provider
+calls, persist configured provider-attempt accounting, and atomically bind the
+validated task plan to mission provenance and reservation completion.
+
+**Decision:** use the existing SQLite database and `BEGIN IMMEDIATE` transactions.
+Schema v16 adds a request-digest-bound, workspace/principal/mission/key scoped
+reservation with an owner token, lease, attempt count, and completed plan digest.
+The provider call runs outside write transactions. The existing orchestration
+plan transaction accepts an internal callback so the task plan, mission state,
+append-only provenance event, and reservation completion commit together. A
+stale owner cannot commit. Expired work becomes interrupted and is never
+automatically repeated.
+
+**Limit:** no local database can make an external inference exactly-once across
+a crash after provider acceptance but before recording its response. Jarvis
+records the attempt first and conservatively requires explicit recovery for an
+ambiguous interruption. This repair adds no dependency or execution authority.
+See [M08-B mission planning](M08B_MISSION_PLANNING.md).

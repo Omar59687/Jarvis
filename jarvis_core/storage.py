@@ -20,7 +20,7 @@ from typing import Iterator, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 REQUIRED_BACKUP_COLUMNS = {
     "workspaces": {"id", "name", "kind", "created_at"},
     "workspace_permissions": {
@@ -1125,6 +1125,36 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
             """CREATE TRIGGER mission_ledger_no_auto_resume BEFORE INSERT ON mission_budget_ledger
                 WHEN NEW.outcome NOT IN ('reserved','consumed','denied','failed')
                 BEGIN SELECT RAISE(ABORT, 'invalid mission budget event'); END""",
+        ),
+    ),
+    Migration(
+        version=16,
+        statements=(
+            """CREATE TABLE mission_planning_reservations (
+                workspace_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                mission_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                request_sha256 TEXT NOT NULL CHECK(length(request_sha256)=64),
+                state TEXT NOT NULL CHECK(state IN ('in_progress','interrupted','completed')),
+                owner_token TEXT,
+                lease_expires_at TEXT,
+                attempts_used INTEGER NOT NULL DEFAULT 0 CHECK(attempts_used >= 0),
+                result_revision INTEGER,
+                result_sha256 TEXT CHECK(result_sha256 IS NULL OR length(result_sha256)=64),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(workspace_id,principal_id,mission_id,idempotency_key),
+                FOREIGN KEY(mission_id,workspace_id,principal_id)
+                    REFERENCES missions(id,workspace_id,principal_id) ON DELETE CASCADE,
+                CHECK((state='in_progress' AND owner_token IS NOT NULL AND lease_expires_at IS NOT NULL
+                       AND result_revision IS NULL AND result_sha256 IS NULL)
+                   OR (state='interrupted' AND owner_token IS NULL AND lease_expires_at IS NULL
+                       AND result_revision IS NULL AND result_sha256 IS NULL)
+                   OR (state='completed' AND owner_token IS NULL AND lease_expires_at IS NULL
+                       AND result_revision IS NOT NULL AND result_sha256 IS NOT NULL))
+            )""",
+            "CREATE INDEX mission_planning_reservations_state ON mission_planning_reservations(state,lease_expires_at)",
         ),
     ),)
 
@@ -2412,6 +2442,13 @@ class Database:
                     }
                     if not required_mission_triggers <= mission_triggers:
                         raise sqlite3.DatabaseError("backup is missing mission append-only protections")
+                if source_version >= 16:
+                    reservation_columns = {row[1] for row in source.execute(
+                        "PRAGMA table_info(mission_planning_reservations)").fetchall()}
+                    if not {"workspace_id", "principal_id", "mission_id", "idempotency_key",
+                            "request_sha256", "state", "owner_token", "attempts_used",
+                            "result_revision", "result_sha256"} <= reservation_columns:
+                        raise sqlite3.DatabaseError("backup is missing mission planning reservation schema")
                 if source.execute("PRAGMA foreign_key_check").fetchone() is not None:
                     raise sqlite3.DatabaseError("backup contains foreign key violations")
                 source.backup(target)

@@ -29,6 +29,11 @@ M08-B has since been separately approved and is tracked in
   Backups include goals, plans, mission history, and checkpoints and are
   sensitive. Purge does not erase historical backups or promise physical media
   erasure.
+
+M08-B later adds schema v16 planning reservations and v16 backup validation;
+this M08-A status remains the historical v15 implementation record. See
+[M08-B mission planning](M08B_MISSION_PLANNING.md) for reservation lifecycle
+and crash limitations.
 - `MissionOperatorWorkflow` exposes confirmation-gated operations for an
   already authenticated trusted host; no HTTP route or product UI is added.
 
