@@ -36,6 +36,7 @@ from jarvis_core.orchestration import (
     TaskState,
 )
 from jarvis_core.proactivity import ProactivityError, ProactivityService, suggestion_payload
+from jarvis_core.missions import MissionService
 from jarvis_core.storage import (
     AccessDenied,
     ConversationMemoryChanged,
@@ -621,6 +622,26 @@ class LocalChatServer(ThreadingHTTPServer):
             if configured_database else None
         )
         self.proactivity = ProactivityService(configured_database) if configured_database else None
+        if configured_database is not None and configured_actor is not None:
+            with configured_database._connection() as connection:
+                recovery_scopes = connection.execute(
+                    "SELECT DISTINCT manager.workspace_id FROM workspace_permissions manager "
+                    "JOIN workspace_permissions reader ON reader.workspace_id=manager.workspace_id "
+                    "AND reader.principal_id=manager.principal_id AND reader.permission=? "
+                    "JOIN workspace_permissions writer ON writer.workspace_id=manager.workspace_id "
+                    "AND writer.principal_id=manager.principal_id AND writer.permission=? "
+                    "WHERE manager.principal_id=? AND manager.permission=? "
+                    "ORDER BY manager.workspace_id",
+                    (Permission.READ.value, Permission.WRITE.value, configured_actor,
+                     Permission.MANAGE_WORKSPACE.value),
+                ).fetchall()
+            recovery = MissionService(configured_database, self.orchestration)
+            recovered_missions = 0
+            for scope in recovery_scopes:
+                recovered_missions += len(recovery.recover_after_restart(
+                    configured_actor, scope["workspace_id"]))
+            if recovered_missions:
+                LOGGER.info("Startup recovery processed %d active mission(s)", recovered_missions)
         self.voice_service = voice_service if voice_service is not None else VoiceService()
         self.pairing = PairingAuthority(code=pairing_code, clock=clock)
         self.sessions = SessionStore(clock=clock)

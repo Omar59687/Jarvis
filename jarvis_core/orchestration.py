@@ -1104,7 +1104,9 @@ class TaskOrchestrationService:
         return self.get_task(actor_id, task.id)
 
     def simulate_next_step(self, actor_id: str, task_id: str, worker: TaskWorker, *,
-                           idempotency_key: str) -> OrchestrationTask:
+                           idempotency_key: str,
+                           _transaction_hook: Callable[[sqlite3.Connection, OrchestrationTask, int, str], None] | None = None
+                           ) -> OrchestrationTask:
         actor_id = _nonempty(actor_id, "actor ID")
         idempotency_key = _idempotency(idempotency_key)
         task = self._require_task_access(actor_id, task_id, write=True)
@@ -1147,7 +1149,7 @@ class TaskOrchestrationService:
         if candidate is None:
             if rows and all(row["state"] == SubtaskState.SIMULATED_COMPLETED.value for row in rows):
                 return self._complete_simulation(actor_id, task, plan,
-                                                 idempotency_key)
+                                                 idempotency_key, _transaction_hook)
             raise OrchestrationError("no_simulatable_subtask")
         subtask = next(item for item in plan.subtasks if item.id == candidate["subtask_id"])
         step = worker.simulate_step(subtask, candidate["progress_percent"])
@@ -1157,6 +1159,7 @@ class TaskOrchestrationService:
                 or step.completed != (step.progress_percent == 100)):
             raise OrchestrationError("fake_worker_result_invalid")
         summary = _bounded_text(step.summary, "simulation summary", MAX_RESULT_SUMMARY_CHARS)
+        transaction_missing: list[str] = []
         with self.db._connection() as connection:
             self.db._begin(connection)
             try:
@@ -1170,6 +1173,14 @@ class TaskOrchestrationService:
                         or task_state["approved_plan_revision"] != plan.revision):
                     raise OrchestrationError("task_changed")
                 Database._require_access(connection, actor_id, task.workspace_id, Permission.WRITE)
+                if task.repository_id is not None:
+                    missing = [capability for capability in self._required_capabilities(plan)
+                               if not self.policy.is_granted_in_connection(
+                                   connection, actor_id, task.workspace_id,
+                                   task.repository_id, capability)]
+                    if missing:
+                        transaction_missing = missing
+                        raise OrchestrationError("task_capability_revoked")
                 cursor = connection.execute(
                     "UPDATE orchestration_subtasks SET state=?,progress_percent=?,result_summary=?,updated_at=? "
                     "WHERE task_id=? AND revision=? AND subtask_id=? AND state IN ('pending','simulating') "
@@ -1196,7 +1207,20 @@ class TaskOrchestrationService:
                                    metadata={"subtask_id": subtask.id,
                                              "progress_percent": str(step.progress_percent),
                                              "simulated": "true"})
+                if _transaction_hook is not None:
+                    _transaction_hook(connection, current, plan.revision, plan.plan_sha256)
                 self.db._commit(connection)
+            except OrchestrationError as exc:
+                self.db._rollback(connection)
+                if exc.args and exc.args[0] == "task_capability_revoked":
+                    if _transaction_hook is not None:
+                        raise
+                    current_task = self.get_task(actor_id, task.id)
+                    return self._mark_capability_blocked(
+                        actor_id, current_task, plan, idempotency_key,
+                        transaction_missing,
+                    )
+                raise
             except sqlite3.IntegrityError:
                 self.db._rollback(connection)
                 raise OrchestrationError("idempotency_key_conflict") from None
@@ -1206,7 +1230,9 @@ class TaskOrchestrationService:
         return self.get_task(actor_id, task.id)
 
     def _complete_simulation(self, actor_id: str, task: OrchestrationTask,
-                              plan: TaskPlan, idempotency_key: str) -> OrchestrationTask:
+                              plan: TaskPlan, idempotency_key: str,
+                              transaction_hook: Callable[[sqlite3.Connection, OrchestrationTask, int, str], None] | None = None
+                              ) -> OrchestrationTask:
         duplicate = self._existing_event(task.workspace_id, actor_id,
                                          idempotency_key, "simulation_completed", task.id)
         if duplicate is not None:
@@ -1244,6 +1270,8 @@ class TaskOrchestrationService:
                                    snapshot_sha256=plan.plan_sha256,
                                    metadata={"subtask_count": str(len(plan.subtasks)),
                                              "simulated": "true"})
+                if transaction_hook is not None:
+                    transaction_hook(connection, updated, plan.revision, plan.plan_sha256)
                 self.db._commit(connection)
             except Exception:
                 self.db._rollback(connection)

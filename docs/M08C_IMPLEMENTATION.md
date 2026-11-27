@@ -1,10 +1,11 @@
 # M08-C — Jarvis Proactivity Implementation and Acceptance
 
-**Status:** implemented on `feature/m08-c-proactivity`. M08-B is already
-merged to `main` at `debea200e0c9e205ff54e00ab290a2098b72d9f3`. The original
+**Status:** implemented and merged through PR #26 at
+`eca012ace5c1247d682c1821cef1598a5f8d5578`. M08-B is merged to `main` at
+`debea200e0c9e205ff54e00ab290a2098b72d9f3`. The original
 M08-C baseline was `debea200e0c9e205ff54e00ab290a2098b72d9f3`; the accepted
-C01.1 checkpoint is preserved in the branch history. M08-D and M08-E have not
-started.
+C01.1 checkpoint is preserved in the branch history. M08-D reliability is
+implemented on `feature/m08-d-reliability`; M08-E has not started.
 
 ## Implemented behavior
 

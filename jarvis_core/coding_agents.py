@@ -227,21 +227,38 @@ class CodingCapabilityPolicy:
             return False
         self.db.initialize()
         with self.db._connection() as connection:
-            if not self.db.check_access(principal_id, workspace_id, Permission.READ):
-                return False
-            row = connection.execute(
-                """SELECT 1 FROM coding_repository_grants g
-                   JOIN developer_repositories r ON r.id=g.repository_id
-                     AND r.workspace_id=g.workspace_id
-                   JOIN approved_roots a ON a.id=r.approved_root_id
-                     AND a.workspace_id=r.workspace_id
-                   WHERE g.principal_id=? AND g.workspace_id=? AND g.repository_id=?
-                     AND g.capability=? AND g.revoked_at IS NULL
-                     AND (g.expires_at IS NULL OR g.expires_at>?)
-                     AND r.revoked_at IS NULL AND a.revoked_at IS NULL LIMIT 1""",
-                (principal_id, workspace_id, repository_id, capability.value, _now()),
-            ).fetchone()
-            return row is not None
+            return self.is_granted_in_connection(
+                connection, principal_id, workspace_id, repository_id, capability)
+
+    @staticmethod
+    def is_granted_in_connection(connection: sqlite3.Connection, principal_id: str,
+                                 workspace_id: str, repository_id: str,
+                                 capability: CodingCapability | str) -> bool:
+        """Check a repository capability under the caller's transaction lock."""
+        principal_id = _nonempty(principal_id, "principal ID")
+        workspace_id = _nonempty(workspace_id, "workspace ID")
+        repository_id = _nonempty(repository_id, "repository ID")
+        capability = CodingCapability(capability)
+        if capability not in GRANTABLE_CODING_CAPABILITIES:
+            return False
+        if connection.execute(
+                "SELECT 1 FROM workspace_permissions WHERE workspace_id=? AND principal_id=? "
+                "AND permission=?", (workspace_id, principal_id, Permission.READ.value),
+        ).fetchone() is None:
+            return False
+        row = connection.execute(
+            """SELECT 1 FROM coding_repository_grants g
+               JOIN developer_repositories r ON r.id=g.repository_id
+                 AND r.workspace_id=g.workspace_id
+               JOIN approved_roots a ON a.id=r.approved_root_id
+                 AND a.workspace_id=r.workspace_id
+               WHERE g.principal_id=? AND g.workspace_id=? AND g.repository_id=?
+                 AND g.capability=? AND g.revoked_at IS NULL
+                 AND (g.expires_at IS NULL OR g.expires_at>?)
+                 AND r.revoked_at IS NULL AND a.revoked_at IS NULL LIMIT 1""",
+            (principal_id, workspace_id, repository_id, capability.value, _now()),
+        ).fetchone()
+        return row is not None
 
     def require(self, principal_id: str, workspace_id: str, repository_id: str,
                 capability: CodingCapability | str) -> None:

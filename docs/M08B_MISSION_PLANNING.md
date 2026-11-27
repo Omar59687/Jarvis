@@ -1,8 +1,10 @@
 # M08-B — Intelligent Mission Planning
 
 **Status:** implemented and merged to `main` at
-`debea200e0c9e205ff54e00ab290a2098b72d9f3`. M08-C implementation follows on
-`feature/m08-c-proactivity`; see [M08-C implementation and acceptance](M08C_IMPLEMENTATION.md).
+`debea200e0c9e205ff54e00ab290a2098b72d9f3`. M08-C is merged through PR #26
+at `eca012ace5c1247d682c1821cef1598a5f8d5578`; M08-D follows on
+`feature/m08-d-reliability`. See [M08-C](M08C_IMPLEMENTATION.md) and
+[M08-D](M08D_IMPLEMENTATION.md) implementation records.
 
 ## Confirmed requirements
 
@@ -240,4 +242,4 @@ more advanced workloads to either model.
 - Local acceptance is complete.
 - The implementation commit is present on `main`; external CI state is not
   inferred by this local acceptance record.
-- M08-C is implemented on its feature branch; see [M08-C implementation and acceptance](M08C_IMPLEMENTATION.md).
+- M08-C is merged through PR #26; M08-D implementation and acceptance are tracked in [M08-D](M08D_IMPLEMENTATION.md).

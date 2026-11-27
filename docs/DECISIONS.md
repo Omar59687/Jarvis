@@ -91,7 +91,7 @@ The product targets Arabic and English, Windows desktop, and a browser dashboard
 
 **Decision:** M08-A uses a durable mission facade over `TaskOrchestrationService`, with separate mission authorization receipts and finite persistent budgets/checkpoints. A mission authorization binds the exact plan and budget digest and grants only deterministic simulation. Existing task-plan approval remains a separate receipt. No model, process, filesystem, network, or external action is enabled.
 **Reason:** add mission-specific lifecycle and accounting without creating a second task engine or treating plan approval as execution authorization.
-**Status:** merged to `main` via PR #24 at `a8e4c698719e6f9f8f042e3919dbe549535ecb9a` with additive schema v15. Proactivity remains disabled. M08-B is separately approved; M08-C through M08-E remain gated. See [M08-A specification](M08A_MISSION_FOUNDATION_SPEC.md) and [implementation status](M08A_IMPLEMENTATION_STATUS.md).
+**Status:** merged to `main` via PR #24 at `a8e4c698719e6f9f8f042e3919dbe549535ecb9a` with additive schema v15. Proactivity remained disabled until M08-C, which was merged via PR #26 at `eca012ace5c1247d682c1821cef1598a5f8d5578`. See [M08-A specification](M08A_MISSION_FOUNDATION_SPEC.md) and [implementation status](M08A_IMPLEMENTATION_STATUS.md).
 
 ### P-14 — M08-B provider-neutral bounded planning
 
@@ -276,6 +276,47 @@ controls. Accept means acknowledgment only. No suggestion creates, authorizes,
 resumes or executes a mission/task. No external service, model inference,
 notification delivery, autostart or new dependency is added.
 
-**Status:** Implemented on `feature/m08-c-proactivity`. See [M08-C
-implementation and acceptance](M08C_IMPLEMENTATION.md) for code, tests,
-limitations and the local merge recommendation.
+**Status:** Implemented and merged through PR #26 at
+`eca012ace5c1247d682c1821cef1598a5f8d5578`. See [M08-C implementation and
+acceptance](M08C_IMPLEMENTATION.md).
+
+### M08-D Restart Recovery and Atomic Simulation — 2026-11-27
+
+**Confirmed:** Complete reliability work within the existing M08-A/B/C
+authorization and simulation boundaries. Restart may quarantine stale work;
+it must never resume it automatically.
+
+**Decision:** Run manager-authorized workspace recovery before the local
+backend begins serving. In one SQLite transaction, move active tasks to
+`interrupted`, move running/authorized missions to `interrupted`, expire
+overdue missions, append bounded lifecycle events, and settle unresolved
+mission simulation reservations as failed. Do not create a parallel recovery
+service or new schema; schema v18 already has enough state and append-only
+ledger semantics.
+
+Mission steps reserve their finite budget before the deterministic worker
+runs. A transaction hook now commits task progress, mission checkpoints,
+budget consumption and mission events together. A single pending reservation
+per mission fences concurrent steps; restart records an unresolved reservation
+as failed and preserves consumed request/step budget. Failures block both task
+and mission where authorization is still current. A stale worker cannot commit
+after restart recovery changes the task/mission states.
+
+Repository capabilities are checked again under the task progress transaction
+after the worker returns. If a grant was revoked during the operation, progress
+does not commit and the task is blocked. Existing retry, permission, idempotency
+and audit vocabulary is reused; no raw provider exception or model output is
+persisted. Provider timeout remains governed by the provider's bounded timeout
+contract; no claim of hard process termination or exactly-once external
+inference is made.
+
+**Security:** Recovery requires current READ, WRITE and MANAGE_WORKSPACE in each
+scope. Backend startup only recovers scopes where its configured principal has
+all three permissions. No state is resumed; explicit operator authorization,
+plan approval and mission authorization remain required. Simulation remains
+deterministic and contains no real command, file, network, deployment or
+promotion path.
+
+**Status:** Implemented on `feature/m08-d-reliability`; evidence and limitations
+are recorded in [M08-D implementation and acceptance](M08D_IMPLEMENTATION.md).
+M08-E remains unstarted.
