@@ -41,6 +41,14 @@ For each milestone:
 - M04/M05/M06/M07 should use one shared permission/audit model rather than inventing per-integration authority.
 - M08 depends on tested reliability and stop/recovery behavior across earlier milestones; it is not a shortcut around their approval gates.
 
+## M08-A status
+
+M08-A scope was approved for the `feature/m08-a-mission-foundation` branch at
+baseline `94b056732038e9cdf1d106aa4fa9838508800da6`. Its implementation is
+awaiting review and does not authorize M08-B. See [M08-A specification](M08A_MISSION_FOUNDATION_SPEC.md)
+and [implementation status](M08A_IMPLEMENTATION_STATUS.md). M08-B through
+M08-E remain unapproved.
+
 ## Current state and next task
 
 M01's acceptance report retains unresolved cross-workspace consent and other documented limitations; aggregation remains unsupported and denied by default. P2-A1 through A4 are implemented, with owner live acceptance and independent review still required. P3 includes terminal-approved repositories under existing approved roots, commit-pinned Git-object indexing, multi-language partial metadata, a bounded permission-scoped graph, commit changes, source citations, and the developer dashboard. M05 Developer Intelligence 2.0 extends that foundation; it is not a complete semantic analyzer and never executes repository code. REA-based reverse-engineering workflows are deferred and require a separately approved roadmap milestone. P4 retains unresolved target-Windows OS isolation; M06-A enables only explicit approved file changes inside private application-scoped task workspaces. M06-B adds a pure assessment API and architecture comparison; command execution, verification, promotion, and deployment remain disabled. See [M06 approval-controlled execution](M06_APPROVAL_CONTROLLED_EXECUTION.md), [P2 acceptance](P2_FINAL_ENGINEERING_ACCEPTANCE.md), [P3 implementation and limits](P3_DEVELOPER_INTELLIGENCE.md), [M05 Developer Intelligence 2.0](M05_DEVELOPER_INTELLIGENCE_2.md), [P4 architecture](P4_SUPERVISED_CODING_AGENTS_DESIGN.md), and [P4 acceptance plan](P4_SECURITY_AND_ACCEPTANCE_PLAN.md).

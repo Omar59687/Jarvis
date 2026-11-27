@@ -20,7 +20,7 @@ from typing import Iterator, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 REQUIRED_BACKUP_COLUMNS = {
     "workspaces": {"id", "name", "kind", "created_at"},
     "workspace_permissions": {
@@ -996,6 +996,135 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
                     REFERENCES developer_repositories(id,workspace_id) ON DELETE CASCADE
             )""",
             "CREATE INDEX coding_file_change_workspace ON coding_file_change_proposals(workspace_id,repository_id,status,created_at)",
+        ),
+    ),
+    Migration(
+        version=15,
+        statements=(
+            """CREATE TABLE missions (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL UNIQUE,
+                workspace_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN (
+                    'draft','awaiting_authorization','authorized','running','paused',
+                    'blocked','interrupted','completed','cancelled','expired')),
+                plan_revision INTEGER NOT NULL DEFAULT 0 CHECK(plan_revision >= 0),
+                authorized_revision INTEGER,
+                authorization_sha256 TEXT CHECK(authorization_sha256 IS NULL OR length(authorization_sha256)=64),
+                max_steps INTEGER NOT NULL CHECK(max_steps BETWEEN 1 AND 25),
+                max_requests INTEGER NOT NULL CHECK(max_requests BETWEEN 1 AND 100),
+                max_retries INTEGER NOT NULL CHECK(max_retries BETWEEN 0 AND 10),
+                max_duration_seconds INTEGER NOT NULL CHECK(max_duration_seconds BETWEEN 1 AND 2592000),
+                steps_used INTEGER NOT NULL DEFAULT 0 CHECK(steps_used >= 0),
+                requests_used INTEGER NOT NULL DEFAULT 0 CHECK(requests_used >= 0),
+                retries_used INTEGER NOT NULL DEFAULT 0 CHECK(retries_used >= 0),
+                started_at TEXT,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                archived_at TEXT,
+                archived_by TEXT,
+                UNIQUE(id,workspace_id,principal_id),
+                CHECK(steps_used <= max_steps AND requests_used <= max_requests
+                    AND retries_used <= max_retries),
+                CHECK((authorized_revision IS NULL AND authorization_sha256 IS NULL)
+                    OR (authorized_revision IS NOT NULL AND authorization_sha256 IS NOT NULL)),
+                CHECK((archived_at IS NULL AND archived_by IS NULL)
+                    OR (archived_at IS NOT NULL AND archived_by IS NOT NULL)),
+                FOREIGN KEY(task_id,workspace_id,principal_id)
+                    REFERENCES orchestration_tasks(id,workspace_id,principal_id) ON DELETE CASCADE
+            )""",
+            "CREATE INDEX missions_scope_state ON missions(workspace_id,principal_id,state,updated_at,id)",
+            """CREATE TABLE mission_authorizations (
+                id TEXT PRIMARY KEY,
+                mission_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                plan_revision INTEGER NOT NULL CHECK(plan_revision > 0),
+                plan_sha256 TEXT NOT NULL CHECK(length(plan_sha256)=64),
+                budget_sha256 TEXT NOT NULL CHECK(length(budget_sha256)=64),
+                capability_set_json TEXT NOT NULL CHECK(capability_set_json='[\"simulate\"]'),
+                authorization_sha256 TEXT NOT NULL CHECK(length(authorization_sha256)=64),
+                approved_by TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(workspace_id,approved_by,idempotency_key),
+                UNIQUE(mission_id,plan_revision,authorization_sha256),
+                FOREIGN KEY(mission_id,workspace_id,principal_id)
+                    REFERENCES missions(id,workspace_id,principal_id) ON DELETE CASCADE
+            )""",
+            """CREATE TABLE mission_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mission_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                event_type TEXT NOT NULL CHECK(event_type IN (
+                    'mission_created','plan_linked','mission_authorized','mission_rejected',
+                    'mission_paused','mission_resumed','mission_cancelled','mission_interrupted',
+                    'mission_simulation_step','mission_completed','mission_archived','mission_restored')),
+                plan_revision INTEGER,
+                snapshot_sha256 TEXT,
+                idempotency_key TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                UNIQUE(workspace_id,actor_id,idempotency_key),
+                FOREIGN KEY(mission_id,workspace_id,principal_id)
+                    REFERENCES missions(id,workspace_id,principal_id) ON DELETE CASCADE
+            )""",
+            "CREATE INDEX mission_events_scope ON mission_events(mission_id,created_at,id)",
+            """CREATE TABLE mission_budget_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mission_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                operation_key TEXT NOT NULL,
+                request_delta INTEGER NOT NULL CHECK(request_delta BETWEEN 0 AND 1),
+                step_delta INTEGER NOT NULL CHECK(step_delta BETWEEN 0 AND 1),
+                retry_delta INTEGER NOT NULL CHECK(retry_delta BETWEEN 0 AND 1),
+                outcome TEXT NOT NULL CHECK(outcome IN ('reserved','consumed','denied','failed')),
+                created_at TEXT NOT NULL,
+                UNIQUE(mission_id,operation_key,outcome),
+                FOREIGN KEY(mission_id,workspace_id,principal_id)
+                    REFERENCES missions(id,workspace_id,principal_id) ON DELETE CASCADE
+            )""",
+            """CREATE TABLE mission_checkpoints (
+                mission_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL CHECK(sequence > 0),
+                plan_revision INTEGER NOT NULL CHECK(plan_revision > 0),
+                progress_sha256 TEXT NOT NULL CHECK(length(progress_sha256)=64),
+                progress_json TEXT NOT NULL CHECK(length(progress_json) <= 12000),
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(mission_id,sequence),
+                FOREIGN KEY(mission_id,workspace_id,principal_id)
+                    REFERENCES missions(id,workspace_id,principal_id) ON DELETE CASCADE
+            )""",
+            """CREATE TRIGGER mission_authorizations_no_update BEFORE UPDATE ON mission_authorizations
+                BEGIN SELECT RAISE(ABORT, 'mission authorizations are immutable'); END""",
+            """CREATE TRIGGER mission_authorizations_no_delete BEFORE DELETE ON mission_authorizations
+                WHEN EXISTS (SELECT 1 FROM missions WHERE id=OLD.mission_id)
+                BEGIN SELECT RAISE(ABORT, 'mission authorizations are immutable'); END""",
+            """CREATE TRIGGER mission_events_no_update BEFORE UPDATE ON mission_events
+                BEGIN SELECT RAISE(ABORT, 'mission events are append-only'); END""",
+            """CREATE TRIGGER mission_events_no_delete BEFORE DELETE ON mission_events
+                WHEN EXISTS (SELECT 1 FROM missions WHERE id=OLD.mission_id)
+                BEGIN SELECT RAISE(ABORT, 'mission events are append-only'); END""",
+            """CREATE TRIGGER mission_checkpoints_no_update BEFORE UPDATE ON mission_checkpoints
+                BEGIN SELECT RAISE(ABORT, 'mission checkpoints are immutable'); END""",
+            """CREATE TRIGGER mission_checkpoints_no_delete BEFORE DELETE ON mission_checkpoints
+                WHEN EXISTS (SELECT 1 FROM missions WHERE id=OLD.mission_id)
+                BEGIN SELECT RAISE(ABORT, 'mission checkpoints are immutable'); END""",
+            """CREATE TRIGGER mission_ledger_no_update BEFORE UPDATE ON mission_budget_ledger
+                BEGIN SELECT RAISE(ABORT, 'mission budget ledger is append-only'); END""",
+            """CREATE TRIGGER mission_ledger_no_delete BEFORE DELETE ON mission_budget_ledger
+                WHEN EXISTS (SELECT 1 FROM missions WHERE id=OLD.mission_id)
+                BEGIN SELECT RAISE(ABORT, 'mission budget ledger is append-only'); END""",
+            """CREATE TRIGGER mission_ledger_no_auto_resume BEFORE INSERT ON mission_budget_ledger
+                WHEN NEW.outcome NOT IN ('reserved','consumed','denied','failed')
+                BEGIN SELECT RAISE(ABORT, 'invalid mission budget event'); END""",
         ),
     ),)
 
@@ -2260,6 +2389,29 @@ class Database:
                     if not any(row[2] == "persistent_conversations" for row in conversation_foreign_keys):
                         raise sqlite3.DatabaseError(
                             "backup is missing conversation ownership constraints")
+                if source_version >= 15:
+                    mission_tables = {
+                        "missions": {"id", "task_id", "workspace_id", "principal_id", "state", "max_steps", "steps_used"},
+                        "mission_authorizations": {"id", "mission_id", "plan_revision", "plan_sha256", "budget_sha256", "authorization_sha256"},
+                        "mission_events": {"id", "mission_id", "workspace_id", "event_type", "metadata_json"},
+                        "mission_budget_ledger": {"id", "mission_id", "operation_key", "request_delta", "step_delta", "outcome"},
+                        "mission_checkpoints": {"mission_id", "sequence", "plan_revision", "progress_sha256", "progress_json"},
+                    }
+                    for table, required_columns in mission_tables.items():
+                        columns = {row[1] for row in source.execute(
+                            f"PRAGMA table_info({table})").fetchall()}
+                        if not required_columns <= columns:
+                            raise sqlite3.DatabaseError(f"backup is missing required schema for table {table}")
+                    mission_triggers = {row[0] for row in source.execute(
+                        "SELECT name FROM sqlite_master WHERE type='trigger'").fetchall()}
+                    required_mission_triggers = {
+                        "mission_authorizations_no_update", "mission_authorizations_no_delete",
+                        "mission_events_no_update", "mission_events_no_delete",
+                        "mission_checkpoints_no_update", "mission_checkpoints_no_delete",
+                        "mission_ledger_no_update", "mission_ledger_no_delete",
+                    }
+                    if not required_mission_triggers <= mission_triggers:
+                        raise sqlite3.DatabaseError("backup is missing mission append-only protections")
                 if source.execute("PRAGMA foreign_key_check").fetchone() is not None:
                     raise sqlite3.DatabaseError("backup contains foreign key violations")
                 source.backup(target)

@@ -87,6 +87,12 @@ The product targets Arabic and English, Windows desktop, and a browser dashboard
 **Open gate:** target Windows 11 isolation has not been verified. Worktree creation, file mutation, command/network execution, commit, push, PR, merge, and deploy remain unavailable. Do not interpret proposal approval as permission for a subsequent operation.
 **Status:** partial foundation implemented and tested on disposable synthetic repositories. See [P4 implementation status](P4_IMPLEMENTATION_STATUS.md), [P4 architecture](P4_SUPERVISED_CODING_AGENTS_DESIGN.md), and [P4 security and acceptance plan](P4_SECURITY_AND_ACCEPTANCE_PLAN.md).
 
+### P-13 — M08-A mission facade and simulation-only authorization
+
+**Decision:** M08-A uses a durable mission facade over `TaskOrchestrationService`, with separate mission authorization receipts and finite persistent budgets/checkpoints. A mission authorization binds the exact plan and budget digest and grants only deterministic simulation. Existing task-plan approval remains a separate receipt. No model, process, filesystem, network, or external action is enabled.
+**Reason:** add mission-specific lifecycle and accounting without creating a second task engine or treating plan approval as execution authorization.
+**Status:** implemented on the M08-A feature branch with additive schema v15; awaiting review. Proactivity remains disabled and M08-B through M08-E remain gated. See [M08-A specification](M08A_MISSION_FOUNDATION_SPEC.md) and [implementation status](M08A_IMPLEMENTATION_STATUS.md).
+
 ### Conversational context update — 2026-11-22
 
 **Decision:** Keep a small recent conversation window in each authenticated, process-local chat session so follow-up questions can use prior turns. Use it only within the same session and selected workspace; clear it on workspace change, logout/revocation, or session expiry. Do not write conversational turns to SQLite, browser storage, or permanent memory. Any durable conversation retention remains an open consent and retention decision.
