@@ -91,7 +91,35 @@ The product targets Arabic and English, Windows desktop, and a browser dashboard
 
 **Decision:** M08-A uses a durable mission facade over `TaskOrchestrationService`, with separate mission authorization receipts and finite persistent budgets/checkpoints. A mission authorization binds the exact plan and budget digest and grants only deterministic simulation. Existing task-plan approval remains a separate receipt. No model, process, filesystem, network, or external action is enabled.
 **Reason:** add mission-specific lifecycle and accounting without creating a second task engine or treating plan approval as execution authorization.
-**Status:** implemented on the M08-A feature branch with additive schema v15; awaiting review. Proactivity remains disabled and M08-B through M08-E remain gated. See [M08-A specification](M08A_MISSION_FOUNDATION_SPEC.md) and [implementation status](M08A_IMPLEMENTATION_STATUS.md).
+**Status:** merged to `main` via PR #24 at `a8e4c698719e6f9f8f042e3919dbe549535ecb9a` with additive schema v15. Proactivity remains disabled. M08-B is separately approved; M08-C through M08-E remain gated. See [M08-A specification](M08A_MISSION_FOUNDATION_SPEC.md) and [implementation status](M08A_IMPLEMENTATION_STATUS.md).
+
+### P-14 — M08-B provider-neutral bounded planning
+
+**Confirmed for M08-B:** Add optional local-model planning behind the existing
+`ModelProvider` contract, retain a deterministic planner/fallback, and persist
+bounded structured steps using the existing task-plan store. Planning remains
+separate from task approval and mission authorization. Continue Python-first
+development toward independent local Python coding as a future direction;
+external coding agents remain optional. Java and other dedicated language
+support are deferred.
+
+**Decision:** Use standard-library JSON validation and SQLite mission events;
+reuse existing capability/dependency validation and commit-pinned Developer
+Intelligence. Context budget is an explicit heuristic with an output reserve,
+not exact tokenizer accounting. Add no Aider, OpenHands, OpenCode, LangGraph,
+runtime, paid service, or other package dependency. Model/provider choice is
+explicit at trusted service construction; no discovery or remote fallback.
+
+**Security:** Model plans cannot request capabilities; invalid content falls
+back to deterministic planning. Repository content is untrusted. No planning
+output authorizes task approval, file/process/network access, GitHub writes,
+execution, promotion or deployment. M08-A simulation remains the only
+execution boundary. M08-C remains gated.
+
+**Status:** Implemented on `feature/m08-b-mission-planning`; see [M08-B mission
+planning](M08B_MISSION_PLANNING.md) for source research, evidence and
+limitations. Model hardware fit and live endpoint behavior require local
+acceptance and are not claimed by regression tests.
 
 ### Conversational context update — 2026-11-22
 
@@ -164,3 +192,24 @@ Update this log when a proposal is accepted, revised, or rejected. Record the de
 **Implemented and merged to `main` via PR #22:** Windows tray menu, fixed numeric-loopback health check, browser actions for dashboard/voice panel, one-instance guard, configurable registered shortcut with conflict fallback, generic backend-transition notifications disabled by default, and cleanup of companion-owned resources. No external package, autostart, credentials, or process runner is added. See [M07 Native Windows Desktop Assistant](M07_NATIVE_WINDOWS_DESKTOP.md).
 
 **Open:** Core interactive Windows tray/dashboard/shortcut checks passed manually on 2026-11-23; Voice Control (`#voice-panel`) rendering against the M07-compatible backend (including a pre-existing M06 `app.js` null-listener boot fix) and isolated Windows Win32 lifecycle checks (single-instance mutex, clean shutdown, OS hotkey conflict fallback, and opt-in generic notification payloads) passed via automated verification on 2026-11-26. Remaining non-blocking open items are tray recovery after Explorer restart (`TaskbarCreated`), Windows Focus Assist notification policy behavior, source-vs-packaged Python behavior, and a future signed installer/upgrade/uninstall strategy.
+
+### M08-B Durable Planning Commit — 2026-11-27
+
+**Confirmed for the targeted repair:** prevent concurrent same-key provider
+calls, persist configured provider-attempt accounting, and atomically bind the
+validated task plan to mission provenance and reservation completion.
+
+**Decision:** use the existing SQLite database and `BEGIN IMMEDIATE` transactions.
+Schema v16 adds a request-digest-bound, workspace/principal/mission/key scoped
+reservation with an owner token, lease, attempt count, and completed plan digest.
+The provider call runs outside write transactions. The existing orchestration
+plan transaction accepts an internal callback so the task plan, mission state,
+append-only provenance event, and reservation completion commit together. A
+stale owner cannot commit. Expired work becomes interrupted and is never
+automatically repeated.
+
+**Limit:** no local database can make an external inference exactly-once across
+a crash after provider acceptance but before recording its response. Jarvis
+records the attempt first and conservatively requires explicit recovery for an
+ambiguous interruption. This repair adds no dependency or execution authority.
+See [M08-B mission planning](M08B_MISSION_PLANNING.md).

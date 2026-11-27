@@ -14,8 +14,9 @@ from uuid import uuid4
 
 from .orchestration import (
     DeterministicFakePlanner, DeterministicFakeWorker, OrchestrationError,
-    TaskOrchestrationService, _canonical_json, _digest, _idempotency,
+    TaskOrchestrationService, TaskPlanningRequest, _canonical_json, _digest, _idempotency,
 )
+from .mission_planning import MissionPlanResult, MissionPlanningService
 from .storage import Database, Permission, _now, _nonempty
 
 MAX_MISSIONS_PER_WORKSPACE = 100
@@ -106,12 +107,12 @@ class MissionService:
     @staticmethod
     def _metadata(metadata: dict[str, str] | None) -> str:
         value = metadata or {}
-        if (not isinstance(value, dict) or len(value) > 8
+        if (not isinstance(value, dict) or len(value) > 20
                 or any(not isinstance(k, str) or len(k) > 40
-                       or not isinstance(v, str) or len(v) > 120 for k, v in value.items())):
+                       or not isinstance(v, str) or len(v) > 256 for k, v in value.items())):
             raise ValueError("mission event metadata exceeds its bound")
         rendered = _canonical_json(value)
-        if len(rendered.encode("utf-8")) > 1024:
+        if len(rendered.encode("utf-8")) > 2048:
             raise ValueError("mission event metadata exceeds its bound")
         return rendered
 
@@ -257,6 +258,154 @@ class MissionService:
                 self.db._rollback(conn)
                 raise
         return plan
+
+    def propose_plan(self, actor_id: str, mission_id: str,
+                     planner: MissionPlanningService, *, idempotency_key: str):
+        """Create a reviewable plan; model planning never grants execution authority."""
+        mission = self._require(actor_id, mission_id, write=True, manage=True)
+        key = _idempotency(idempotency_key)
+        if type(planner) is not MissionPlanningService:
+            raise OrchestrationError("mission_planner_unavailable")
+        task = self.tasks.get_task(actor_id, mission.task_id)
+        request = TaskPlanningRequest(
+            task.id, task.workspace_id, task.repository_id, task.repository_commit, task.goal,
+            task.requested_capabilities, tuple(task.capability_manifest.get("granted", [])),
+        )
+        request_digest = _digest(_canonical_json({
+            "mission_id": mission.id, "task_id": task.id, "workspace_id": task.workspace_id,
+            "principal_id": mission.principal_id, "goal_sha256": _digest(task.goal),
+            "repository_id": task.repository_id, "repository_commit": task.repository_commit,
+            "requested_capabilities": list(task.requested_capabilities), "model": planner.model,
+            "provider_type": (type(planner.provider).__module__ + "." + type(planner.provider).__qualname__)
+                if planner.provider is not None else None,
+            "provider_timeout": getattr(planner.provider, "timeout", None),
+            "provider_endpoint_sha256": _digest(str(getattr(planner.provider, "_endpoint", ""))),
+            "config": planner.config.__dict__,
+        }))
+        owner = uuid4().hex
+        lease_until = (datetime.now(timezone.utc) + timedelta(
+            seconds=planner.config.planning_timeout_seconds + 15)).isoformat(timespec="microseconds")
+        with self.db._connection() as conn:
+            self.db._begin(conn)
+            try:
+                Database._require_access(conn, actor_id, mission.workspace_id, Permission.MANAGE_WORKSPACE)
+                row = conn.execute("SELECT * FROM mission_planning_reservations WHERE workspace_id=? AND "
+                                   "principal_id=? AND mission_id=? AND idempotency_key=?",
+                                   (mission.workspace_id, mission.principal_id, mission.id, key)).fetchone()
+                if row is not None:
+                    if row["request_sha256"] != request_digest:
+                        raise OrchestrationError("idempotency_key_conflict")
+                    if row["state"] == "completed":
+                        self.db._commit(conn)
+                        replay = self.tasks.get_plan(actor_id, mission.task_id, int(row["result_revision"]))
+                        if replay.plan_sha256 != row["result_sha256"]:
+                            raise OrchestrationError("mission_evidence_corrupt")
+                        return replay
+                    if row["state"] == "in_progress":
+                        if datetime.fromisoformat(row["lease_expires_at"]) > datetime.now(timezone.utc):
+                            raise OrchestrationError("mission_plan_in_progress")
+                        conn.execute("UPDATE mission_planning_reservations SET state='interrupted',owner_token=NULL,"
+                                     "lease_expires_at=NULL,updated_at=? WHERE workspace_id=? AND principal_id=? "
+                                     "AND mission_id=? AND idempotency_key=?",
+                                     (_now(), mission.workspace_id, mission.principal_id, mission.id, key))
+                        self.db._commit(conn)
+                    raise OrchestrationError("mission_plan_interrupted")
+                old_event = conn.execute("SELECT mission_id,event_type,plan_revision FROM mission_events "
+                                         "WHERE workspace_id=? AND actor_id=? AND idempotency_key=?",
+                                         (mission.workspace_id, actor_id, key)).fetchone()
+                if old_event is not None:
+                    if old_event["mission_id"] == mission.id and old_event["event_type"] == "plan_linked":
+                        self.db._commit(conn)
+                        return self.tasks.get_plan(actor_id, mission.task_id, int(old_event["plan_revision"]))
+                    raise OrchestrationError("idempotency_key_conflict")
+                if mission.state not in {"draft", "awaiting_authorization", "blocked"}:
+                    raise OrchestrationError("mission_plan_not_editable")
+                task_event = conn.execute("SELECT task_id,event_type FROM orchestration_task_events "
+                                          "WHERE workspace_id=? AND actor_id=? AND idempotency_key=?",
+                                          (task.workspace_id, actor_id, key)).fetchone()
+                if task_event is not None:
+                    raise OrchestrationError("idempotency_key_conflict")
+                conn.execute("INSERT INTO mission_planning_reservations(workspace_id,principal_id,mission_id,"
+                             "idempotency_key,request_sha256,state,owner_token,lease_expires_at,created_at,updated_at) "
+                             "VALUES(?,?,?,?,?,'in_progress',?,?,?,?)",
+                             (mission.workspace_id, mission.principal_id, mission.id, key, request_digest,
+                              owner, lease_until, _now(), _now()))
+                self.db._commit(conn)
+            except Exception:
+                self.db._rollback(conn)
+                raise
+
+        def reserve_attempt():
+            with self.db._connection() as conn:
+                self.db._begin(conn)
+                try:
+                    current = conn.execute("SELECT state,owner_token,attempts_used FROM mission_planning_reservations "
+                                           "WHERE workspace_id=? AND principal_id=? AND mission_id=? AND idempotency_key=?",
+                                           (mission.workspace_id, mission.principal_id, mission.id, key)).fetchone()
+                    if current is None or current["state"] != "in_progress" or current["owner_token"] != owner:
+                        raise OrchestrationError("mission_plan_owner_stale")
+                    if current["attempts_used"] >= planner.config.max_attempts:
+                        raise OrchestrationError("mission_plan_attempt_budget_exhausted")
+                    cursor = conn.execute("UPDATE mission_planning_reservations SET attempts_used=attempts_used+1,updated_at=? "
+                                          "WHERE workspace_id=? AND principal_id=? AND mission_id=? AND idempotency_key=? "
+                                          "AND state='in_progress' AND owner_token=?",
+                                          (_now(), mission.workspace_id, mission.principal_id, mission.id, key, owner))
+                    if cursor.rowcount != 1:
+                        raise OrchestrationError("mission_plan_owner_stale")
+                    self.db._commit(conn)
+                except Exception:
+                    self.db._rollback(conn)
+                    raise
+
+        def interrupt_owned_reservation():
+            with self.db._connection() as conn:
+                conn.execute("UPDATE mission_planning_reservations SET state='interrupted',owner_token=NULL,"
+                             "lease_expires_at=NULL,updated_at=? WHERE workspace_id=? AND principal_id=? "
+                             "AND mission_id=? AND idempotency_key=? AND state='in_progress' AND owner_token=?",
+                             (_now(), mission.workspace_id, mission.principal_id, mission.id, key, owner))
+                conn.commit()
+
+        try:
+            result: MissionPlanResult = planner.plan(actor_id, request, before_attempt=reserve_attempt)
+            if type(result) is not MissionPlanResult:
+                raise OrchestrationError("mission_plan_invalid")
+        except Exception:
+            interrupt_owned_reservation()
+            raise
+        provenance = result.provenance()
+        metadata = {name: ("" if value is None else str(value))
+                    for name, value in provenance.items()}
+        metadata["subtask_count"] = str(len(result.proposal.subtasks))
+        metadata["provenance_sha256"] = _digest(_canonical_json(metadata))
+
+        def commit_link(conn, task_row, revision, digest):
+            Database._require_access(conn, actor_id, mission.workspace_id, Permission.MANAGE_WORKSPACE)
+            current = conn.execute("SELECT state,owner_token FROM mission_planning_reservations WHERE "
+                                   "workspace_id=? AND principal_id=? AND mission_id=? AND idempotency_key=?",
+                                   (mission.workspace_id, mission.principal_id, mission.id, key)).fetchone()
+            if current is None or current["state"] != "in_progress" or current["owner_token"] != owner:
+                raise OrchestrationError("mission_plan_owner_stale")
+            conn.execute("UPDATE missions SET state='awaiting_authorization',plan_revision=?,"
+                         "authorized_revision=NULL,authorization_sha256=NULL,updated_at=? WHERE id=?",
+                         (revision, _now(), mission.id))
+            updated = self._row(conn.execute("SELECT * FROM missions WHERE id=?", (mission.id,)).fetchone())
+            self._event(conn, updated, actor_id, "plan_linked", key,
+                        revision=revision, digest=digest, metadata=metadata)
+            cursor = conn.execute("UPDATE mission_planning_reservations SET state='completed',owner_token=NULL,"
+                         "lease_expires_at=NULL,result_revision=?,result_sha256=?,updated_at=? WHERE workspace_id=? "
+                         "AND principal_id=? AND mission_id=? AND idempotency_key=? AND owner_token=?",
+                         (revision, digest, _now(), mission.workspace_id, mission.principal_id, mission.id, key, owner))
+            if cursor.rowcount != 1:
+                raise OrchestrationError("mission_plan_owner_stale")
+
+        try:
+            return self.tasks.propose_plan(
+                actor_id, mission.task_id, DeterministicFakePlanner(result.proposal),
+                idempotency_key=key, _transaction_hook=commit_link,
+            )
+        except Exception:
+            interrupt_owned_reservation()
+            raise
 
     def authorize(self, actor_id: str, mission_id: str, revision: int,
                   expected_plan_sha256: str, *, idempotency_key: str,
@@ -566,6 +715,12 @@ class MissionService:
                 metadata = json.loads(row["metadata_json"])
                 if self._metadata(metadata) != row["metadata_json"]:
                     raise ValueError
+                provenance_sha = metadata.get("provenance_sha256")
+                if provenance_sha is not None:
+                    evidence = dict(metadata)
+                    del evidence["provenance_sha256"]
+                    if provenance_sha != _digest(_canonical_json(evidence)):
+                        raise ValueError
             except (TypeError, ValueError):
                 raise OrchestrationError("mission_evidence_corrupt") from None
             result.append({"id": row["id"], "event_type": row["event_type"],

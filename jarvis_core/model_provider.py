@@ -60,5 +60,5 @@ def validate_generation_options(*, temperature: object, max_output_tokens: objec
     if (isinstance(temperature, bool) or not isinstance(temperature, (int, float))
             or not math.isfinite(temperature) or not 0.0 <= temperature <= 2.0):
         raise ProviderConfigurationError("temperature must be between 0 and 2")
-    if type(max_output_tokens) is not int or not 1 <= max_output_tokens <= 512:
-        raise ProviderConfigurationError("max_output_tokens must be between 1 and 512")
+    if type(max_output_tokens) is not int or not 1 <= max_output_tokens <= 4096:
+        raise ProviderConfigurationError("max_output_tokens must be between 1 and 4096")

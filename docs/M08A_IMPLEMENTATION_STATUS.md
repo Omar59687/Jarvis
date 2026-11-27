@@ -1,7 +1,10 @@
 # M08-A implementation status
 
-**Status:** Implemented on `feature/m08-a-mission-foundation`; awaiting review.
-This report records branch evidence and does not approve M08-B.
+**Status:** Implemented and merged to `main` as PR #24 at
+`a8e4c698719e6f9f8f042e3919dbe549535ecb9a`.
+This report records the M08-A implementation and its original verification.
+M08-B has since been separately approved and is tracked in
+[M08-B mission planning](M08B_MISSION_PLANNING.md).
 
 ## Implemented
 
@@ -26,6 +29,11 @@ This report records branch evidence and does not approve M08-B.
   Backups include goals, plans, mission history, and checkpoints and are
   sensitive. Purge does not erase historical backups or promise physical media
   erasure.
+
+M08-B later adds schema v16 planning reservations and v16 backup validation;
+this M08-A status remains the historical v15 implementation record. See
+[M08-B mission planning](M08B_MISSION_PLANNING.md) for reservation lifecycle
+and crash limitations.
 - `MissionOperatorWorkflow` exposes confirmation-gated operations for an
   already authenticated trusted host; no HTTP route or product UI is added.
 

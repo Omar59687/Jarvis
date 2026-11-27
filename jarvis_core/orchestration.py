@@ -14,7 +14,7 @@ import json
 import re
 import secrets
 import sqlite3
-from typing import Protocol
+from typing import Callable, Protocol
 from uuid import uuid4
 
 from .coding_agents import CodingAuthorizationDenied, CodingCapability, CodingCapabilityPolicy
@@ -783,7 +783,9 @@ class TaskOrchestrationService:
             raise StaleRepository()
 
     def propose_plan(self, actor_id: str, task_id: str, planner: TaskPlanner, *,
-                     idempotency_key: str) -> TaskPlan:
+                     idempotency_key: str,
+                     _transaction_hook: Callable[[sqlite3.Connection, OrchestrationTask, int, str], None] | None = None
+                     ) -> TaskPlan:
         actor_id = _nonempty(actor_id, "actor ID")
         idempotency_key = _idempotency(idempotency_key)
         task = self._require_task_access(actor_id, task_id, write=True)
@@ -868,6 +870,8 @@ class TaskOrchestrationService:
                                    revision=revision, snapshot_sha256=plan_hash,
                                    metadata={"revision": str(revision),
                                              "subtask_count": str(len(subtasks))})
+                if _transaction_hook is not None:
+                    _transaction_hook(connection, updated, revision, plan_hash)
                 self.db._commit(connection)
             except Exception:
                 self.db._rollback(connection)

@@ -84,10 +84,15 @@ class LMStudioBionicTests(unittest.TestCase):
             with self.subTest(model=model), self.assertRaises(ProviderConfigurationError):
                 client.generate("hello", model)
         with self.assertRaises(ProviderConfigurationError):
-            client.generate("hello", "model", max_output_tokens=513)
+            client.generate("hello", "model", max_output_tokens=4097)
         with self.assertRaises(ProviderConfigurationError):
             client.generate(" ", "model")
         self.assertEqual(transport.calls, [])
+
+    def test_mission_planning_output_budget_is_supported(self):
+        client, transport = client_with({"output": [{"type": "message", "content": "{}"}]})
+        client.generate("plan", "qwen3.5-4b", max_output_tokens=4096)
+        self.assertEqual(transport.calls[0][1]["max_output_tokens"], 4096)
 
     def test_missing_model_connection_timeout_http_and_redirect_fail_safely(self):
         client, _ = client_with(status=404, payload={"error": "private path"})

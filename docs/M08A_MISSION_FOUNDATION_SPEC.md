@@ -1,7 +1,8 @@
 # M08-A: Mission Foundation
 
-**Status:** Confirmed implementation scope for the M08-A branch only. This is
-not approval for M08-B through M08-E.
+**Status:** Confirmed implementation scope for M08-A. This was not an approval
+for later phases at the time; M08-B has since been separately approved. M08-C
+through M08-E remain gated.
 
 ## Confirmed requirements
 
@@ -82,6 +83,6 @@ nothing resumes automatically.
 
 ## Implemented evidence
 
-Schema v15 and the M08-A service/operator are implemented on the feature branch.
+Schema v15 and the M08-A service/operator are merged to `main` via PR #24.
 See [M08-A implementation status](M08A_IMPLEMENTATION_STATUS.md) for file and
 verification evidence. Requirements above are not evidence by themselves.

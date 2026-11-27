@@ -22,7 +22,7 @@ from jarvis_core.model_provider import (
 )
 
 MAX_RESPONSE_BYTES = 2_000_000
-MAX_PROMPT_CHARS = 12_000
+MAX_PROMPT_CHARS = 64_000
 MAX_SYSTEM_CHARS = 4_000
 MAX_OUTPUT_CHARS = 100_000
 
@@ -115,8 +115,8 @@ class LMStudioBionicClient:
         if system_prompt is not None and (not isinstance(system_prompt, str)
                 or len(system_prompt) > MAX_SYSTEM_CHARS or "\x00" in system_prompt):
             raise ProviderConfigurationError("system prompt is outside the input limit")
-        if type(max_output_tokens) is not int or not 1 <= max_output_tokens <= 512:
-            raise ProviderConfigurationError("max_output_tokens must be between 1 and 512")
+        if type(max_output_tokens) is not int or not 1 <= max_output_tokens <= 4096:
+            raise ProviderConfigurationError("max_output_tokens must be between 1 and 4096")
         try:
             prompt.encode("utf-8")
             if system_prompt is not None:
