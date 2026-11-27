@@ -50,6 +50,12 @@ from .storage import (
     WorkspaceKind,
     default_database_path,
 )
+from .proactivity import (
+    ProactivityError,
+    ProactivityPreferences,
+    ProactivityService,
+    Suggestion,
+)
 
 __all__ = [
     "AccessDenied",
@@ -86,6 +92,9 @@ __all__ = [
     "OllamaTimeout",
     "Permission",
     "Persistence",
+    "ProactivityError",
+    "ProactivityPreferences",
+    "ProactivityService",
     "RAGCitation",
     "RAGEvidence",
     "RAGOutcome",
@@ -93,5 +102,6 @@ __all__ = [
     "WorkspaceEvidenceComposer",
     "Workspace",
     "WorkspaceKind",
+    "Suggestion",
     "default_database_path",
 ]

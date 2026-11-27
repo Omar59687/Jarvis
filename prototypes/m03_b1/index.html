@@ -110,6 +110,7 @@
         <a class="nav-item active" href="#galaxy"><span class="nav-icon" aria-hidden="true">◉</span><span data-en="Knowledge galaxy" data-ar="مجرة المعرفة">Knowledge galaxy</span><span class="nav-count">08</span></a>
         <a class="nav-item" href="#node-list"><span class="nav-icon" aria-hidden="true">⌁</span><span data-en="Connections" data-ar="الروابط">Connections</span></a>
         <a class="nav-item" href="#task-control-center"><span class="nav-icon" aria-hidden="true">◫</span><span data-en="Task Control Center" data-ar="مركز التحكم بالمهام">Task Control Center</span><span class="offline-mark" data-en="READ-ONLY" data-ar="قراءة فقط">READ-ONLY</span></a>
+        <a class="nav-item" href="#proactivity-panel"><span class="nav-icon" aria-hidden="true">✧</span><span data-en="Proactivity" data-ar="الاستباقية">Proactivity</span><span class="offline-mark" data-en="OPT-IN" data-ar="اختياري">OPT-IN</span></a>
         <a class="nav-item" href="#command-dock"><span class="nav-icon" aria-hidden="true">✳</span><span data-en="Jarvis assistant" data-ar="مساعد جارفس">Jarvis assistant</span><span class="offline-mark" data-en="PREVIEW" data-ar="معاينة">PREVIEW</span></a>
       </nav>
 
@@ -268,6 +269,40 @@
             </div>
           </div>
         </div>
+      </section>
+      <section id="proactivity-panel" class="proactivity-panel" aria-labelledby="proactivity-heading">
+        <div class="task-cc-header">
+          <div>
+            <p class="eyebrow" data-en="LOCAL · OPT-IN · NO AUTOMATIC ACTIONS" data-ar="محلي · اختياري · بلا إجراءات تلقائية">LOCAL · OPT-IN · NO AUTOMATIC ACTIONS</p>
+            <h2 id="proactivity-heading" data-en="Proactive suggestions" data-ar="الاقتراحات الاستباقية">Proactive suggestions</h2>
+          </div>
+          <button id="proactivity-refresh" class="small-action" type="button" disabled data-en="Refresh" data-ar="تحديث">Refresh</button>
+        </div>
+        <p class="proactivity-note" data-en="Jarvis checks mission and task status locally while this backend is running. It does not call a model or start, authorize, resume, or execute work. Accepting only acknowledges a suggestion." data-ar="يفحص جارفس حالات المهام والبعثات محليًا أثناء تشغيل الخدمة. لا يستدعي نموذجًا ولا يبدأ العمل أو يصرّح به أو يستأنفه أو ينفذه. القبول يعني الإقرار بالاقتراح فقط.">Jarvis checks mission and task status locally while this backend is running. It does not call a model or start, authorize, resume, or execute work. Accepting only acknowledges a suggestion.</p>
+        <div class="proactivity-controls">
+          <label class="proactivity-field"><span class="eyebrow" data-en="CHECK INTERVAL" data-ar="فاصل الفحص">CHECK INTERVAL</span>
+            <select id="proactivity-interval" class="workspace-select" disabled>
+              <option value="900" data-en="15 minutes" data-ar="15 دقيقة">15 minutes</option>
+              <option value="1800" data-en="30 minutes" data-ar="30 دقيقة">30 minutes</option>
+              <option value="3600" selected data-en="1 hour" data-ar="ساعة واحدة">1 hour</option>
+              <option value="21600" data-en="6 hours" data-ar="6 ساعات">6 hours</option>
+              <option value="86400" data-en="24 hours" data-ar="24 ساعة">24 hours</option>
+            </select>
+          </label>
+          <label class="proactivity-field"><span class="eyebrow" data-en="COOLDOWN" data-ar="فترة التهدئة">COOLDOWN</span>
+            <select id="proactivity-cooldown" class="workspace-select" disabled>
+              <option value="0" data-en="No cooldown" data-ar="بلا فترة تهدئة">No cooldown</option>
+              <option value="3600" data-en="1 hour" data-ar="ساعة واحدة">1 hour</option>
+              <option value="86400" selected data-en="24 hours" data-ar="24 ساعة">24 hours</option>
+              <option value="604800" data-en="7 days" data-ar="7 أيام">7 days</option>
+            </select>
+          </label>
+          <button id="proactivity-enable" class="small-action" type="button" disabled data-en="Enable suggestions" data-ar="تفعيل الاقتراحات">Enable suggestions</button>
+          <button id="proactivity-save" class="small-action" type="button" disabled data-en="Save settings" data-ar="حفظ الإعدادات">Save settings</button>
+          <button id="proactivity-stop" class="small-action reject-action" type="button" disabled data-en="Stop suggestions" data-ar="إيقاف الاقتراحات">Stop suggestions</button>
+        </div>
+        <p id="proactivity-status" class="proactivity-status" role="status" aria-live="polite" data-en="Off by default. Select a workspace and explicitly enable suggestions." data-ar="متوقفة افتراضيًا. اختر مساحة عمل وفعّل الاقتراحات صراحةً.">Off by default. Select a workspace and explicitly enable suggestions.</p>
+        <div id="proactivity-suggestions" class="proactivity-suggestions" aria-live="polite"></div>
       </section>
     </main>
 

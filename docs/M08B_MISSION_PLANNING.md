@@ -1,7 +1,8 @@
 # M08-B — Intelligent Mission Planning
 
-**Status:** confirmed implementation scope; implementation is on
-`feature/m08-b-mission-planning`. M08-C and later phases are not included.
+**Status:** implemented and merged to `main` at
+`debea200e0c9e205ff54e00ab290a2098b72d9f3`. M08-C implementation follows on
+`feature/m08-c-proactivity`; see [M08-C implementation and acceptance](M08C_IMPLEMENTATION.md).
 
 ## Confirmed requirements
 
@@ -237,5 +238,6 @@ more advanced workloads to either model.
 - Maximum model context capacity was not established.
 - No implementation changes were required during acceptance.
 - Local acceptance is complete.
-- GitHub CI and merge remain pending.
-- M08-C has not been started.
+- The implementation commit is present on `main`; external CI state is not
+  inferred by this local acceptance record.
+- M08-C is implemented on its feature branch; see [M08-C implementation and acceptance](M08C_IMPLEMENTATION.md).

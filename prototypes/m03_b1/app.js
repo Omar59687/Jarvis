@@ -36,6 +36,13 @@ import {
   voiceLanguageUnavailableError,
   voiceStateLabel,
 } from "/voice-ui-state.mjs";
+import {
+  applyProactivityResponse,
+  beginProactivityLoad,
+  clearProactivityState,
+  createProactivityState,
+  proactivityActionAvailable,
+} from "/proactivity-ui-state.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 const languageSelect = $("#language");
@@ -166,6 +173,14 @@ const taskEventsPagination = $("#task-events-pagination");
 const taskEventsPrev = $("#task-events-prev");
 const taskEventsNext = $("#task-events-next");
 const taskEventsPageInfo = $("#task-events-page-info");
+const proactivityInterval = $("#proactivity-interval");
+const proactivityCooldown = $("#proactivity-cooldown");
+const proactivityEnable = $("#proactivity-enable");
+const proactivitySave = $("#proactivity-save");
+const proactivityStop = $("#proactivity-stop");
+const proactivityRefresh = $("#proactivity-refresh");
+const proactivityStatus = $("#proactivity-status");
+const proactivitySuggestions = $("#proactivity-suggestions");
 let language = "en";
 let selectedId = null;
 let visibleIds = searchNodeIds(NODES, "", language);
@@ -213,6 +228,7 @@ let developerChangeStatus = ["", ""];
 let activeFileChange = null;
 let fileChangeGeneration = 0;
 const taskState = createTaskControlState();
+const proactivityState = createProactivityState();
 let taskStatusCopy = [
   "Pair this browser and select an authorized workspace to inspect tasks.",
   "اربط هذا المتصفح واختر مساحة عمل مصرحًا بها لفحص المهام.",
@@ -284,6 +300,7 @@ function applyLanguage(next) {
   setDeveloperState(...developerStatus);
   setDeveloperGraphState(...developerGraphStatus);
   setDeveloperChangeState(...developerChangeStatus);
+  renderProactivity();
   if (developerGraphData) {
     renderDeveloperGraphList(developerGraphData);
     renderDeveloperGraph(developerGraphData);
@@ -1761,6 +1778,8 @@ function clearEphemeralWorkspaceView() {
   clearDeveloperGraph();
   clearTaskControlCenter();
   clearConversationMemoryPanel();
+  clearProactivityState(proactivityState);
+  renderProactivity();
   interruptVoice({ clearReply: true });
 }
 
@@ -2711,6 +2730,163 @@ async function submitMemoryCandidate(event) {
   }
 }
 
+function renderProactivity() {
+  const ar = language === "ar";
+  const ready = authenticated && Boolean(activeWorkspaceId)
+    && !workspaceServiceUnavailable && proactivityState.status === "ready";
+  const busy = proactivityState.status === "loading" || proactivityState.status === "saving";
+  proactivityInterval.disabled = !ready || busy || !proactivityState.canEnable;
+  proactivityCooldown.disabled = !ready || busy || !proactivityState.canEnable;
+  proactivityEnable.disabled = !ready || busy || !proactivityState.canEnable || proactivityState.enabled;
+  proactivitySave.disabled = !ready || busy || !proactivityState.canEnable;
+  proactivityStop.disabled = !ready || busy || !proactivityState.canEnable || !proactivityState.enabled;
+  proactivityRefresh.disabled = !authenticated || !activeWorkspaceId || busy;
+  proactivityStatus.classList.toggle("error", proactivityState.status === "error");
+  if (proactivityState.preferences) {
+    proactivityInterval.value = String(proactivityState.preferences.check_interval_seconds);
+    proactivityCooldown.value = String(proactivityState.preferences.cooldown_seconds);
+  }
+  if (busy) {
+    proactivityStatus.textContent = ar ? "جارٍ تحميل الاقتراحات…" : "Loading suggestions…";
+  } else if (!ready) {
+    proactivityStatus.textContent = !authenticated
+      ? (ar ? "اربط الجلسة لعرض إعدادات الاقتراحات." : "Pair this browser to view suggestion settings.")
+      : !activeWorkspaceId
+        ? (ar ? "اختر مساحة عمل لعرض الاقتراحات." : "Select a workspace to view suggestions.")
+        : (ar ? "تعذر تحميل إعدادات الاقتراحات." : "Suggestion settings are unavailable.");
+  } else if (!proactivityState.canEnable) {
+    proactivityStatus.textContent = ar
+      ? "تتطلب الاقتراحات إذن الكتابة الحالي في مساحة العمل."
+      : "Suggestions require current write permission in this workspace.";
+  } else {
+    proactivityStatus.textContent = proactivityState.enabled
+      ? (ar ? "الاقتراحات مفعّلة لهذه المساحة." : "Suggestions are enabled for this workspace.")
+      : (ar ? "الاقتراحات متوقفة. فعّلها صراحةً للبدء." : "Suggestions are off. Explicitly enable them to begin.");
+  }
+  proactivitySuggestions.replaceChildren();
+  if (ready && proactivityState.suggestions.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "proactivity-empty";
+    empty.textContent = ar ? "لا توجد اقتراحات نشطة في هذه المساحة." : "No active suggestions in this workspace.";
+    proactivitySuggestions.append(empty);
+  }
+  const reasonLabels = {
+    mission_aged: ["Unfinished mission", "بعثة غير مكتملة"],
+    mission_blocked: ["Blocked mission", "بعثة متوقفة"],
+    mission_paused: ["Paused mission", "بعثة معلّقة"],
+    mission_interrupted: ["Interrupted mission", "بعثة منقطعة"],
+    task_blocked: ["Blocked task", "مهمة متوقفة"],
+    task_interrupted: ["Interrupted task", "مهمة منقطعة"],
+    legacy: ["Existing suggestion", "اقتراح موجود"],
+  };
+  for (const suggestion of proactivityState.suggestions) {
+    const card = document.createElement("article");
+    card.className = "proactivity-card";
+    const heading = document.createElement("h3");
+    heading.textContent = (reasonLabels[suggestion.reason_code] || reasonLabels.legacy)[ar ? 1 : 0];
+    const evidence = document.createElement("p");
+    evidence.className = "proactivity-evidence";
+    evidence.textContent = `${suggestion.source_kind} · ${suggestion.source_task_id}`
+      + (suggestion.source_mission_id ? ` · ${suggestion.source_mission_id}` : "");
+    card.append(heading, evidence);
+    if (suggestion.state === "snoozed" && suggestion.snoozed_until) {
+      const snoozed = document.createElement("p");
+      snoozed.className = "proactivity-note";
+      snoozed.textContent = ar ? `مؤجل حتى ${suggestion.snoozed_until}` : `Snoozed until ${suggestion.snoozed_until}`;
+      card.append(snoozed);
+    }
+    const actions = document.createElement("div");
+    actions.className = "proactivity-actions";
+    for (const [action, label] of [["accept", ["Acknowledge", "إقرار"]], ["dismiss", ["Dismiss", "تجاهل"]], ["snooze", ["Snooze 1 day", "تأجيل يوم"]]]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "small-action";
+      button.textContent = label[ar ? 1 : 0];
+      button.disabled = !proactivityState.canEnable || suggestion.state === "snoozed"
+        || !proactivityActionAvailable(proactivityState, suggestion.id);
+      button.addEventListener("click", () => actOnSuggestion(suggestion.id, action));
+      actions.append(button);
+    }
+    card.append(actions);
+    proactivitySuggestions.append(card);
+  }
+}
+
+async function loadProactivity() {
+  const workspace = activeWorkspaceId;
+  const generation = beginProactivityLoad(proactivityState, workspace);
+  renderProactivity();
+  if (!authenticated || !workspace) return;
+  try {
+    const response = await fetch("/api/v1/proactivity", {
+      credentials: "same-origin", cache: "no-store",
+    });
+    const value = await responseJson(response);
+    if (response.status === 401) { markSessionExpired(); return; }
+    if (!response.ok) throw new Error(value.error || "proactivity_unavailable");
+    applyProactivityResponse(proactivityState, generation, workspace, value);
+  } catch (_error) {
+    if (generation === proactivityState.generation && workspace === activeWorkspaceId) {
+      proactivityState.status = "error";
+    }
+  }
+  renderProactivity();
+}
+
+async function saveProactivityPreference(enabled) {
+  if (!authenticated || !csrfToken || !activeWorkspaceId || !proactivityState.canEnable) return;
+  const workspace = activeWorkspaceId;
+  const generation = proactivityState.generation;
+  proactivityState.status = "saving";
+  renderProactivity();
+  try {
+    const response = await fetch("/api/v1/proactivity/preferences", {
+      method: "PUT", credentials: "same-origin", cache: "no-store",
+      headers: { "Content-Type": "application/json", "X-Jarvis-CSRF": csrfToken },
+      body: JSON.stringify({ enabled,
+        check_interval_seconds: Number(proactivityInterval.value),
+        cooldown_seconds: Number(proactivityCooldown.value) }),
+    });
+    const value = await responseJson(response);
+    if (response.status === 401) { markSessionExpired(); return; }
+    if (!response.ok) throw new Error(value.error || "proactivity_unavailable");
+  } catch (_error) {
+    if (generation === proactivityState.generation && workspace === activeWorkspaceId) {
+      proactivityState.status = "error";
+      renderProactivity();
+      return;
+    }
+  }
+  if (workspace === activeWorkspaceId) await loadProactivity();
+}
+
+async function actOnSuggestion(suggestionId, action) {
+  if (!authenticated || !csrfToken || !activeWorkspaceId
+      || !proactivityActionAvailable(proactivityState, suggestionId)) return;
+  const workspace = activeWorkspaceId;
+  const generation = proactivityState.generation;
+  const payload = action === "snooze" ? { snooze_seconds: 86400 } : {};
+  try {
+    const response = await fetch(`/api/v1/proactivity/suggestions/${encodeURIComponent(suggestionId)}/${action}`, {
+      method: "POST", credentials: "same-origin", cache: "no-store",
+      headers: { "Content-Type": "application/json", "X-Jarvis-CSRF": csrfToken },
+      body: JSON.stringify(payload),
+    });
+    const value = await responseJson(response);
+    if (response.status === 401) { markSessionExpired(); return; }
+    if (!response.ok) throw new Error(value.error || "suggestion_unavailable");
+  } catch (_error) {
+    if (generation === proactivityState.generation && workspace === activeWorkspaceId) {
+      proactivityStatus.classList.add("error");
+      proactivityStatus.textContent = language === "ar"
+        ? "تعذر تحديث الاقتراح. حدّث القائمة وحاول مجددًا."
+        : "Could not update the suggestion. Refresh the inbox and try again.";
+    }
+    return;
+  }
+  if (generation === proactivityState.generation && workspace === activeWorkspaceId) await loadProactivity();
+}
+
 async function responseJson(response) {
   try {
     const value = await response.json();
@@ -2972,6 +3148,8 @@ async function loadWorkspaces(preferredWorkspaceId = null) {
       setWorkspaceState("Workspace authorization is unavailable. Clear the selection or reload before asking.", "تفويض مساحة العمل غير متاح. امسح الاختيار أو أعد التحميل قبل السؤال.");
       await loadDeveloperRepositories();
       clearTaskControlCenter();
+      clearProactivityState(proactivityState);
+      renderProactivity();
     } else {
       workspaceSelect.value = "";
       activeWorkspaceId = null;
@@ -2982,6 +3160,8 @@ async function loadWorkspaces(preferredWorkspaceId = null) {
       setWorkspaceState("Workspace APIs are unavailable. General chat remains available.", "واجهات مساحات العمل غير متاحة. تظل الدردشة العامة متاحة.");
       await loadDeveloperRepositories();
       clearTaskControlCenter();
+      clearProactivityState(proactivityState);
+      renderProactivity();
     }
     return;
   }
@@ -3025,6 +3205,7 @@ async function loadWorkspaces(preferredWorkspaceId = null) {
     clearTaskControlCenter();
   }
   if (activeWorkspaceId) await loadConversationMemory();
+  if (activeWorkspaceId) await loadProactivity();
 }
 
 async function selectWorkspace() {
@@ -3067,6 +3248,11 @@ async function selectWorkspace() {
     }
     if (activeWorkspaceId) await loadConversationMemory();
     else clearConversationMemoryPanel();
+    if (activeWorkspaceId) await loadProactivity();
+    else {
+      clearProactivityState(proactivityState);
+      renderProactivity();
+    }
   } catch (error) {
     if (error.message === "workspace_selection_changed") {
       await restoreSession();
@@ -3573,6 +3759,10 @@ fileChangeOperation.addEventListener("change", () => { fileChangeContent.require
 developerCompareButton.addEventListener("click", compareDeveloperCommits);
 developerSearchForm.addEventListener("submit", searchDeveloperFiles);
 developerChatForm.addEventListener("submit", askDeveloper);
+proactivityEnable.addEventListener("click", () => saveProactivityPreference(true));
+proactivitySave.addEventListener("click", () => saveProactivityPreference(proactivityState.enabled));
+proactivityStop.addEventListener("click", () => saveProactivityPreference(false));
+proactivityRefresh.addEventListener("click", loadProactivity);
 taskStatusFilter.addEventListener("change", () => {
   taskState.statusFilter = taskStatusFilter.value || "all";
   loadTaskList({ offset: 0, clearMissingDetail: true });
