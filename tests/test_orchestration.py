@@ -310,6 +310,68 @@ class OrchestrationTests(unittest.TestCase):
         self.assertTrue(policy.is_granted("owner", "ws", repository.id,
                                           CodingCapability.READ_REPOSITORY_METADATA))
 
+    def test_repository_capability_revoked_during_worker_fences_progress_commit(self):
+        root = Path(self.temp.name) / "mid-operation-approved"
+        root.mkdir()
+        repo_path = root / "repo"
+        repo_path.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo_path)], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.name", "Synthetic"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "config", "user.email", "synthetic@example.invalid"], check=True)
+        (repo_path / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo_path), "add", "module.py"], check=True)
+        subprocess.run(["git", "-C", str(repo_path), "commit", "-qm", "fixture"], check=True)
+        root_record = self.db.register_approved_root("owner", "ws", root)
+        repositories = DeveloperRepositoryService(self.db)
+        registered = repositories.register("owner", "ws", root_record.id, repo_path, confirmed=True)
+        repository = repositories.index("owner", "ws", registered.id)
+        policy = CodingCapabilityPolicy(self.db)
+        policy.grant("owner", "ws", repository.id, "owner",
+                     CodingCapability.READ_REPOSITORY_METADATA, confirmed=True)
+        source_grant = policy.grant("owner", "ws", repository.id, "owner",
+                                    CodingCapability.READ_INDEXED_SOURCE, confirmed=True)
+        service = TaskOrchestrationService(self.db, repositories, policy)
+        task = service.create_task(
+            "owner", "ws", "Synthetic repository task", repository_id=repository.id,
+            requested_capabilities=(CodingCapability.READ_INDEXED_SOURCE.value,),
+            idempotency_key=key("mid-revoke-task"))
+        plan = service.propose_plan("owner", task.id, DeterministicFakePlanner(TaskPlanProposal((
+            PlannedSubtask("read", "Read", "Inspect source", "Summarize", required_capabilities=(
+                CodingCapability.READ_INDEXED_SOURCE.value,)),
+        ))), idempotency_key=key("mid-revoke-plan"))
+        service.approve_plan("owner", task.id, plan.revision, plan.plan_sha256,
+                             idempotency_key=key("mid-revoke-approve"))
+
+        entered, release = Event(), Event()
+        result = {}
+        worker = DeterministicFakeWorker({})
+
+        def block_step(_subtask, _progress):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("test worker release timed out")
+            return SimulationStep(100, "synthetic", True)
+
+        worker.simulate_step = block_step
+
+        def run_simulation():
+            try:
+                result["task"] = service.simulate_next_step(
+                    "owner", task.id, worker, idempotency_key=key("mid-revoke-sim"))
+            except Exception as exc:
+                result["error"] = exc
+
+        thread = Thread(target=run_simulation)
+        thread.start()
+        self.assertTrue(entered.wait(5))
+        policy.revoke("owner", source_grant.id, confirmed=True)
+        release.set()
+        thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+        self.assertNotIn("error", result)
+        self.assertEqual(result["task"].state, TaskState.BLOCKED)
+        self.assertEqual(service.get_progress("owner", task.id, plan.revision)[0].progress_percent, 0)
+
     def test_operator_requires_manager_and_exact_confirmation(self):
         from io import StringIO
         answers = iter(["no", f"APPROVE {'0' * 64}"])

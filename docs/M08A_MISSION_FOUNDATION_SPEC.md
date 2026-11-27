@@ -1,8 +1,10 @@
 # M08-A: Mission Foundation
 
 **Status:** Confirmed implementation scope for M08-A. This was not an approval
-for later phases at the time; M08-B has since been separately approved. M08-C
-through M08-E remain gated.
+for later phases at the time. M08-B is merged to `main` at
+`debea200e0c9e205ff54e00ab290a2098b72d9f3`; M08-C is merged through PR #26 at
+`eca012ace5c1247d682c1821cef1598a5f8d5578`; M08-D implementation is recorded
+in [M08-D implementation and acceptance](M08D_IMPLEMENTATION.md). M08-E remains gated.
 
 ## Confirmed requirements
 

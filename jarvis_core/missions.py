@@ -197,8 +197,8 @@ class MissionService:
             try:
                 Database._require_access(conn, actor_id, workspace_id, Permission.MANAGE_WORKSPACE)
                 active = conn.execute("SELECT COUNT(*) FROM missions WHERE workspace_id=? AND principal_id=? "
-                                       "AND state NOT IN ('completed','cancelled','expired') AND archived_at IS NULL",
-                                       (workspace_id, actor_id)).fetchone()[0]
+                                       "AND state NOT IN ('completed','cancelled','expired') AND archived_at IS NULL "
+                                       "AND expires_at>?", (workspace_id, actor_id, now)).fetchone()[0]
                 if active >= MAX_MISSIONS_PER_WORKSPACE:
                     raise OrchestrationError("mission_active_limit")
                 conn.execute("INSERT INTO missions(id,task_id,workspace_id,principal_id,state,max_steps,max_requests,"
@@ -561,7 +561,9 @@ class MissionService:
             raise OrchestrationError("idempotency_key_conflict")
         if prior is not None:
             if prior["outcome"] == "consumed":
-                return mission
+                return self.get(actor_id, mission.id)
+            if prior["outcome"] == "reserved":
+                raise OrchestrationError("mission_operation_in_progress")
             raise OrchestrationError("mission_request_already_recorded")
         if mission.steps_used >= mission.max_steps or mission.requests_used >= mission.max_requests:
             raise OrchestrationError("mission_budget_exhausted")
@@ -569,13 +571,34 @@ class MissionService:
             self.db._begin(conn)
             try:
                 Database._require_access(conn, actor_id, mission.workspace_id, Permission.MANAGE_WORKSPACE)
+                same_key = conn.execute(
+                    "SELECT outcome FROM mission_budget_ledger WHERE mission_id=? AND operation_key=? "
+                    "ORDER BY id DESC LIMIT 1", (mission.id, key),
+                ).fetchone()
+                if same_key is not None:
+                    if same_key["outcome"] == "consumed":
+                        self.db._commit(conn)
+                        return self.get(actor_id, mission.id)
+                    if same_key["outcome"] == "reserved":
+                        raise OrchestrationError("mission_operation_in_progress")
+                    raise OrchestrationError("mission_request_already_recorded")
+                active_operation = conn.execute(
+                    "SELECT l.operation_key FROM mission_budget_ledger l WHERE l.mission_id=? "
+                    "AND l.outcome='reserved' AND NOT EXISTS (SELECT 1 FROM mission_budget_ledger done "
+                    "WHERE done.mission_id=l.mission_id AND done.operation_key=l.operation_key "
+                    "AND done.outcome IN ('consumed','failed')) LIMIT 1", (mission.id,),
+                ).fetchone()
+                if active_operation is not None:
+                    raise OrchestrationError("mission_operation_in_progress")
                 update = conn.execute("UPDATE missions SET state='running',started_at=COALESCE(started_at,?),"
                              "steps_used=steps_used+1,requests_used=requests_used+1,updated_at=? "
-                             "WHERE id=? AND state IN ('authorized','running') AND steps_used<max_steps "
+                             "WHERE id=? AND state IN ('authorized','running') AND steps_used=? "
+                             "AND requests_used=? AND retries_used=? AND steps_used<max_steps "
                              "AND requests_used<max_requests",
-                             (_now(), _now(), mission.id))
+                             (_now(), _now(), mission.id, mission.steps_used,
+                              mission.requests_used, mission.retries_used))
                 if update.rowcount != 1:
-                    raise OrchestrationError("mission_budget_exhausted")
+                    raise OrchestrationError("mission_changed")
                 conn.execute("INSERT INTO mission_budget_ledger(mission_id,workspace_id,principal_id,operation_key,"
                              "request_delta,step_delta,retry_delta,outcome,created_at) VALUES(?,?,?,?,1,1,0,'reserved',?)",
                              (mission.id, mission.workspace_id, mission.principal_id, key, _now()))
@@ -583,56 +606,150 @@ class MissionService:
             except Exception:
                 self.db._rollback(conn)
                 raise
-        try:
-            task = self.tasks.simulate_next_step(actor_id, mission.task_id, worker,
-                                                  idempotency_key=hashlib.sha256(("mission-sim:" + key).encode()).hexdigest())
-            progress = self.tasks.get_progress(actor_id, mission.task_id, mission.plan_revision)
-            snapshot = [{"id": p.subtask_id, "state": p.state.value,
-                         "progress": p.progress_percent,
-                         "summary_sha256": _digest(p.result_summary or "")} for p in progress]
+
+        def commit_progress(connection, task, revision, plan_sha256):
+            Database._require_access(connection, actor_id, mission.workspace_id, Permission.WRITE)
+            Database._require_access(connection, actor_id, mission.workspace_id, Permission.MANAGE_WORKSPACE)
+            current = connection.execute("SELECT * FROM missions WHERE id=?", (mission.id,)).fetchone()
+            if current is None:
+                raise OrchestrationError("mission_changed")
+            try:
+                current_expiry = datetime.fromisoformat(current["expires_at"])
+                current_started = (datetime.fromisoformat(current["started_at"])
+                                   if current["started_at"] else None)
+                if (current_expiry.tzinfo is None
+                        or (current_started is not None and current_started.tzinfo is None)):
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise OrchestrationError("mission_evidence_corrupt") from None
+            commit_time = datetime.now(timezone.utc)
+            if current_expiry <= commit_time:
+                raise OrchestrationError("mission_expired_or_archived")
+            if (current_started is not None
+                    and (commit_time - current_started).total_seconds() >= current["max_duration_seconds"]):
+                raise OrchestrationError("mission_time_budget_exhausted")
+            if (current["state"] != "running"
+                    or current["authorized_revision"] != revision
+                    or current["plan_revision"] != revision
+                    or current["authorization_sha256"] != mission.authorization_sha256
+                    or current["steps_used"] != mission.steps_used + 1
+                    or current["requests_used"] != mission.requests_used + 1
+                    or current["retries_used"] != mission.retries_used):
+                raise OrchestrationError("mission_changed")
+            reserved = connection.execute(
+                "SELECT 1 FROM mission_budget_ledger WHERE mission_id=? AND operation_key=? "
+                "AND outcome='reserved'", (mission.id, key),
+            ).fetchone()
+            if reserved is None:
+                raise OrchestrationError("mission_operation_stale")
+            progress_rows = connection.execute(
+                "SELECT subtask_id,state,progress_percent,result_summary FROM orchestration_subtasks "
+                "WHERE task_id=? AND revision=? ORDER BY ordinal", (mission.task_id, revision),
+            ).fetchall()
+            snapshot = []
+            for row in progress_rows:
+                if (row["state"] not in {"pending", "blocked", "simulating", "simulated_completed",
+                                        "simulated_failed", "cancelled"}
+                        or type(row["progress_percent"]) is not int
+                        or not 0 <= row["progress_percent"] <= 100):
+                    raise OrchestrationError("mission_task_state_inconsistent")
+                snapshot.append({"id": row["subtask_id"], "state": row["state"],
+                                 "progress": row["progress_percent"],
+                                 "summary_sha256": _digest(row["result_summary"] or "")})
             encoded = _canonical_json(snapshot)
             checkpoint_hash = _digest(encoded)
+            sequence = connection.execute(
+                "SELECT COALESCE(MAX(sequence),0)+1 FROM mission_checkpoints WHERE mission_id=?",
+                (mission.id,),
+            ).fetchone()[0]
+            connection.execute(
+                "INSERT INTO mission_checkpoints(mission_id,workspace_id,principal_id,sequence,"
+                "plan_revision,progress_sha256,progress_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (mission.id, mission.workspace_id, mission.principal_id, sequence, revision,
+                 checkpoint_hash, encoded, _now()),
+            )
+            state = "completed" if task.state.value == "simulation_completed" else "running"
+            connection.execute(
+                "UPDATE missions SET state=?,updated_at=? WHERE id=? AND state='running' "
+                "AND steps_used=? AND requests_used=?",
+                (state, _now(), mission.id, mission.steps_used + 1,
+                 mission.requests_used + 1),
+            )
+            connection.execute(
+                "INSERT INTO mission_budget_ledger(mission_id,workspace_id,principal_id,operation_key,"
+                "request_delta,step_delta,retry_delta,outcome,created_at) "
+                "VALUES(?,?,?,?,0,0,0,'consumed',?)",
+                (mission.id, mission.workspace_id, mission.principal_id, key, _now()),
+            )
+            updated = self._row(connection.execute(
+                "SELECT * FROM missions WHERE id=?", (mission.id,),
+            ).fetchone())
+            self._event(connection, updated, actor_id,
+                        "mission_completed" if state == "completed" else "mission_simulation_step",
+                        key, revision=revision, digest=checkpoint_hash,
+                        metadata={"step_count": str(updated.steps_used),
+                                  "checkpoint": str(sequence)})
+
+        try:
+            task = self.tasks.simulate_next_step(actor_id, mission.task_id, worker,
+                idempotency_key=hashlib.sha256(("mission-sim:" + key).encode()).hexdigest(),
+                _transaction_hook=commit_progress)
+            if task.state.value == "blocked":
+                raise OrchestrationError("mission_task_capability_revoked")
+        except Exception as operation_error:
+            # The task step and mission checkpoint/budget commit together. If
+            # the transaction failed, quarantine both records in one second
+            # transaction when authorization remains current.
             with self.db._connection() as conn:
                 self.db._begin(conn)
                 try:
-                    current = self._row(conn.execute("SELECT * FROM missions WHERE id=?", (mission.id,)).fetchone())
-                    self._assert_authorized(actor_id, current)
-                    sequence = conn.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM mission_checkpoints WHERE mission_id=?",
-                                             (mission.id,)).fetchone()[0]
-                    conn.execute("INSERT INTO mission_checkpoints(mission_id,workspace_id,principal_id,sequence,"
-                                 "plan_revision,progress_sha256,progress_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
-                                 (mission.id, mission.workspace_id, mission.principal_id, sequence,
-                                  mission.plan_revision, checkpoint_hash, encoded, _now()))
-                    state = "completed" if task.state.value == "simulation_completed" else "running"
-                    conn.execute("UPDATE missions SET state=?,updated_at=? WHERE id=?",
-                                 (state, _now(), mission.id))
-                    conn.execute("INSERT INTO mission_budget_ledger(mission_id,workspace_id,principal_id,operation_key,"
-                                 "request_delta,step_delta,retry_delta,outcome,created_at) VALUES(?,?,?,?,0,0,0,'consumed',?)",
-                                 (mission.id, mission.workspace_id, mission.principal_id, key, _now()))
-                    updated = self._row(conn.execute("SELECT * FROM missions WHERE id=?", (mission.id,)).fetchone())
-                    self._event(conn, updated, actor_id,
-                                "mission_completed" if state == "completed" else "mission_simulation_step",
-                                key, revision=mission.plan_revision, digest=checkpoint_hash,
-                                metadata={"step_count": str(updated.steps_used), "checkpoint": str(sequence)})
-                    self.db._commit(conn)
+                    Database._require_access(conn, actor_id, mission.workspace_id, Permission.WRITE)
+                    Database._require_access(conn, actor_id, mission.workspace_id, Permission.MANAGE_WORKSPACE)
+                    current = conn.execute("SELECT state,steps_used,requests_used,retries_used,max_retries "
+                                           "FROM missions WHERE id=?", (mission.id,)).fetchone()
+                    pending = conn.execute(
+                        "SELECT 1 FROM mission_budget_ledger l WHERE l.mission_id=? AND l.operation_key=? "
+                        "AND l.outcome='reserved' AND NOT EXISTS (SELECT 1 FROM mission_budget_ledger done "
+                        "WHERE done.mission_id=l.mission_id AND done.operation_key=l.operation_key "
+                        "AND done.outcome IN ('consumed','failed'))", (mission.id, key),
+                    ).fetchone()
+                    if (current is not None and pending is not None and current["state"] == "running"
+                            and current["steps_used"] == mission.steps_used + 1
+                            and current["requests_used"] == mission.requests_used + 1):
+                        retry = int(current["retries_used"] < current["max_retries"])
+                        task_row = conn.execute(
+                            "SELECT * FROM orchestration_tasks WHERE id=? AND state IN ('queued','simulating')",
+                            (mission.task_id,),
+                        ).fetchone()
+                        if task_row is not None:
+                            task = self.tasks._task(task_row)
+                            blocked = conn.execute(
+                                "UPDATE orchestration_tasks SET state='blocked',updated_at=? WHERE id=? "
+                                "AND state IN ('queued','simulating')", (_now(), mission.task_id),
+                            )
+                            if blocked.rowcount:
+                                updated_task = self.tasks._task(conn.execute(
+                                    "SELECT * FROM orchestration_tasks WHERE id=?", (mission.task_id,),
+                                ).fetchone())
+                                task_failure_key = hashlib.sha256(("mission-task-failure:" + key).encode()).hexdigest()
+                                self.tasks._insert_event(conn, updated_task, actor_id, "task_blocked",
+                                    task_failure_key, revision=task.current_plan_revision,
+                                    snapshot_sha256=task.capability_manifest_sha256,
+                                    metadata={"reason": "mission_operation_failed"})
+                        conn.execute("UPDATE missions SET state='blocked',retries_used=retries_used+?,updated_at=? "
+                                     "WHERE id=? AND state='running' AND steps_used=? AND requests_used=?",
+                                     (retry, _now(), mission.id, mission.steps_used + 1,
+                                      mission.requests_used + 1))
+                        conn.execute("INSERT INTO mission_budget_ledger(mission_id,workspace_id,principal_id,"
+                                     "operation_key,request_delta,step_delta,retry_delta,outcome,created_at) "
+                                     "VALUES(?,?,?, ?,0,0,?,'failed',?)",
+                                     (mission.id, mission.workspace_id, mission.principal_id, key, retry, _now()))
+                        self.db._commit(conn)
+                    else:
+                        self.db._rollback(conn)
                 except Exception:
                     self.db._rollback(conn)
-                    raise
-        except Exception:
-            with self.db._connection() as conn:
-                self.db._begin(conn)
-                try:
-                    current = conn.execute("SELECT retries_used,max_retries FROM missions WHERE id=?", (mission.id,)).fetchone()
-                    retry = int(current["retries_used"] < current["max_retries"])
-                    conn.execute("UPDATE missions SET state='blocked',retries_used=retries_used+?,updated_at=? "
-                                 "WHERE id=?", (retry, _now(), mission.id))
-                    conn.execute("INSERT INTO mission_budget_ledger(mission_id,workspace_id,principal_id,operation_key,"
-                                 "request_delta,step_delta,retry_delta,outcome,created_at) VALUES(?,?,?, ?,0,0,?,'failed',?)",
-                                 (mission.id, mission.workspace_id, mission.principal_id, key, retry, _now()))
-                    self.db._commit(conn)
-                except Exception:
-                    self.db._rollback(conn)
-            raise
+            raise operation_error
         return self.get(actor_id, mission.id)
 
     def pause(self, actor_id: str, mission_id: str, *, idempotency_key: str) -> Mission:
@@ -689,17 +806,106 @@ class MissionService:
                                 {mission.state}, idempotency_key)
 
     def recover_after_restart(self, actor_id: str, workspace_id: str) -> tuple[str, ...]:
-        self.db.require_access(actor_id, workspace_id, Permission.MANAGE_WORKSPACE)
+        actor_id = _nonempty(actor_id, "actor ID")
+        workspace_id = _nonempty(workspace_id, "workspace ID")
+        interrupted: list[str] = []
+        now = _now()
         with self.db._connection() as conn:
-            rows = conn.execute("SELECT id FROM missions WHERE workspace_id=? AND state IN ('authorized','running')",
-                                (workspace_id,)).fetchall()
-        interrupted = []
-        for row in rows:
-            mission = self._require(actor_id, row["id"], write=True, manage=True)
-            key = hashlib.sha256(("recover:" + mission.id + ":" + mission.updated_at).encode()).hexdigest()
-            result = self._transition(actor_id, mission.id, "mission_interrupted", "interrupted",
-                                      {"authorized", "running"}, key)
-            interrupted.append(result.id)
+            self.db._begin(conn)
+            try:
+                Database._require_access(conn, actor_id, workspace_id, Permission.READ)
+                Database._require_access(conn, actor_id, workspace_id, Permission.WRITE)
+                Database._require_access(conn, actor_id, workspace_id, Permission.MANAGE_WORKSPACE)
+                # A reservation can outlive its provider call if the backend dies.
+                # Fence every such owner at startup; lease expiry alone would
+                # leave a live-looking reservation until another planner retries.
+                conn.execute(
+                    "UPDATE mission_planning_reservations SET state='interrupted',"
+                    "owner_token=NULL,lease_expires_at=NULL,updated_at=? "
+                    "WHERE workspace_id=? AND state='in_progress'",
+                    (now, workspace_id),
+                )
+                active_tasks = conn.execute(
+                    "SELECT * FROM orchestration_tasks WHERE workspace_id=? AND archived_at IS NULL "
+                    "AND state IN ('queued','simulating') ORDER BY id", (workspace_id,),
+                ).fetchall()
+                for row in active_tasks:
+                    prior_state = row["state"]
+                    task = self.tasks._task(row)
+                    cursor = conn.execute(
+                        "UPDATE orchestration_tasks SET state='interrupted',updated_at=? "
+                        "WHERE id=? AND state=? AND archived_at IS NULL",
+                        (now, task.id, prior_state),
+                    )
+                    if cursor.rowcount != 1:
+                        continue
+                    updated_task = self.tasks._task(conn.execute(
+                        "SELECT * FROM orchestration_tasks WHERE id=?", (task.id,),
+                    ).fetchone())
+                    event_key = hashlib.sha256(
+                        f"m08d-restart-task:{task.id}:{task.updated_at}:{prior_state}".encode()
+                    ).hexdigest()
+                    self.tasks._insert_event(
+                        conn, updated_task, actor_id, "task_interrupted", event_key,
+                        revision=task.approved_plan_revision,
+                        snapshot_sha256=task.capability_manifest_sha256,
+                        metadata={"previous_state": prior_state, "auto_resume": "false"},
+                    )
+
+                missions = conn.execute(
+                    "SELECT * FROM missions WHERE workspace_id=? AND archived_at IS NULL "
+                    "AND state NOT IN ('completed','cancelled','expired') ORDER BY id", (workspace_id,),
+                ).fetchall()
+                for row in missions:
+                    mission = self._row(row)
+                    try:
+                        expires = datetime.fromisoformat(mission.expires_at)
+                        if expires.tzinfo is None:
+                            raise ValueError
+                    except (TypeError, ValueError):
+                        raise OrchestrationError("mission_evidence_corrupt") from None
+                    expired = expires <= datetime.now(timezone.utc)
+                    target = "expired" if expired else "interrupted"
+                    should_transition = expired or mission.state in {"authorized", "running"}
+                    if should_transition:
+                        cursor = conn.execute(
+                            "UPDATE missions SET state=?,updated_at=? WHERE id=? "
+                            "AND workspace_id=? AND principal_id=? AND state=? AND archived_at IS NULL",
+                            (target, now, mission.id, workspace_id, mission.principal_id, mission.state),
+                        )
+                        if cursor.rowcount != 1:
+                            continue
+                        updated = self._row(conn.execute(
+                            "SELECT * FROM missions WHERE id=?", (mission.id,),
+                        ).fetchone())
+                        event_key = hashlib.sha256(
+                            f"m08d-restart-mission:{mission.id}:{mission.updated_at}:{mission.state}:{target}".encode()
+                        ).hexdigest()
+                        self._event(conn, updated, actor_id, "mission_interrupted", event_key,
+                                    revision=mission.plan_revision,
+                                    metadata={"previous_state": mission.state,
+                                              "auto_resume": "false",
+                                              "reason": "deadline_expired" if expired else "restart"})
+                        interrupted.append(mission.id)
+                    reservations = conn.execute(
+                        "SELECT l.operation_key FROM mission_budget_ledger l WHERE l.mission_id=? "
+                        "AND l.outcome='reserved' AND NOT EXISTS (SELECT 1 FROM mission_budget_ledger done "
+                        "WHERE done.mission_id=l.mission_id AND done.operation_key=l.operation_key "
+                        "AND done.outcome IN ('consumed','failed')) ORDER BY l.id",
+                        (mission.id,),
+                    ).fetchall()
+                    for reservation in reservations:
+                        conn.execute(
+                            "INSERT INTO mission_budget_ledger(mission_id,workspace_id,principal_id,operation_key,"
+                            "request_delta,step_delta,retry_delta,outcome,created_at) "
+                            "VALUES(?,?,?, ?,0,0,0,'failed',?)",
+                            (mission.id, mission.workspace_id, mission.principal_id,
+                             reservation["operation_key"], now),
+                        )
+                self.db._commit(conn)
+            except Exception:
+                self.db._rollback(conn)
+                raise
         return tuple(interrupted)
 
     def events(self, actor_id: str, mission_id: str, *, limit: int = 100) -> tuple[dict[str, object], ...]:

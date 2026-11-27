@@ -70,14 +70,24 @@ provider selection UI, or exact token accounting. See [M08-B mission planning](M
 
 ## M08-C status
 
-M08-B is merged to `main`; this branch starts at that merged checkpoint and
-implements M08-C. M08-C adds opt-in workspace/principal preferences,
+M08-C is merged through PR #26 at
+`eca012ace5c1247d682c1821cef1598a5f8d5578`. It adds opt-in workspace/principal preferences,
 permission-fenced deterministic evidence suggestions, bounded synchronous
 scheduling while the explicitly started backend is serving, and an
 authenticated bilingual dashboard inbox. It adds no model calls, mission
 execution authority, autostart, external service, or notification delivery.
-See [M08-C implementation and acceptance](M08C_IMPLEMENTATION.md). M08-D and
-M08-E have not started.
+See [M08-C implementation and acceptance](M08C_IMPLEMENTATION.md).
+
+## M08-D status
+
+This branch completes M08-D by reconciling safe startup recovery with the
+existing manager/workspace authorization model, atomically committing mission
+simulation progress with task progress and checkpoints, fencing concurrent
+operations and permission revocation, settling ambiguous simulation
+reservations on recovery, and expiring overdue missions. Recovery never
+resumes work. Schema remains v18; no migration or new dependency is needed.
+See [M08-D implementation and acceptance](M08D_IMPLEMENTATION.md). M08-E is
+not started.
 
 ## Current state and next task
 

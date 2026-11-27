@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 from jarvis_core.missions import MissionService
 from jarvis_core.mission_operator import MissionOperatorWorkflow
@@ -140,11 +141,147 @@ class MissionTests(unittest.TestCase):
         self.assertEqual(self.service.resume("owner", mission.id, idempotency_key=key("resume")).state, "authorized")
         self.assertEqual(self.service.recover_after_restart("owner", "ws"), (mission.id,))
         self.assertEqual(self.service.get("owner", mission.id).state, "interrupted")
+        self.assertEqual(self.tasks.get_task("owner", mission.task_id).state.value, "interrupted")
         self.assertEqual(self.service.resume("owner", mission.id, idempotency_key=key("resume-after-restart")).state, "authorized")
         self.assertEqual(self.service.cancel("owner", mission.id, idempotency_key=key("cancel")).state, "cancelled")
         self.assertEqual(self.service.cancel("owner", mission.id, idempotency_key=key("cancel-repeat")).state, "cancelled")
         with self.assertRaises(OrchestrationError):
             self.service.pause("owner", mission.id, idempotency_key=key("invalid-pause"))
+
+    def test_restart_recovery_rolls_back_task_and_mission_together(self):
+        mission = self.create()
+        self.plan_and_authorize(mission)
+        original = self.tasks._insert_event
+
+        def fail_task_recovery(connection, task, actor_id, event_type, idempotency_key, **kwargs):
+            if event_type == "task_interrupted":
+                raise sqlite3.OperationalError("injected task recovery failure")
+            return original(connection, task, actor_id, event_type, idempotency_key, **kwargs)
+
+        with patch.object(self.tasks, "_insert_event", side_effect=fail_task_recovery):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.service.recover_after_restart("owner", "ws")
+        self.assertEqual(self.tasks.get_task("owner", mission.task_id).state.value, "queued")
+        self.assertEqual(self.service.get("owner", mission.id).state, "authorized")
+        self.assertEqual(self.service.recover_after_restart("owner", "ws"), (mission.id,))
+        self.assertEqual(self.tasks.get_task("owner", mission.task_id).state.value, "interrupted")
+        self.assertEqual(self.service.get("owner", mission.id).state, "interrupted")
+
+    def test_restart_recovery_expires_overdue_mission_and_interrupts_its_task(self):
+        mission = self.create()
+        self.plan_and_authorize(mission)
+        with self.db._connection() as connection:
+            connection.execute("UPDATE missions SET expires_at='2000-01-01T00:00:00+00:00' WHERE id=?",
+                               (mission.id,))
+            connection.commit()
+        self.assertEqual(self.service.recover_after_restart("owner", "ws"), (mission.id,))
+        self.assertEqual(self.service.get("owner", mission.id).state, "expired")
+        self.assertEqual(self.tasks.get_task("owner", mission.task_id).state.value, "interrupted")
+        event = self.service.events("owner", mission.id)[0]
+        self.assertEqual(event["event_type"], "mission_interrupted")
+        self.assertEqual(event["metadata"]["reason"], "deadline_expired")
+
+    def test_simulation_failure_rolls_back_task_progress_and_quarantines_both_states(self):
+        mission = self.create()
+        mission, _ = self.plan_and_authorize(mission)
+        worker = DeterministicFakeWorker({
+            "one": (SimulationStep(100, "synthetic", True),),
+        })
+        original = self.service._event
+
+        def fail_mission_transition(connection, item, actor_id, event_type, idempotency_key, **kwargs):
+            if event_type == "mission_simulation_step":
+                raise sqlite3.OperationalError("injected checkpoint persistence failure")
+            return original(connection, item, actor_id, event_type, idempotency_key, **kwargs)
+
+        with patch.object(self.service, "_event", side_effect=fail_mission_transition):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.service.simulate_next("owner", mission.id, worker,
+                                           idempotency_key=key("failed-step"))
+        task = self.tasks.get_task("owner", mission.task_id)
+        state = self.service.get("owner", mission.id)
+        self.assertEqual(task.state.value, "blocked")
+        self.assertEqual(state.state, "blocked")
+        self.assertEqual(self.tasks.get_progress("owner", mission.task_id, mission.plan_revision)[0].progress_percent, 0)
+        self.assertTrue(self.service.verify_checkpoints("owner", mission.id))
+        with self.db._connection() as connection:
+            outcomes = [row[0] for row in connection.execute(
+                "SELECT outcome FROM mission_budget_ledger WHERE mission_id=? AND operation_key=? ORDER BY id",
+                (mission.id, key("failed-step")),
+            )]
+            self.assertEqual(outcomes, ["reserved", "failed"])
+
+    def test_concurrent_mission_steps_reject_a_second_live_reservation(self):
+        mission = self.create()
+        mission, _ = self.plan_and_authorize(mission)
+        entered = threading.Event()
+        release = threading.Event()
+        result = {}
+        worker = DeterministicFakeWorker({})
+
+        def block_step(_subtask, _progress):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("test worker release timed out")
+            return SimulationStep(100, "synthetic", True)
+
+        worker.simulate_step = block_step
+
+        def run_first():
+            try:
+                result["mission"] = self.service.simulate_next(
+                    "owner", mission.id, worker, idempotency_key=key("concurrent-first"))
+            except Exception as exc:
+                result["error"] = exc
+
+        thread = threading.Thread(target=run_first)
+        thread.start()
+        self.assertTrue(entered.wait(5))
+        try:
+            with self.assertRaisesRegex(OrchestrationError, "mission_operation_in_progress"):
+                self.service.simulate_next("owner", mission.id, DeterministicFakeWorker({}),
+                                           idempotency_key=key("concurrent-second"))
+            self.assertEqual(self.service.recover_after_restart("owner", "ws"), (mission.id,))
+        finally:
+            release.set()
+        thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+        self.assertIsInstance(result.get("error"), OrchestrationError)
+        self.assertEqual(self.service.get("owner", mission.id).state, "interrupted")
+        recovered_task = self.tasks.get_task("owner", mission.task_id)
+        self.assertEqual(recovered_task.state.value, "interrupted")
+        self.assertEqual(self.tasks.get_progress("owner", mission.task_id, mission.plan_revision)[0].progress_percent, 0)
+        with self.db._connection() as connection:
+            self.assertIsNone(connection.execute(
+                "SELECT 1 FROM mission_budget_ledger WHERE mission_id=? AND operation_key=?",
+                (mission.id, key("concurrent-second")),
+            ).fetchone())
+            outcomes = [row[0] for row in connection.execute(
+                "SELECT outcome FROM mission_budget_ledger WHERE mission_id=? AND operation_key=? ORDER BY id",
+                (mission.id, key("concurrent-first")),
+            )]
+            self.assertEqual(outcomes, ["reserved", "failed"])
+
+    def test_time_budget_is_rechecked_before_task_progress_commits(self):
+        mission = self.service.create(
+            "owner", "ws", "Synthetic time-bounded mission",
+            idempotency_key=key("time-budget-create"), max_duration_seconds=1,
+        )
+        mission, _ = self.plan_and_authorize(mission, key_suffix="time-budget")
+        worker = DeterministicFakeWorker({})
+
+        def overrun(_subtask, _progress):
+            import time
+            time.sleep(1.1)
+            return SimulationStep(100, "synthetic", True)
+
+        worker.simulate_step = overrun
+        with self.assertRaisesRegex(OrchestrationError, "mission_time_budget_exhausted"):
+            self.service.simulate_next("owner", mission.id, worker,
+                                       idempotency_key=key("time-budget-step"))
+        self.assertEqual(self.service.get("owner", mission.id).state, "blocked")
+        self.assertEqual(self.tasks.get_task("owner", mission.task_id).state.value, "blocked")
+        self.assertEqual(self.tasks.get_progress("owner", mission.task_id, mission.plan_revision)[0].progress_percent, 0)
 
     def test_capability_expansion_and_non_deterministic_worker_rejected(self):
         mission = self.create()
