@@ -114,12 +114,13 @@ explicit at trusted service construction; no discovery or remote fallback.
 back to deterministic planning. Repository content is untrusted. No planning
 output authorizes task approval, file/process/network access, GitHub writes,
 execution, promotion or deployment. M08-A simulation remains the only
-execution boundary. M08-C remains gated.
+execution boundary. M08-C was later implemented separately on
+`feature/m08-c-proactivity`; see [M08-C implementation and acceptance](M08C_IMPLEMENTATION.md).
 
-**Status:** Implemented on `feature/m08-b-mission-planning`; see [M08-B mission
-planning](M08B_MISSION_PLANNING.md) for source research, evidence and
-limitations. Model hardware fit and live endpoint behavior require local
-acceptance and are not claimed by regression tests.
+**Status:** Implemented and merged to `main` at
+`debea200e0c9e205ff54e00ab290a2098b72d9f3`; see [M08-B mission planning](M08B_MISSION_PLANNING.md)
+for source research, evidence and limitations. Model hardware fit and live
+endpoint behavior require local acceptance and are not claimed by regression tests.
 
 ### Conversational context update — 2026-11-22
 
@@ -249,3 +250,32 @@ cascades task/mission suggestions and their event history only after inserting
 the existing purge tombstone. This preserves M08-A/M08-B deletion semantics.
 Historical backups may still contain deleted rows, as documented for existing
 task and mission data; this change makes no secure-erasure claim.
+
+### M08-C Deterministic Proactivity — 2026-11-27
+
+**Confirmed:** Complete the remaining M08-C subdivisions in one implementation
+session. Suggestions are explicit, disabled-by-default, scoped to the paired
+principal and selected workspace, and based only on deterministic existing
+mission/task state. They remain acknowledgments and must not grant or perform
+mission actions.
+
+**Decision:** Extend the existing SQLite schema additively to v18 with a fixed
+reason code and a persistent claim/lease row per preference scope. Run bounded
+scheduler ticks synchronously in the existing server loop so no additional
+thread, startup mechanism, or model call is introduced. Persist only fixed
+reason/state codes, scoped source identities, revision/deduplication digests,
+and lifecycle timestamps. Source foreign keys cascade through the existing
+manager-confirmed task purge after its immutable tombstone authorizes deletion
+of otherwise append-only suggestion events.
+
+**Security:** Permission revocation disables preferences and increments the
+generation in the permission transaction; restored permission never silently
+reenables proactivity. Each read/action validates current scope permissions and
+source digest. The dashboard uses existing session, workspace, origin and CSRF
+controls. Accept means acknowledgment only. No suggestion creates, authorizes,
+resumes or executes a mission/task. No external service, model inference,
+notification delivery, autostart or new dependency is added.
+
+**Status:** Implemented on `feature/m08-c-proactivity`. See [M08-C
+implementation and acceptance](M08C_IMPLEMENTATION.md) for code, tests,
+limitations and the local merge recommendation.

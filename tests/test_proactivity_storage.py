@@ -50,7 +50,7 @@ class ProactivityStorageTests(unittest.TestCase):
 
     def test_fresh_initialization_and_v16_upgrade_preserve_data(self):
         with self.db._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 17)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 18)
             tables = {row[0] for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertTrue({"proactivity_preferences", "proactive_suggestions",
@@ -73,29 +73,70 @@ class ProactivityStorageTests(unittest.TestCase):
         Database.restore_from_backup(backup, restored_path)
         restored = Database(restored_path)
         restored.initialize()
-        self.assertEqual(restored.current_version, 17)
+        self.assertEqual(restored.current_version, 18)
         with restored._connection() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM audit_events WHERE workspace_id='prior-ws'").fetchone()[0], audit_count_before)
         Database(prior_path).initialize()
         with Database(prior_path)._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 17)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 18)
             self.assertEqual(connection.execute("SELECT name FROM workspaces WHERE id='prior-ws'").fetchone()[0], "Preserved")
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM audit_events WHERE workspace_id='prior-ws'").fetchone()[0], audit_count_before)
 
-    def test_v17_migration_failure_rolls_back_ddl_and_version(self):
+    def test_v18_migration_failure_rolls_back_ddl_and_version(self):
         path = Path(self.temp.name) / "rollback.sqlite3"
-        v16 = Database(path, migrations=DEFAULT_MIGRATIONS[:16])
-        v16.initialize()
-        v16.create_workspace("Preserved", WorkspaceKind.PROJECT, "owner", "rollback-ws")
-        broken_migration = Migration(17, (*DEFAULT_MIGRATIONS[-1].statements[:2], "INVALID SQL"))
-        broken = Database(path, migrations=(*DEFAULT_MIGRATIONS[:16], broken_migration))
+        v17 = Database(path, migrations=DEFAULT_MIGRATIONS[:-1])
+        v17.initialize()
+        v17.create_workspace("Preserved", WorkspaceKind.PROJECT, "owner", "rollback-ws")
+        broken_migration = Migration(18, (*DEFAULT_MIGRATIONS[-1].statements[:1], "INVALID SQL"))
+        broken = Database(path, migrations=(*DEFAULT_MIGRATIONS[:-1], broken_migration))
         with self.assertRaises(sqlite3.OperationalError):
             broken.initialize()
         with broken._connection() as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 16)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 17)
             self.assertIsNone(connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE name='missions_source_scope'").fetchone())
+                "SELECT 1 FROM pragma_table_info('proactive_suggestions') WHERE name='reason_code'").fetchone())
             self.assertEqual(connection.execute("SELECT name FROM workspaces WHERE id='rollback-ws'").fetchone()[0], "Preserved")
+
+    def test_v17_upgrade_preserves_existing_proactivity_rows(self):
+        path = Path(self.temp.name) / "v17.sqlite3"
+        prior = Database(path, migrations=DEFAULT_MIGRATIONS[:-1])
+        prior.initialize()
+        prior.create_workspace("Preserved", WorkspaceKind.PROJECT, "owner", "v17-ws")
+        prior_task = TaskOrchestrationService(prior).create_task(
+            "owner", "v17-ws", "Synthetic preserved task",
+            idempotency_key="v17-upgrade-create-task-000000")
+        created, expires = self._times()
+        with prior._connection() as connection:
+            connection.execute(
+                "INSERT INTO proactivity_preferences(workspace_id,principal_id,enabled,generation,"
+                "check_interval_seconds,cooldown_seconds,created_at,updated_at) "
+                "VALUES('v17-ws','owner',1,4,1800,86400,?,?)", (created, created))
+            connection.execute(
+                "INSERT INTO proactive_suggestions(id,workspace_id,principal_id,suggestion_type,"
+                "source_kind,source_task_id,source_revision_sha256,deduplication_key,state,created_at,expires_at) "
+                "VALUES('v17-suggestion','v17-ws','owner','task_follow_up','task',?,?,?,?,?,?)",
+                (prior_task.id, "b" * 64, "a" * 64, "active", created, expires))
+            connection.execute(
+                "INSERT INTO proactivity_suggestion_events(suggestion_id,workspace_id,principal_id,"
+                "source_task_id,event_type,created_at) VALUES('v17-suggestion','v17-ws','owner',?,"
+                "'suggestion_created',?)", (prior_task.id, created))
+            connection.commit()
+
+        upgraded = Database(path)
+        upgraded.initialize()
+        with upgraded._connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 18)
+            preference = connection.execute(
+                "SELECT enabled,generation,check_interval_seconds FROM proactivity_preferences "
+                "WHERE workspace_id='v17-ws' AND principal_id='owner'").fetchone()
+            self.assertEqual(tuple(preference), (1, 4, 1800))
+            suggestion = connection.execute(
+                "SELECT state,reason_code FROM proactive_suggestions WHERE id='v17-suggestion'").fetchone()
+            self.assertEqual(tuple(suggestion), ("active", "legacy"))
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM proactivity_suggestion_events WHERE suggestion_id='v17-suggestion'").fetchone()[0], 1)
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM proactivity_scheduler_claims WHERE workspace_id='v17-ws'").fetchone()[0], 0)
 
     def test_defaults_bounds_scope_uniqueness_and_fixed_suggestion_states(self):
         created, _ = self._times()

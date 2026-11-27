@@ -20,7 +20,7 @@ from typing import Iterator, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 REQUIRED_BACKUP_COLUMNS = {
     "workspaces": {"id", "name", "kind", "created_at"},
     "workspace_permissions": {
@@ -1243,6 +1243,34 @@ DEFAULT_MIGRATIONS = (*DEFAULT_MIGRATIONS, Migration(
     ),
 ))
 
+DEFAULT_MIGRATIONS = (*DEFAULT_MIGRATIONS, Migration(
+    version=18,
+    statements=(
+        """ALTER TABLE proactive_suggestions ADD COLUMN reason_code TEXT NOT NULL
+            DEFAULT 'legacy' CHECK(reason_code IN (
+                'legacy','mission_aged','mission_blocked','mission_paused',
+                'mission_interrupted','task_blocked','task_interrupted'))""",
+        """CREATE TABLE proactivity_scheduler_claims (
+            workspace_id TEXT NOT NULL,
+            principal_id TEXT NOT NULL,
+            generation INTEGER NOT NULL CHECK(generation >= 0),
+            claim_token TEXT,
+            lease_expires_at TEXT,
+            next_check_at TEXT,
+            last_checked_at TEXT,
+            last_suggestion_at TEXT,
+            PRIMARY KEY(workspace_id,principal_id),
+            FOREIGN KEY(workspace_id,principal_id)
+                REFERENCES proactivity_preferences(workspace_id,principal_id) ON DELETE CASCADE,
+            CHECK((claim_token IS NULL AND lease_expires_at IS NULL) OR
+                  (claim_token IS NOT NULL AND length(claim_token)=32 AND
+                   claim_token NOT GLOB '*[^0-9a-f]*' AND
+                   julianday(lease_expires_at) IS NOT NULL))
+        )""",
+        "CREATE INDEX proactivity_scheduler_due ON proactivity_scheduler_claims(next_check_at,lease_expires_at,workspace_id,principal_id)",
+    ),
+))
+
 
 def default_database_path(app_name: str = "Jarvis") -> Path:
     """Return a per-user database path without creating it."""
@@ -1653,6 +1681,31 @@ class Database:
                     """,
                     (workspace_id, principal_id, permission_value.value),
                 )
+                if permission_value in {Permission.READ, Permission.WRITE}:
+                    pref = connection.execute(
+                        "SELECT generation FROM proactivity_preferences "
+                        "WHERE workspace_id=? AND principal_id=? AND enabled=1",
+                        (workspace_id, principal_id),
+                    ).fetchone()
+                    if pref is not None:
+                        generation = int(pref["generation"]) + 1
+                        now = _now()
+                        connection.execute(
+                            "UPDATE proactivity_preferences SET enabled=0,generation=?,updated_at=? "
+                            "WHERE workspace_id=? AND principal_id=?",
+                            (generation, now, workspace_id, principal_id),
+                        )
+                        connection.execute(
+                            "UPDATE proactivity_scheduler_claims SET generation=?,claim_token=NULL,"
+                            "lease_expires_at=NULL,next_check_at=NULL "
+                            "WHERE workspace_id=? AND principal_id=?",
+                            (generation, workspace_id, principal_id),
+                        )
+                        self._insert_audit(
+                            connection, workspace_id, actor_id,
+                            "proactivity.disabled_permission_revoked", "proactivity_preference",
+                            principal_id, {"generation": str(generation)},
+                        )
                 self._insert_audit(
                     connection,
                     workspace_id,
@@ -2565,6 +2618,19 @@ class Database:
                     } <= proactivity_triggers:
                         raise sqlite3.DatabaseError(
                             "backup is missing proactivity append-only protections")
+                if source_version >= 18:
+                    suggestion_columns = {row[1] for row in source.execute(
+                        "PRAGMA table_info(proactive_suggestions)").fetchall()}
+                    if "reason_code" not in suggestion_columns:
+                        raise sqlite3.DatabaseError(
+                            "backup is missing proactivity suggestion reason codes")
+                    claim_columns = {row[1] for row in source.execute(
+                        "PRAGMA table_info(proactivity_scheduler_claims)").fetchall()}
+                    if not {"workspace_id", "principal_id", "generation", "claim_token",
+                            "lease_expires_at", "next_check_at", "last_checked_at",
+                            "last_suggestion_at"} <= claim_columns:
+                        raise sqlite3.DatabaseError(
+                            "backup is missing proactivity scheduler claim schema")
                 if source.execute("PRAGMA foreign_key_check").fetchone() is not None:
                     raise sqlite3.DatabaseError("backup contains foreign key violations")
                 source.backup(target)

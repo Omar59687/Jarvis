@@ -61,12 +61,23 @@ language. Independent local Python coding is a future direction; T3 Code and
 other external coding agents remain optional integrations. Dedicated Java and
 other language support is deferred.
 
-**Implemented on `feature/m08-b-mission-planning`:** the `MissionPlanningService`
+**Implemented and merged to `main` at `debea200e0c9e205ff54e00ab290a2098b72d9f3`:** the `MissionPlanningService`
 offers deterministic and optional local-model proposals, strict JSON
 validation, bounded attempts and provider timeout contracts, estimated context
 budgeting with output reserve, repository context retrieval and mission audit
 provenance. This does not implement autonomous coding, execution, M08-C,
 provider selection UI, or exact token accounting. See [M08-B mission planning](M08B_MISSION_PLANNING.md).
+
+## M08-C status
+
+M08-B is merged to `main`; this branch starts at that merged checkpoint and
+implements M08-C. M08-C adds opt-in workspace/principal preferences,
+permission-fenced deterministic evidence suggestions, bounded synchronous
+scheduling while the explicitly started backend is serving, and an
+authenticated bilingual dashboard inbox. It adds no model calls, mission
+execution authority, autostart, external service, or notification delivery.
+See [M08-C implementation and acceptance](M08C_IMPLEMENTATION.md). M08-D and
+M08-E have not started.
 
 ## Current state and next task
 

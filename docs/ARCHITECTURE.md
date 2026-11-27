@@ -1,10 +1,10 @@
 # Jarvis 2.0 — Proposed Architecture
 
-**Status:** the logical product architecture below remains proposed. `main` includes M01-A through M01-E, M02-A through M02-D, Q01, M03-A, P2-A1 through A4, the partial P3 Developer Intelligence slice, and M08-A. This feature branch adds M08-B mission planning. The product remains a loopback development alpha, not a production desktop, multi-user dashboard, or autonomous coding agent. P2 live owner acceptance remains open. See [P2 acceptance](P2_FINAL_ENGINEERING_ACCEPTANCE.md), [P3 implementation and limits](P3_DEVELOPER_INTELLIGENCE.md), [M03-B2](M03B2_LOCAL_PROVIDER.md), [P2-A4](P2A4_CONNECTED_UI.md), and [M08-B planning](M08B_MISSION_PLANNING.md).
+**Status:** the logical product architecture below remains proposed. `main` includes M01-A through M01-E, M02-A through M02-D, Q01, M03-A, P2-A1 through A4, the partial P3 Developer Intelligence slice, M08-A and M08-B. This feature branch adds M08-C proactivity. The product remains a loopback development alpha, not a production multi-user service or autonomous coding agent. P2 live owner acceptance remains open. See [P2 acceptance](P2_FINAL_ENGINEERING_ACCEPTANCE.md), [P3 implementation and limits](P3_DEVELOPER_INTELLIGENCE.md), [M03-B2](M03B2_LOCAL_PROVIDER.md), [P2-A4](P2A4_CONNECTED_UI.md), [M08-B planning](M08B_MISSION_PLANNING.md), and [M08-C implementation and acceptance](M08C_IMPLEMENTATION.md).
 
-M08-A is merged to `main` via PR #24. M08-B implementation is on
-`feature/m08-b-mission-planning`; it adds bounded local-model-assisted planning
-and does not create an autonomous coding agent. Python is the primary
+M08-A is merged to `main` via PR #24. M08-B is merged to `main` at
+`debea200e0c9e205ff54e00ab290a2098b72d9f3`; this feature branch adds M08-C
+proactivity. These milestones do not create an autonomous coding agent. Python is the primary
 development language. Independent local Python coding is a future goal;
 external coding agents are optional integrations. Dedicated Java and other
 language support is deferred.
@@ -91,6 +91,7 @@ The signing context verifies that a trusted host issued a decision for the exact
 - Coding agents operate in a repository worktree or similarly scoped workspace; file, shell, network, and subagent capabilities are separately controlled.
 - Future Mission Mode must have named objective, allowed tools, data/workspace scope, time/action budget, stop conditions, dry-run or preview, and a human stop control.
 - M08-B planning cannot approve a plan, expand repository grants, run tools, write files, execute commands, use the network, or trigger promotion. Human mission authorization and the separate task-plan approval remain required before deterministic simulation.
+- M08-C proactivity is disabled until explicit per-workspace opt-in. Its deterministic scanner reads only workspace-scoped mission/task status, binds suggestion rows to source identities and revision digests, and rechecks current permissions and evidence before returning or mutating suggestions. Scheduler claims are generation-fenced and leased; ticks run synchronously through the existing service loop only while the operator-started backend serves. The bilingual inbox uses the existing paired session, selected workspace, origin and CSRF protections. Accepting acknowledges only. No model inference, task or mission creation, authorization, resume, execution, notification delivery or autostart is added. See [M08-C implementation and acceptance](M08C_IMPLEMENTATION.md) for the implemented limits and test evidence.
 
 ## 8. Security and privacy requirements for implementation
 

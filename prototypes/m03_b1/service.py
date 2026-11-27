@@ -35,6 +35,7 @@ from jarvis_core.orchestration import (
     TaskPlan,
     TaskState,
 )
+from jarvis_core.proactivity import ProactivityError, ProactivityService, suggestion_payload
 from jarvis_core.storage import (
     AccessDenied,
     ConversationMemoryChanged,
@@ -96,6 +97,7 @@ MAX_CHATS_PER_MINUTE = 6
 MAX_VOICE_OPS_PER_MINUTE = 20
 MAX_SESSIONS = 8
 MAX_HANDLER_THREADS = 16
+PROACTIVITY_REQUEST_MAX_BYTES = 2048
 CONVERSATION_MEMORY_SWEEP_INTERVAL_SECONDS = 300
 API_PREFIX = "/api/v1"
 _WAV_CONTENT_TYPES = frozenset({"audio/wav", "audio/wave", "audio/x-wav"})
@@ -281,6 +283,7 @@ STATIC_FILES = {
     "/chat-ui-state.mjs": (Path(__file__).with_name("chat-ui-state.mjs"), "text/javascript; charset=utf-8"),
     "/task-control-state.mjs": (Path(__file__).with_name("task-control-state.mjs"), "text/javascript; charset=utf-8"),
     "/voice-ui-state.mjs": (Path(__file__).with_name("voice-ui-state.mjs"), "text/javascript; charset=utf-8"),
+    "/proactivity-ui-state.mjs": (Path(__file__).with_name("proactivity-ui-state.mjs"), "text/javascript; charset=utf-8"),
     "/galaxy-model.mjs": (M03A_ROOT / "galaxy-model.mjs", "text/javascript; charset=utf-8"),
     "/vendor/three.core.js": (M03A_ROOT / "vendor/three.core.js", "text/javascript; charset=utf-8"),
     "/vendor/three.module.js": (M03A_ROOT / "vendor/three.module.js", "text/javascript; charset=utf-8"),
@@ -617,6 +620,7 @@ class LocalChatServer(ThreadingHTTPServer):
             TaskOrchestrationService(configured_database, repositories=self.developer)
             if configured_database else None
         )
+        self.proactivity = ProactivityService(configured_database) if configured_database else None
         self.voice_service = voice_service if voice_service is not None else VoiceService()
         self.pairing = PairingAuthority(code=pairing_code, clock=clock)
         self.sessions = SessionStore(clock=clock)
@@ -658,6 +662,15 @@ class LocalChatServer(ThreadingHTTPServer):
         except Exception:
             self._handler_slots.release()
             raise
+
+    def service_actions(self) -> None:
+        """Run bounded local checks only while the explicitly started server serves."""
+        if self.proactivity is None:
+            return
+        try:
+            self.proactivity.tick()
+        except Exception:
+            LOGGER.warning("Proactivity scheduler pass failed")
 
     def process_request_thread(self, request, client_address) -> None:
         try:
@@ -921,6 +934,11 @@ class LocalChatHandler(BaseHTTPRequestHandler):
                              "model": self.server.model, "provider": self.server.provider_name,
                              "active_workspace_id": active_workspace_id})
             return
+        if path == f"{API_PREFIX}/proactivity":
+            if self._reject_foreign_origin_if_present():
+                return
+            self._proactivity_get()
+            return
         if path == f"{API_PREFIX}/voice/status":
             if self._reject_foreign_origin_if_present():
                 return
@@ -1032,6 +1050,13 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             else:
                 self._discard_bounded_request_body(8192)
                 self._json(404, {"error": "not_found"})
+        elif path.startswith(f"{API_PREFIX}/proactivity/suggestions/"):
+            suggestion_id, _, action = path[len(f"{API_PREFIX}/proactivity/suggestions/"):].partition("/")
+            if re.fullmatch(r"[0-9a-f]{32}", suggestion_id) and action in {"accept", "dismiss", "snooze"}:
+                self._proactivity_action(suggestion_id, action)
+            else:
+                self._discard_bounded_request_body(PROACTIVITY_REQUEST_MAX_BYTES)
+                self._json(404, {"error": "not_found"})
         else:
             self._discard_bounded_request_body(post_body_limit)
             self._json(404, {"error": "not_found"})
@@ -1103,6 +1128,9 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             return
         if path.startswith(f"{API_PREFIX}/memory-candidates/"):
             self._edit_memory_candidate(path.rsplit("/", 1)[-1])
+            return
+        if path == f"{API_PREFIX}/proactivity/preferences":
+            self._proactivity_preferences_update()
             return
         if path == f"{API_PREFIX}/conversation-memory/settings":
             self._conversation_memory_update()
@@ -1983,6 +2011,117 @@ class LocalChatHandler(BaseHTTPRequestHandler):
             self._json(503, {"error": "workspace_service_unavailable"})
             return None
         return session_id, record, record.actor_id, record.active_workspace_id
+
+    def _proactivity_get(self) -> None:
+        context = self._authenticated_workspace()
+        if context is None:
+            return
+        session_id, record, actor, workspace = context
+        if not self._memory_operation_allowed(session_id, record):
+            return
+        try:
+            preferences = self.server.proactivity.get_preferences(actor, workspace)
+            suggestions = (self.server.proactivity.list_suggestions(actor, workspace)
+                           if preferences.can_enable else ())
+            self._json(200, {
+                "workspace_id": workspace,
+                "preferences": {
+                    "enabled": preferences.enabled,
+                    "generation": preferences.generation,
+                    "check_interval_seconds": preferences.check_interval_seconds,
+                    "cooldown_seconds": preferences.cooldown_seconds,
+                    "can_enable": preferences.can_enable,
+                },
+                "suggestions": [suggestion_payload(item) for item in suggestions],
+            })
+        except ProactivityError as exc:
+            self._json(503, {"error": exc.args[0] if exc.args else "proactivity_unavailable"})
+        except AccessDenied:
+            self._json(404, {"error": "workspace_unavailable"})
+        except Exception:
+            self._json(503, {"error": "proactivity_unavailable"})
+
+    def _proactivity_preferences_update(self) -> None:
+        context = self._authenticated_workspace(write=True)
+        if context is None:
+            self._discard_bounded_request_body(PROACTIVITY_REQUEST_MAX_BYTES)
+            return
+        session_id, record, actor, workspace = context
+        if not self._memory_operation_allowed(session_id, record):
+            self._discard_bounded_request_body(PROACTIVITY_REQUEST_MAX_BYTES)
+            return
+        value = self._read_json(PROACTIVITY_REQUEST_MAX_BYTES)
+        if value is None:
+            return
+        if (_contains_client_identity(value)
+                or not {"enabled"} <= set(value)
+                or set(value) - {"enabled", "check_interval_seconds", "cooldown_seconds"}):
+            self._json(400, {"error": "invalid_request"})
+            return
+        try:
+            preferences = self.server.proactivity.set_preferences(
+                actor, workspace, enabled=value["enabled"],
+                check_interval_seconds=value.get("check_interval_seconds"),
+                cooldown_seconds=value.get("cooldown_seconds"),
+            )
+            self._json(200, {
+                "workspace_id": workspace,
+                "enabled": preferences.enabled,
+                "generation": preferences.generation,
+                "check_interval_seconds": preferences.check_interval_seconds,
+                "cooldown_seconds": preferences.cooldown_seconds,
+            })
+        except AccessDenied:
+            self._json(403, {"error": "write_permission_required"})
+        except ValueError:
+            self._json(400, {"error": "invalid_proactivity_preferences"})
+        except Exception:
+            self._json(503, {"error": "proactivity_unavailable"})
+
+    def _proactivity_action(self, suggestion_id: str, action: str) -> None:
+        context = self._authenticated_workspace(write=True)
+        if context is None:
+            self._discard_bounded_request_body(PROACTIVITY_REQUEST_MAX_BYTES)
+            return
+        session_id, record, actor, workspace = context
+        if not self._memory_operation_allowed(session_id, record):
+            self._discard_bounded_request_body(PROACTIVITY_REQUEST_MAX_BYTES)
+            return
+        value = self._read_json(PROACTIVITY_REQUEST_MAX_BYTES)
+        if value is None:
+            return
+        if _contains_client_identity(value):
+            self._json(400, {"error": "invalid_request"})
+            return
+        if action == "snooze":
+            if set(value) != {"snooze_seconds"}:
+                self._json(400, {"error": "invalid_request"})
+                return
+            seconds = value["snooze_seconds"]
+        else:
+            if value:
+                self._json(400, {"error": "invalid_request"})
+                return
+            seconds = None
+        try:
+            item = self.server.proactivity.act(
+                actor, workspace, suggestion_id, action, snooze_seconds=seconds,
+            )
+            if item.state in {"retracted", "expired"}:
+                self._json(409, {"error": "suggestion_stale", "state": item.state})
+                return
+            self._json(200, {"suggestion": suggestion_payload(item),
+                             "acknowledgment_only": action == "accept"})
+        except ValueError:
+            self._json(400, {"error": "invalid_suggestion_action"})
+        except ProactivityError as exc:
+            code = exc.args[0] if exc.args else "suggestion_unavailable"
+            status = 409 if code in {"suggestion_not_actionable", "suggestion_stale"} else 404
+            self._json(status, {"error": code})
+        except AccessDenied:
+            self._json(404, {"error": "suggestion_unavailable"})
+        except Exception:
+            self._json(503, {"error": "proactivity_unavailable"})
 
     def _memory_operation_allowed(self, session_id: str, record: SessionRecord) -> bool:
         now = time.monotonic()
