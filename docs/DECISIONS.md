@@ -213,3 +213,39 @@ a crash after provider acceptance but before recording its response. Jarvis
 records the attempt first and conservatively requires explicit recovery for an
 ambiguous interruption. This repair adds no dependency or execution authority.
 See [M08-B mission planning](M08B_MISSION_PLANNING.md).
+
+### M08-C01.1 Proactivity Database Foundation — 2026-11-27
+
+**Confirmed scope:** Add only the SQLite foundation for workspace/principal
+proactivity preferences, source-bound suggestions, and suggestion transition
+events. Proactivity remains disabled by default. No scheduler, suggestion
+service, model inference, notification, or mission action is introduced.
+
+**Implemented:** Schema v17 adds three tables transactionally. Suggestion
+sources reference an existing task and, for mission suggestions, the matching
+mission under the same workspace and principal. Fixed suggestion types are
+`mission_follow_up`, `task_follow_up`, `task_blocked`, and `task_completed`.
+Deduplication and source revision values are SHA-256 digests. Suggestions hold
+no goal, summary, model response, or free-form content. Event metadata is a
+bounded JSON object.
+
+**Database and service boundary:** SQLite enforces scope uniqueness, source
+foreign keys, fixed types/states/events, digest formats, preference ranges,
+30-day maximum suggestion lifetime, and append-only event updates. Event
+deletion is permitted only when the existing confirmed task purge has written
+its immutable tombstone. The later service must enforce authorization,
+generation fencing, configured default lifetime, cooldown behavior, and the
+100 active suggestion limit per workspace/principal. Metadata must remain
+non-sensitive and its bounded size does not establish semantic privacy.
+
+**Bounds selected for this foundation:** Check interval is 900–86400 seconds
+with a 3600-second default. Cooldown is 0–2592000 seconds with an 86400-second
+default. The 30-day lifetime is an upper bound in SQLite; service policy should
+use the 30-day default. The active suggestion cap is service-enforced because
+SQLite has no suitable declarative per-scope row-count constraint.
+
+**Privacy and retention:** Existing manager-confirmed orchestration task purge
+cascades task/mission suggestions and their event history only after inserting
+the existing purge tombstone. This preserves M08-A/M08-B deletion semantics.
+Historical backups may still contain deleted rows, as documented for existing
+task and mission data; this change makes no secure-erasure claim.

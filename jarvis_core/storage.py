@@ -20,7 +20,7 @@ from typing import Iterator, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 REQUIRED_BACKUP_COLUMNS = {
     "workspaces": {"id", "name", "kind", "created_at"},
     "workspace_permissions": {
@@ -1157,6 +1157,91 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
             "CREATE INDEX mission_planning_reservations_state ON mission_planning_reservations(state,lease_expires_at)",
         ),
     ),)
+
+DEFAULT_MIGRATIONS = (*DEFAULT_MIGRATIONS, Migration(
+    version=17,
+    statements=(
+        "CREATE UNIQUE INDEX missions_task_scope ON missions(task_id,workspace_id,principal_id)",
+        "CREATE UNIQUE INDEX missions_source_scope ON missions(id,task_id,workspace_id,principal_id)",
+        """CREATE TABLE proactivity_preferences (
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            principal_id TEXT NOT NULL CHECK(length(trim(principal_id)) BETWEEN 1 AND 200),
+            enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+            generation INTEGER NOT NULL DEFAULT 0 CHECK(generation >= 0),
+            check_interval_seconds INTEGER NOT NULL DEFAULT 3600
+                CHECK(check_interval_seconds BETWEEN 900 AND 86400),
+            cooldown_seconds INTEGER NOT NULL DEFAULT 86400
+                CHECK(cooldown_seconds BETWEEN 0 AND 2592000),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(workspace_id,principal_id)
+        )""",
+        """CREATE TABLE proactive_suggestions (
+            id TEXT PRIMARY KEY CHECK(length(trim(id)) BETWEEN 1 AND 200),
+            workspace_id TEXT NOT NULL,
+            principal_id TEXT NOT NULL CHECK(length(trim(principal_id)) BETWEEN 1 AND 200),
+            suggestion_type TEXT NOT NULL CHECK(suggestion_type IN (
+                'mission_follow_up','task_follow_up','task_blocked','task_completed')),
+            source_kind TEXT NOT NULL CHECK(source_kind IN ('mission','task')),
+            source_task_id TEXT NOT NULL,
+            source_mission_id TEXT,
+            source_revision_sha256 TEXT NOT NULL CHECK(
+                length(source_revision_sha256)=64 AND
+                source_revision_sha256 NOT GLOB '*[^0-9a-f]*'),
+            deduplication_key TEXT NOT NULL CHECK(
+                length(deduplication_key)=64 AND
+                deduplication_key NOT GLOB '*[^0-9a-f]*'),
+            state TEXT NOT NULL DEFAULT 'active' CHECK(state IN (
+                'active','accepted','dismissed','snoozed','retracted','expired')),
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL CHECK(
+                julianday(expires_at) IS NOT NULL AND
+                julianday(created_at) IS NOT NULL AND
+                julianday(expires_at) > julianday(created_at) AND
+                julianday(expires_at) <= julianday(created_at) + 30),
+            snoozed_until TEXT CHECK(snoozed_until IS NULL OR
+                (julianday(snoozed_until) IS NOT NULL AND
+                 julianday(snoozed_until) > julianday(created_at) AND
+                 julianday(snoozed_until) <= julianday(expires_at))),
+            UNIQUE(id,workspace_id,principal_id),
+            UNIQUE(id,workspace_id,principal_id,source_task_id),
+            UNIQUE(workspace_id,principal_id,deduplication_key),
+            CHECK((source_kind='task' AND source_mission_id IS NULL) OR
+                  (source_kind='mission' AND source_mission_id IS NOT NULL)),
+            FOREIGN KEY(source_task_id,workspace_id,principal_id)
+                REFERENCES orchestration_tasks(id,workspace_id,principal_id) ON DELETE CASCADE,
+            FOREIGN KEY(source_mission_id,source_task_id,workspace_id,principal_id)
+                REFERENCES missions(id,task_id,workspace_id,principal_id) ON DELETE CASCADE
+        )""",
+        "CREATE INDEX proactive_suggestions_scope_state ON proactive_suggestions(workspace_id,principal_id,state,expires_at)",
+        """CREATE TABLE proactivity_suggestion_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            suggestion_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            principal_id TEXT NOT NULL,
+            source_task_id TEXT NOT NULL,
+            event_type TEXT NOT NULL CHECK(event_type IN (
+                'suggestion_created','suggestion_accepted','suggestion_dismissed',
+                'suggestion_snoozed','suggestion_unsnoozed','suggestion_retracted',
+                'suggestion_expired')),
+            metadata_json TEXT NOT NULL DEFAULT '{}' CHECK(
+                length(metadata_json) <= 4096 AND json_valid(metadata_json) AND
+                json_type(metadata_json)='object'),
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(suggestion_id,workspace_id,principal_id,source_task_id)
+                REFERENCES proactive_suggestions(id,workspace_id,principal_id,source_task_id) ON DELETE CASCADE
+        )""",
+        "CREATE INDEX proactivity_suggestion_events_scope ON proactivity_suggestion_events(workspace_id,principal_id,suggestion_id,id)",
+        """CREATE TRIGGER proactivity_suggestion_events_no_update
+            BEFORE UPDATE ON proactivity_suggestion_events
+            BEGIN SELECT RAISE(ABORT, 'proactivity suggestion events are append-only'); END""",
+        """CREATE TRIGGER proactivity_suggestion_events_no_delete
+            BEFORE DELETE ON proactivity_suggestion_events
+            WHEN NOT EXISTS (SELECT 1 FROM orchestration_purge_tombstones p
+                WHERE p.workspace_id=OLD.workspace_id AND p.task_id=OLD.source_task_id)
+            BEGIN SELECT RAISE(ABORT, 'proactivity suggestion events are append-only'); END""",
+    ),
+))
 
 
 def default_database_path(app_name: str = "Jarvis") -> Path:
@@ -2449,6 +2534,37 @@ class Database:
                             "request_sha256", "state", "owner_token", "attempts_used",
                             "result_revision", "result_sha256"} <= reservation_columns:
                         raise sqlite3.DatabaseError("backup is missing mission planning reservation schema")
+                if source_version >= 17:
+                    proactivity_tables = {
+                        "proactivity_preferences": {
+                            "workspace_id", "principal_id", "enabled", "generation",
+                            "check_interval_seconds", "cooldown_seconds", "created_at", "updated_at",
+                        },
+                        "proactive_suggestions": {
+                            "id", "workspace_id", "principal_id", "suggestion_type",
+                            "source_kind", "source_task_id", "source_mission_id",
+                            "source_revision_sha256", "deduplication_key", "state",
+                            "created_at", "expires_at", "snoozed_until",
+                        },
+                        "proactivity_suggestion_events": {
+                            "id", "suggestion_id", "workspace_id", "principal_id",
+                            "source_task_id", "event_type", "metadata_json", "created_at",
+                        },
+                    }
+                    for table, required_columns in proactivity_tables.items():
+                        columns = {row[1] for row in source.execute(
+                            f"PRAGMA table_info({table})").fetchall()}
+                        if not required_columns <= columns:
+                            raise sqlite3.DatabaseError(
+                                f"backup is missing required schema for table {table}")
+                    proactivity_triggers = {row[0] for row in source.execute(
+                        "SELECT name FROM sqlite_master WHERE type='trigger'").fetchall()}
+                    if not {
+                        "proactivity_suggestion_events_no_update",
+                        "proactivity_suggestion_events_no_delete",
+                    } <= proactivity_triggers:
+                        raise sqlite3.DatabaseError(
+                            "backup is missing proactivity append-only protections")
                 if source.execute("PRAGMA foreign_key_check").fetchone() is not None:
                     raise sqlite3.DatabaseError("backup contains foreign key violations")
                 source.backup(target)

@@ -204,20 +204,21 @@ class MissionTests(unittest.TestCase):
         self.assertEqual(reopened.current_version, SCHEMA_VERSION)
         self.assertEqual(MissionService(reopened).get("owner", mission.id).id, mission.id)
 
-    def test_v15_database_upgrades_additively_to_v16(self):
+    def test_v15_database_upgrades_additively_to_v17(self):
         path = Path(self.tmp.name) / "legacy-v15.sqlite3"
-        legacy = Database(path, migrations=DEFAULT_MIGRATIONS[:-1])
+        legacy = Database(path, migrations=DEFAULT_MIGRATIONS[:-2])
         legacy.initialize()
         self.assertEqual(legacy.current_version, 15)
         legacy.create_workspace("Legacy", WorkspaceKind.PROJECT, "owner", "legacy")
         upgraded = Database(path)
         upgraded.initialize()
-        self.assertEqual(upgraded.current_version, 16)
+        self.assertEqual(upgraded.current_version, 17)
         with upgraded._connection() as conn:
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({"missions", "mission_authorizations", "mission_events",
                          "mission_budget_ledger", "mission_checkpoints",
-                         "mission_planning_reservations"} <= tables)
+                         "mission_planning_reservations", "proactivity_preferences",
+                         "proactive_suggestions", "proactivity_suggestion_events"} <= tables)
 
     def test_trusted_terminal_uses_confirmation(self):
         out = StringIO()
